@@ -58,7 +58,7 @@ export class CoachEngine {
   private handleOne(event: CoachEvent, ctx: MatchContext): void {
     switch (event.type) {
       case "matchStart":
-        this.say(lines.matchStartLine(event.map), { category: "match", priority: 2, maxAgeMs: 15_000 });
+        this.say(() => lines.matchStartLine(event.map), { category: "match", priority: 2, maxAgeMs: 15_000 });
         break;
 
       case "freezetime":
@@ -69,23 +69,27 @@ export class CoachEngine {
         break; // round start itself isn't worth talking over
 
       case "bombPlanted":
-        this.say(lines.bombPlantedLine(event.ourSide), { category: "bomb", priority: 3, maxAgeMs: 12_000 });
+        this.say(() => lines.bombPlantedLine(event.ourSide), { category: "bomb", priority: 3, maxAgeMs: 12_000 });
         break;
 
       case "bombDefused":
-        this.say(lines.bombDefusedLine(event.ourSide), { category: "bomb", priority: 2, maxAgeMs: 10_000 });
+        this.say(() => lines.bombDefusedLine(event.ourSide), { category: "bomb", priority: 2, maxAgeMs: 10_000 });
         break;
 
       case "bombExploded":
-        this.say(lines.bombExplodedLine(event.ourSide), { category: "bomb", priority: 2, maxAgeMs: 10_000 });
+        this.say(() => lines.bombExplodedLine(event.ourSide), { category: "bomb", priority: 2, maxAgeMs: 10_000 });
         break;
 
       case "roundEnd": {
-        if (event.won === undefined) break;
-        const text = event.won
-          ? lines.roundWonLine(event.ourScore, event.theirScore)
-          : lines.roundLostLine(event.ourScore, event.theirScore);
-        this.say(text, { category: "roundEnd", priority: 1, maxAgeMs: 8_000 });
+        const won = event.won;
+        if (won === undefined) break;
+        this.say(
+          () =>
+            won
+              ? lines.roundWonLine(event.ourScore, event.theirScore)
+              : lines.roundLostLine(event.ourScore, event.theirScore),
+          { category: "roundEnd", priority: 1, maxAgeMs: 8_000 },
+        );
         break;
       }
 
@@ -94,27 +98,23 @@ export class CoachEngine {
         break;
 
       case "matchPoint":
-        this.say(lines.matchPointLine(event.forUs), { category: "match", priority: 3, maxAgeMs: 12_000 });
+        this.say(() => lines.matchPointLine(event.forUs), { category: "match", priority: 3, maxAgeMs: 12_000 });
         break;
 
       case "matchEnd":
         this.tacticalMoment(event, ctx, () => lines.matchEndLine(event.won, event.ourScore, event.theirScore), "match", 30_000);
         break;
 
-      case "kill": {
-        const text = lines.killLine(event.roundKills, event.headshot, ctx.playerName);
-        if (text) this.say(text, { category: "kill", priority: 2, maxAgeMs: 5_000 });
+      case "kill":
+        this.say(() => lines.killLine(event.roundKills, event.headshot, ctx.playerName), { category: "kill", priority: 2, maxAgeMs: 5_000 });
         break;
-      }
 
-      case "death": {
-        const text = lines.deathLine();
-        if (text) this.say(text, { category: "death", priority: 0, maxAgeMs: 6_000 });
+      case "death":
+        this.say(() => lines.deathLine(), { category: "death", priority: 0, maxAgeMs: 6_000 });
         break;
-      }
 
       case "mvp":
-        this.say(lines.mvpLine(ctx.playerName), { category: "mvp", priority: 2, maxAgeMs: 8_000 });
+        this.say(() => lines.mvpLine(ctx.playerName), { category: "mvp", priority: 2, maxAgeMs: 8_000 });
         break;
     }
   }
@@ -134,8 +134,7 @@ export class CoachEngine {
     const eventAt = Date.now();
 
     if (!this.llm) {
-      const text = fallback();
-      if (text) this.say(text, { category, priority: 1, maxAgeMs, eventAt }, true);
+      this.say(fallback, { category, priority: 1, maxAgeMs, eventAt }, true);
       return;
     }
 
@@ -144,16 +143,27 @@ export class CoachEngine {
     const snapshot = { ...ctx };
     void this.llm.line(snapshot, event).then((text) => {
       const final = text ?? fallback();
-      if (final) this.say(final, { category, priority: 1, maxAgeMs, eventAt }, true);
+      if (!final) return;
+      // Fallback lines join the LLM's anti-repeat memory too — the listener
+      // doesn't care who authored what they just heard.
+      if (!text) this.llm?.recordSpoken(final);
+      this.say(() => final, { category, priority: 1, maxAgeMs, eventAt }, true);
     });
   }
 
+  /**
+   * The cooldown check runs BEFORE the line thunk, so a cooldown-gated event
+   * never consumes a shuffle-bag variant. (Lines dropped later in the voice
+   * queue — staleness, overflow — still do; that path is rare.)
+   */
   private say(
-    text: string,
+    line: () => string | null,
     opts: { category: string; priority: number; maxAgeMs: number; eventAt?: number },
     skipCooldownCheck = false,
   ): void {
     if (!skipCooldownCheck && !this.passesCooldown(opts.category)) return;
+    const text = line();
+    if (!text) return;
     this.lastSpokenAt.set(opts.category, Date.now());
     this.speak({ text, ...opts, eventAt: opts.eventAt ?? Date.now() });
   }

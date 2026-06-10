@@ -35,7 +35,7 @@ export class LlmCoach {
       `Game state snapshot: ${JSON.stringify(context)}`,
       `Moment: ${describeMoment(event)}`,
       this.recentLines.length
-        ? `Your last few lines (do NOT repeat their phrasing): ${JSON.stringify(this.recentLines)}`
+        ? `Your recent lines, oldest first (do NOT reuse their phrasing, openers, or signature words): ${JSON.stringify(this.recentLines)}`
         : "",
     ]
       .filter(Boolean)
@@ -59,13 +59,22 @@ export class LlmCoach {
         .trim();
 
       if (!text) return null;
-      this.recentLines.push(text);
-      if (this.recentLines.length > 4) this.recentLines.shift();
+      this.recordSpoken(text);
       return text;
     } catch (err) {
       log.warn("llm", `Claude call failed (${err instanceof Error ? err.message : err}) — using rule-based line`);
       return null;
     }
+  }
+
+  /**
+   * Track a line the coach spoke at an LLM-handled moment, whoever produced it.
+   * Fallback rule lines go through here too, so Claude doesn't unknowingly
+   * paraphrase something the listener heard one freezetime ago.
+   */
+  recordSpoken(text: string): void {
+    this.recentLines.push(text);
+    if (this.recentLines.length > 10) this.recentLines.shift();
   }
 }
 

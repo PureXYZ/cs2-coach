@@ -119,6 +119,9 @@ export class GsiTracker {
       });
       this.inMatch = false;
       this.lastKnownSide = undefined;
+      // Cleared on gameover too: if the next match's "live" transition is missed
+      // (payload gap), a stale us@13/them@13 key would mute its first match point.
+      this.announcedMatchPointAt = null;
     }
 
     // --- round phase transitions -------------------------------------------
@@ -133,13 +136,14 @@ export class GsiTracker {
       const { ourScore, theirScore } = this.scores(payload, ourSide);
       if (ourScore !== undefined && theirScore !== undefined) {
         const target = winTarget(ourScore, theirScore);
-        const key = `${ourScore}-${theirScore}`;
-        if (this.announcedMatchPointAt !== key) {
-          if (ourScore === target - 1) {
-            events.push({ type: "matchPoint", forUs: true });
-            this.announcedMatchPointAt = key;
-          } else if (theirScore === target - 1) {
-            events.push({ type: "matchPoint", forUs: false });
+        const forUs = ourScore === target - 1 ? true : theirScore === target - 1 ? false : undefined;
+        if (forUs !== undefined) {
+          // Key on side+target, not exact score: a team can sit at match point for
+          // many rounds while the other score creeps up, and that stretch should
+          // be announced once, not at every freezetime.
+          const key = `${forUs ? "us" : "them"}@${target}`;
+          if (this.announcedMatchPointAt !== key) {
+            events.push({ type: "matchPoint", forUs });
             this.announcedMatchPointAt = key;
           }
         }
