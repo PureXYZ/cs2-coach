@@ -57,7 +57,8 @@ export interface GsiPlayerState {
   money: number;
   round_kills: number;
   round_killhs: number;
-  round_totaldmg?: number;
+  // round_totaldmg is observer-only: requested in the cfg but never sent to a
+  // playing client (confirmed across a full captured session) — not modeled.
   equip_value: number;
   defusekit?: boolean;
 }

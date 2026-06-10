@@ -10,6 +10,9 @@ import { VoiceCoach } from "./discord/voice.js";
 import { startBot } from "./discord/bot.js";
 
 async function main(): Promise<void> {
+  // Keep the session's console output on disk next to the GSI capture — spoken
+  // lines, drops and LLM/TTS latencies are otherwise lost when the window closes.
+  log.toFile();
   log.info("main", "CS2 Coach starting up");
 
   const tts = new TtsChain();

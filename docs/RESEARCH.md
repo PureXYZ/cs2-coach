@@ -24,7 +24,7 @@ Available while playing:
 - `provider` — your SteamID (constant), app version, timestamp
 - `map` — name, mode, phase (warmup/live/intermission/gameover), round number, both teams' **scores**, **consecutive_round_losses** (loss-bonus tracking!), timeouts, per-round **win-method history** (`t_win_bomb`, `ct_win_elimination`, …)
 - `round` — phase (freezetime/live/over), `bomb` (planted/exploded/defused), `win_team`
-- `player` — name, team, activity, **state** (health, armor, helmet, flashed/smoked/burning, **money**, round_kills, round_killhs, round_totaldmg, **equip_value**, defusekit), **weapons** (name/type/ammo/active), **match_stats** (K/A/D, MVPs, score)
+- `player` — name, team, activity, **state** (health, armor, helmet, flashed/smoked/burning, **money**, round_kills, round_killhs, **equip_value**, defusekit — round_totaldmg turned out to be observer-only, never sent in play), **weapons** (name/type/ammo/active), **match_stats** (K/A/D, MVPs, score)
 
 Not available while playing (GOTV/spectator-only — verified against library maintainers' 2025–26 statements):
 - `allplayers_*` (teammates AND enemies: positions, health, money, weapons — nothing)

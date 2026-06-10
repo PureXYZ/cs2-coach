@@ -22,11 +22,15 @@ function intEnv(name: string, fallback: number): number {
   return n;
 }
 
-function floatEnv(name: string, fallback: number): number {
+function floatEnv(name: string, fallback: number, min?: number, max?: number): number {
   const raw = process.env[name];
   if (!raw) return fallback;
   const n = Number.parseFloat(raw);
   if (Number.isNaN(n)) throw new Error(`${name} must be a number, got "${raw}"`);
+  // Fail at startup, not as a silent per-request 422 that demotes the provider.
+  if ((min !== undefined && n < min) || (max !== undefined && n > max)) {
+    throw new Error(`${name} must be between ${min} and ${max}, got "${raw}"`);
+  }
   return n;
 }
 
@@ -67,9 +71,9 @@ export const config = {
       voiceId: optional("ELEVENLABS_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb"),
       modelId: optional("ELEVENLABS_MODEL_ID", "eleven_flash_v2_5"),
       // 0–1 scale (the dashboard shows these as percentages).
-      stability: floatEnv("ELEVENLABS_STABILITY", 0.3),
-      similarityBoost: floatEnv("ELEVENLABS_SIMILARITY", 1.0),
-      style: floatEnv("ELEVENLABS_STYLE", 0.5),
+      stability: floatEnv("ELEVENLABS_STABILITY", 0.3, 0, 1),
+      similarityBoost: floatEnv("ELEVENLABS_SIMILARITY", 1.0, 0, 1),
+      style: floatEnv("ELEVENLABS_STYLE", 0.5, 0, 1),
     },
     edge: {
       voice: optional("EDGE_TTS_VOICE", "en-US-GuyNeural"),

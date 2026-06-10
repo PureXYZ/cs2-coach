@@ -20,7 +20,7 @@ export type CoachEvent =
   | { type: "matchEnd"; won: boolean | undefined; ourScore: number; theirScore: number }
   | { type: "kill"; roundKills: number; headshot: boolean }
   // Own kill with a story: knife/zeus/grenade attribution from the active weapon
-  // + recent-throw/gunfire heuristics, or a clutch frag on low HP.
+  // + recent-throw/gunfire/kill-cash heuristics, or a clutch frag on low HP.
   | { type: "specialKill"; kind: "knife" | "zeus" | "grenade" | "lowhp"; nade?: "he" | "fire"; hp?: number }
   // Own scoreboard kill counter went DOWN while alive — only a teamkill does that.
   | { type: "teamkill" }
@@ -59,8 +59,6 @@ export interface MatchContext {
   assists?: number;
   deaths?: number;
   mvps?: number;
-  /** Own damage dealt this round (GSI round_totaldmg). */
-  roundDamage?: number;
   /** While dead: the teammate currently spectated (name + their state). */
   spectating?: { name?: string; health?: number; weapons?: string[] };
   /** Last few rounds' outcomes, e.g. ["t_win_bomb", "ct_win_elimination"]. */
@@ -82,6 +80,7 @@ interface PrevSelf {
   roundKillHs: number;
   matchKills: number;
   mvps: number;
+  money: number;
 }
 
 /** Kill-capable grenades we attribute kills to (flash/smoke/decoy kills are too rare to chase). */
@@ -91,9 +90,13 @@ const NADE_KINDS: Record<string, "he" | "fire"> = {
   weapon_incgrenade: "fire",
 };
 
-// How long after a throw a kill may still be that grenade's doing.
-// HE detonates ~1.7s after the throw; a molotov can burn for ~7s.
-const NADE_KILL_WINDOW_MS: Record<"he" | "fire", number> = { he: 4_000, fire: 9_000 };
+// How long after a throw a kill may still be that grenade's doing, measured
+// from the inventory-shrink frame (~0.5s after release). The HE fuse is ~1.6s
+// from release regardless of flight; a molly flies ~1s and burns ~7s.
+const NADE_KILL_WINDOW_MS: Record<"he" | "fire", number> = { he: 3_000, fire: 9_000 };
+
+/** Competitive knife-kill cash — lands in state.money on the same GSI tick as the kill. */
+const KNIFE_KILL_REWARD = 1_500;
 
 /**
  * Rounds needed to win given the current scores: 13 in regulation (MR12), then
@@ -238,11 +241,12 @@ export class GsiTracker {
     }
 
     // --- bomb (note: plant signal is delayed ~1-2s by Valve, by design) -----
-    // prev must exist: a cold start mid-post-plant is a baseline sync, not a
-    // fresh plant — announcing it would also start a wrong 40s bomb clock.
+    // prev must be an in-game frame: a cold start — or a reconnect, where only
+    // menu payloads preceded — mid-post-plant is a baseline sync, not a fresh
+    // plant. Announcing it would also start a wrong 40s bomb clock.
     const prevBomb = prev?.round?.bomb;
     const bomb = round?.bomb;
-    if (prev && bomb && bomb !== prevBomb) {
+    if (prev?.round && bomb && bomb !== prevBomb) {
       if (bomb === "planted") {
         events.push({ type: "bombPlanted", ourSide });
         this.bombPlantedAt = now;
@@ -274,14 +278,19 @@ export class GsiTracker {
         roundKillHs: s.round_killhs,
         matchKills: payload.player.match_stats?.kills ?? this.prevSelf?.matchKills ?? 0,
         mvps: payload.player.match_stats?.mvps ?? this.prevSelf?.mvps ?? 0,
+        money: s.money,
       };
 
       // Grenade throws first: the inventory shrinks seconds before the kill lands,
       // so by the time round_kills ticks up the throw is already on record.
+      // 'over' is included because exit frags still get classified (only
+      // freezetime is excluded below), so throws and gunfire after the round is
+      // decided must stay on the books — otherwise an exit frag's own shots go
+      // untracked and a molly thrown before round end soaks up the credit.
       // Known limitation: dropping a grenade to a teammate (rare mid-live) also
       // shrinks the inventory and could mis-credit a knife kill to "the nade" —
       // GSI can't tell a drop from a throw, and the wrong call is harmless hype.
-      if (roundPhase === "live") {
+      if (roundPhase === "live" || roundPhase === "over") {
         const nades = this.nadeUnits(payload.player);
         if (this.prevNades) {
           for (const [name, units] of Object.entries(this.prevNades)) {
@@ -308,11 +317,18 @@ export class GsiTracker {
 
       if (this.prevSelf) {
         if (cur.roundKills > this.prevSelf.roundKills && roundPhase !== "freezetime") {
-          this.memory.recordKill(this.liveRound);
+          // A collateral or nade double can land inside one buffered frame —
+          // count every increment, not every frame.
+          const killsDelta = cur.roundKills - this.prevSelf.roundKills;
+          for (let i = 0; i < killsDelta; i++) this.memory.recordKill(this.liveRound);
           if (cur.roundKills >= 5) this.memory.recordNotable(this.liveRound, "ACE");
           else if (cur.roundKills === 4) this.memory.recordNotable(this.liveRound, "4k");
 
-          const special = this.classifyKill(payload.player, s.health, now);
+          // Kill cash is only readable mid-round: round-end income (win/loss
+          // bonus, observed +$3550) lands on the same 'over'-phase frame as an
+          // exit frag and would fake a knife-sized reward.
+          const cashDelta = roundPhase === "live" ? cur.money - this.prevSelf.money : undefined;
+          const special = this.classifyKill(payload.player, s.health, now, killsDelta, cashDelta);
           if (special && special.kind !== "lowhp") {
             const label =
               special.kind === "grenade"
@@ -460,7 +476,6 @@ export class GsiTracker {
       assists: isSelf ? p?.player?.match_stats?.assists : undefined,
       deaths: isSelf ? p?.player?.match_stats?.deaths : undefined,
       mvps: isSelf ? p?.player?.match_stats?.mvps : undefined,
-      roundDamage: isSelf ? p?.player?.state?.round_totaldmg : undefined,
       spectating:
         !isSelf && p?.player && p.map?.phase === "live"
           ? { name: p.player.name, health: p.player.state?.health, weapons: this.weaponNames(p.player) }
@@ -495,14 +510,19 @@ export class GsiTracker {
    * honest ones: after a throw CS2 auto-swaps back to the best weapon, so a nade
    * kill usually lands with a rifle already in hand — the giveaway is that no
    * shot was fired between the throw and the kill. The Zeus in hand is
-   * unambiguous; otherwise knife-out means knifed. Known limitation: spraying at
-   * one enemy while the nade kills another forfeits the nade attribution — when
-   * gun and grenade are both plausible, crediting the gun is the safe call.
+   * unambiguous; a knife in hand while a nade window is open is resolved by the
+   * same-frame kill cash (knife pays $1500, nade $300); otherwise knife-out
+   * means knifed. Known limitation: spraying at one enemy while the nade kills
+   * another forfeits the nade attribution — when gun and grenade are both
+   * plausible, crediting the gun is the safe call.
    */
   private classifyKill(
     player: GsiPlayer,
     health: number,
     now: number,
+    killsDelta: number,
+    /** Same-frame money change, or undefined when cash is unreadable (round over). */
+    cashDelta: number | undefined,
   ): { kind: "knife" | "zeus" | "grenade" | "lowhp"; nade?: "he" | "fire"; hp?: number } | null {
     const active = this.activeWeapon(player);
 
@@ -520,7 +540,19 @@ export class GsiTracker {
       }
     }
 
-    const holdingNoGun = !active || active.type === "Knife" || active.type === "Grenade" || active.type === "C4";
+    // Knife in hand while a nade still cooks is genuinely ambiguous — both are
+    // plausible play. The kill cash settles it: the reward lands on the same
+    // GSI tick as round_kills, so +$1500/kill proves the knife. When cash can't
+    // prove a knife — reward truncated within $1500 of the $16k cap, a same-
+    // frame buy eating the delta, or an unreadable over-phase frame — the nade
+    // keeps the credit: the pre-cash behavior, and the safer hype to be wrong
+    // about (the knife was at least visibly in hand).
+    if (throwKind && active?.type === "Knife") {
+      if (cashDelta !== undefined && cashDelta >= killsDelta * KNIFE_KILL_REWARD) return { kind: "knife" };
+      return { kind: "grenade", nade: throwKind };
+    }
+
+    const holdingNoGun = !active || active.type === "Grenade" || active.type === "C4";
     const firedSinceThrow = this.lastGunfireAt !== null && this.lastGunfireAt >= throwAt;
     if (throwKind && (holdingNoGun || !firedSinceThrow)) return { kind: "grenade", nade: throwKind };
     if (active?.type === "Knife") return { kind: "knife" };

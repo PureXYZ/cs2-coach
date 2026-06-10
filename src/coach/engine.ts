@@ -41,8 +41,9 @@ const COOLDOWNS_MS: Record<string, number> = {
   clock: 25_000,
 };
 
-/** Clock callouts bail when GSI went quiet (game crash, disconnect, menu) — heartbeat is 10s. */
-const PAYLOAD_FRESH_MS = 12_000;
+/** Clock callouts bail when GSI went quiet (game crash, disconnect, menu).
+ *  The cfg heartbeat is 10s and real 11s gaps were captured — 12s left no margin. */
+const PAYLOAD_FRESH_MS = 15_000;
 
 /**
  * Turns tracker events into spoken lines. Twitch events (kills, bomb hype, clock
@@ -130,7 +131,9 @@ export class CoachEngine {
               ? lines.roundWonLine(event.ourScore, event.theirScore)
               : lines.roundLostLine(event.ourScore, event.theirScore),
           "roundEnd",
-          8_000,
+          // 12s, not the usual 8: the score line queues behind ace/MVP hype
+          // from the same frame and is still worth hearing that late.
+          12_000,
           "fast",
         );
         break;
@@ -151,7 +154,14 @@ export class CoachEngine {
         break;
 
       case "kill":
-        this.say(() => lines.killLine(event.roundKills, event.headshot, ctx.playerName), { category: "kill", priority: 2, maxAgeMs: 5_000 });
+        // Triple and up bypass the 6s cooldown: fast multikills are exactly the
+        // sub-6s case, and the first-kill line must never mute the ACE line (a
+        // live session lost its entire ace escalation to this cooldown).
+        this.say(
+          () => lines.killLine(event.roundKills, event.headshot, ctx.playerName),
+          { category: "kill", priority: 2, maxAgeMs: 5_000 },
+          event.roundKills >= 3,
+        );
         break;
 
       case "specialKill":
@@ -189,6 +199,9 @@ export class CoachEngine {
         break;
 
       case "death":
+        // Dying to the bomb blast or exit fire after the round is decided:
+        // every death variant coaches an ongoing round, which has just ended.
+        if (ctx.roundPhase === "over") break;
         this.say(() => lines.deathLine(), { category: "death", priority: 0, maxAgeMs: 6_000 });
         break;
 

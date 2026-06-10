@@ -138,7 +138,8 @@ expect(
 );
 expect(spoken.some((s) => s.category === "specialKill"), "knife-kill hype line spoken");
 
-feed("r1 over", payload({ roundPhase: "over", round: 1, winTeam: "CT", ctScore: 1, roundWins: { "1": "ct_win_elimination" } }));
+// round_kills persists through the 'over' phase in real GSI (it resets at freezetime).
+feed("r1 over", payload({ roundPhase: "over", round: 1, winTeam: "CT", ctScore: 1, state: { round_kills: 1 }, kills: 1, roundWins: { "1": "ct_win_elimination" } }));
 expect(has("roundEnd"), "roundEnd detected");
 // Exit frag in the ~7s after-round window: must merge into the closed R1 record,
 // not open a phantom duplicate round.
@@ -262,6 +263,38 @@ expect(
   "kill after gunfire emitted as a regular kill",
 );
 feed("r6 over", payload({ roundPhase: "over", round: 6, winTeam: "T", ctScore: 2, tScore: 4, kills: 4, roundWins: { "1": "ct_win_elimination", "2": "t_win_bomb", "3": "t_win_elimination", "4": "t_win_bomb", "5": "ct_win_elimination", "6": "t_win_elimination" } }));
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: knife kill while a molly still burns — the $1500 reward proves the knife ===");
+// Reproduces the live session of 2026-06-10 (logs/gsi-...22-01-22.ndjson line 62):
+// incendiary thrown, knife pulled, kill lands +$1500 — was misreported as a molotov kill.
+const knifeKillsBeforeMolly = seen.filter((e) => e.type === "specialKill" && e.kind === "knife").length;
+const mollyInHand = {
+  w0: { name: "weapon_knife", type: "Knife", state: "holstered" },
+  w1: { name: "weapon_molotov", type: "Grenade", state: "active", ammo_reserve: 1 },
+} as const;
+const knifeOut = { w0: { name: "weapon_knife", type: "Knife", state: "active" } } as const;
+feed("r7 freeze", payload({ roundPhase: "freezetime", round: 6, ctScore: 2, tScore: 4, kills: 4 }));
+feed("r7 live, molly in hand", payload({ roundPhase: "live", round: 6, ctScore: 2, tScore: 4, weapons: mollyInHand, kills: 4, state: { money: 1000 } }));
+feed("molly thrown, knife out", payload({ roundPhase: "live", round: 6, ctScore: 2, tScore: 4, weapons: knifeOut, kills: 4, state: { money: 1000 } }));
+feed("knife kill (+$1500), molly burning", payload({ roundPhase: "live", round: 6, ctScore: 2, tScore: 4, weapons: knifeOut, state: { round_kills: 1, money: 2500 }, kills: 5 }));
+expect(
+  seen.filter((e) => e.type === "specialKill" && e.kind === "knife").length === knifeKillsBeforeMolly + 1,
+  "knife kill during an open molly window attributed to the knife via the $1500 reward",
+);
+feed("molly kill (+$300), knife still out", payload({ roundPhase: "live", round: 6, ctScore: 2, tScore: 4, weapons: knifeOut, state: { round_kills: 2, money: 2800 }, kills: 6 }));
+expect(
+  seen.filter((e) => e.type === "specialKill" && e.kind === "grenade" && e.nade === "fire").length === 2,
+  "kill paying only $300 with the knife out still credited to the burning molly",
+);
+// Third kill seconds after the first two: the triple line must bypass the 6s
+// kill cooldown (a live session lost its whole ace escalation to it).
+feed("triple, seconds later", payload({ roundPhase: "live", round: 6, ctScore: 2, tScore: 4, weapons: knifeOut, state: { round_kills: 3, money: 3100 }, kills: 7 }));
+expect(
+  spoken.some((s) => s.category === "kill" && /riple|hree/.test(s.text)),
+  "triple-kill line spoken despite the kill-category cooldown",
+);
+feed("r7 over", payload({ roundPhase: "over", round: 7, winTeam: "CT", ctScore: 3, tScore: 4, kills: 7, roundWins: { "1": "ct_win_elimination", "2": "t_win_bomb", "3": "t_win_elimination", "4": "t_win_bomb", "5": "ct_win_elimination", "6": "t_win_elimination", "7": "ct_win_elimination" } }));
 
 // ---------------------------------------------------------------------------
 console.log("\n=== scenario: cold start mid-post-plant must not announce a fresh plant ===");

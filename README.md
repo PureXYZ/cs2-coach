@@ -90,7 +90,7 @@ npm start
 
 In Discord: join a voice channel with your friends, type **`/coach join`**, then queue your match. Check **`/coach status`** to confirm game state is flowing (start a match or warmup — the menu alone sends little). Test the voice with **`/coach say glhf`**.
 
-While running, every raw GSI payload (plus the events derived from it) is appended to `logs/gsi-<timestamp>.ndjson` — one JSON object per line, ~10-30 MB per match. That's the ground truth for debugging missed or wrong detections. Set `GSI_LOG_PAYLOADS=false` to turn it off; old files can be deleted freely.
+While running, every raw GSI payload (plus the events derived from it) is appended to `logs/gsi-<timestamp>.ndjson` — one JSON object per line, ~1-5 MB per match. That's the ground truth for debugging missed or wrong detections: `npm run replay -- logs/gsi-<timestamp>.ndjson` re-derives events from a capture with the current code and diffs them against what the live session said. Console output is mirrored to `logs/coach-<timestamp>.log` (spoken lines, drops, LLM/TTS latency). Set `GSI_LOG_PAYLOADS=false` to turn the payload capture off; old files can be deleted freely.
 
 ## Commands
 
