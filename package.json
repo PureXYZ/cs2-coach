@@ -1,0 +1,29 @@
+{
+  "name": "cs2-coach",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI voice coach for CS2 — reads Game State Integration, speaks coaching lines into your Discord voice channel",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "cfg": "tsx scripts/generate-gsi-cfg.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.104.1",
+    "@discordjs/voice": "^0.19.2",
+    "discord.js": "^14.26.4",
+    "dotenv": "^17.4.2",
+    "msedge-tts": "^2.0.5"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.2",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3"
+  }
+}

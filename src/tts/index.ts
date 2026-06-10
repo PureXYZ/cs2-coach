@@ -1,0 +1,60 @@
+import { config, type TtsProviderName } from "../config.js";
+import { log } from "../log.js";
+import { DeepgramTts } from "./deepgram.js";
+import { EdgeTts } from "./edge.js";
+import { ElevenLabsTts } from "./elevenlabs.js";
+import type { TtsProvider, TtsResult } from "./types.js";
+
+export type { TtsProvider, TtsResult } from "./types.js";
+
+function buildProvider(name: TtsProviderName): TtsProvider | null {
+  switch (name) {
+    case "deepgram":
+      return new DeepgramTts(config.tts.deepgram.apiKey, config.tts.deepgram.model);
+    case "elevenlabs":
+      return new ElevenLabsTts(
+        config.tts.elevenlabs.apiKey,
+        config.tts.elevenlabs.voiceId,
+        config.tts.elevenlabs.modelId,
+      );
+    case "edge":
+      return new EdgeTts(config.tts.edge.voice);
+    default:
+      log.warn("tts", `Unknown TTS provider "${name}" in TTS_PROVIDER — skipping`);
+      return null;
+  }
+}
+
+/** Tries each configured provider in order until one produces audio. */
+export class TtsChain {
+  private providers: TtsProvider[];
+
+  constructor() {
+    this.providers = config.tts.order
+      .map(buildProvider)
+      .filter((p): p is TtsProvider => p !== null && p.available());
+
+    if (this.providers.length === 0) {
+      log.warn("tts", "No TTS providers configured — falling back to free edge-tts");
+      this.providers = [new EdgeTts(config.tts.edge.voice)];
+    }
+    log.info("tts", `Providers: ${this.providers.map((p) => p.name).join(" → ")}`);
+  }
+
+  get activeNames(): string[] {
+    return this.providers.map((p) => p.name);
+  }
+
+  async synth(text: string): Promise<TtsResult> {
+    let lastErr: unknown;
+    for (const provider of this.providers) {
+      try {
+        return await provider.synth(text);
+      } catch (err) {
+        lastErr = err;
+        log.warn("tts", `${provider.name} failed (${err instanceof Error ? err.message : err}) — trying next`);
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error("All TTS providers failed");
+  }
+}
