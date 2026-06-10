@@ -11,7 +11,7 @@ An AI voice coach for Counter-Strike 2. It reads the game's official **Game Stat
                                   └─────────────────────────────────────────────┘
 ```
 
-**Yes, it runs on your laptop.** CS2's GSI just POSTs JSON to whatever URL you put in a config file — including another machine on your LAN. The gaming PC needs nothing but a single `.cfg` file. (The app also runs fine on the gaming PC itself if you prefer.)
+**It runs anywhere** — CS2's GSI just POSTs JSON to whatever URL you put in a config file: `127.0.0.1` (same PC, current test setup), a laptop on your LAN, or a cloud host (the zero-footprint end state — the gaming PC then runs nothing at all). See [docs/HOSTING.md](docs/HOSTING.md) for the local → hosted migration; the local performance impact is negligible either way (~100 MB RAM, ~0–2% of one core, no GPU, no game hooks).
 
 ## What the coach can and can't know (while you play)
 
@@ -61,36 +61,23 @@ cp .env.example .env
 
 Put an Anthropic API key in `ANTHROPIC_API_KEY` (https://platform.claude.com). Without it the coach still works with instant rule-based lines. Default model is `claude-opus-4-8` (smartest); set `COACH_LLM_MODEL=claude-haiku-4-5` for the fastest/cheapest option (~$0.60/month at 20 matches).
 
-### 5. Generate + install the GSI config (the only thing the gaming PC needs)
-
-On the **laptop** (so it auto-detects the laptop's LAN IP):
+### 5. Generate + install the GSI config (the only thing CS2 needs)
 
 ```bash
-npm run cfg
+npm run cfg -- --host 127.0.0.1    # coach on the same PC as CS2 (test setup)
+npm run cfg                        # coach on this machine, CS2 elsewhere on the LAN
+npm run cfg -- --host <ip-or-domain>  # coach on a specific host (e.g. cloud)
 ```
 
-This writes `cs2/gamestate_integration_coach.cfg`. Copy that file to the **gaming PC** at:
+This writes `cs2/gamestate_integration_coach.cfg`. Copy that file to the gaming PC at:
 
 ```
 C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Global Offensive\game\csgo\cfg\
 ```
 
-Then **restart CS2** (the cfg is only read at launch).
+Then **restart CS2** (the cfg is only read at launch). If the coach runs on a different machine than CS2, give it a static IP / DHCP reservation — the cfg hardcodes the address. (Remote-host firewall notes are in [docs/HOSTING.md](docs/HOSTING.md).)
 
-> Tip: give the laptop a static IP / DHCP reservation in your router — the cfg hardcodes the IP.
-
-### 6. macOS firewall (only if it's enabled)
-
-If the Mac's firewall is on (System Settings → Network → Firewall), allow Node to receive connections:
-
-```bash
-sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add "$(which node)"
-sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp "$(which node)"
-```
-
-On macOS 15+, also approve the **Local Network** permission prompt if it appears. Windows needs nothing (outbound is allowed by default).
-
-### 7. Run it
+### 6. Run it
 
 ```bash
 npm start
