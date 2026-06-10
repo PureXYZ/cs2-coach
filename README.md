@@ -85,8 +85,11 @@ Then **restart CS2** (the cfg is only read at launch). If the coach runs on a di
 ### 6. Run it
 
 ```bash
-npm start
+npm start        # dev: runs the TypeScript directly via tsx
+npm run play     # match day: compiles, then runs the lighter build (node dist/)
 ```
+
+Either way the process drops itself to below-normal CPU priority at startup, so it can't steal frames from CS2 on a shared PC.
 
 In Discord: join a voice channel with your friends, type **`/coach join`**, then queue your match. Check **`/coach status`** to confirm game state is flowing (start a match or warmup — the menu alone sends little). Test the voice with **`/coach say glhf`**.
 

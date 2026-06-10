@@ -1,3 +1,4 @@
+import os from "node:os";
 import { config } from "./config.js";
 import { log } from "./log.js";
 import { startGsiServer } from "./gsi/server.js";
@@ -10,6 +11,14 @@ import { VoiceCoach } from "./discord/voice.js";
 import { startBot } from "./discord/bot.js";
 
 async function main(): Promise<void> {
+  // The coach often shares the PC with CS2 — make sure it never wins a CPU
+  // scheduling fight against the game. Harmless on a dedicated (cloud) host.
+  try {
+    os.setPriority(os.constants.priority.PRIORITY_BELOW_NORMAL);
+  } catch {
+    // Couldn't lower priority (exotic sandbox?) — normal priority is fine too.
+  }
+
   // Keep the session's console output on disk next to the GSI capture — spoken
   // lines, drops and LLM/TTS latencies are otherwise lost when the window closes.
   log.toFile();

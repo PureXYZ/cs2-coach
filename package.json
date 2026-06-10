@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
+    "play": "npm run build && node dist/src/index.js",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "sim": "tsx scripts/simulate.ts",
