@@ -14,6 +14,7 @@ export class DeepgramTts implements TtsProvider {
   constructor(
     private readonly apiKey: string | undefined,
     private readonly model: string,
+    private readonly bitrate: number,
   ) {}
 
   available(): boolean {
@@ -24,6 +25,8 @@ export class DeepgramTts implements TtsProvider {
     const url = new URL("https://api.deepgram.com/v1/speak");
     url.searchParams.set("model", this.model);
     url.searchParams.set("encoding", "opus"); // Ogg container, 48 kHz
+    // Without this, Deepgram encodes Opus at a barely-intelligible 12 kbps default.
+    url.searchParams.set("bit_rate", String(this.bitrate));
 
     const res = await fetch(url, {
       method: "POST",

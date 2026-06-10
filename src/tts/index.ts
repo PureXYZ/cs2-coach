@@ -10,7 +10,11 @@ export type { TtsProvider, TtsResult } from "./types.js";
 function buildProvider(name: TtsProviderName): TtsProvider | null {
   switch (name) {
     case "deepgram":
-      return new DeepgramTts(config.tts.deepgram.apiKey, config.tts.deepgram.model);
+      return new DeepgramTts(
+        config.tts.deepgram.apiKey,
+        config.tts.deepgram.model,
+        config.tts.deepgram.bitrate,
+      );
     case "elevenlabs":
       return new ElevenLabsTts(
         config.tts.elevenlabs.apiKey,

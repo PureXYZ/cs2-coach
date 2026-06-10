@@ -48,6 +48,9 @@ export const config = {
       apiKey: optional("DEEPGRAM_API_KEY") || undefined,
       // aura-2-apollo-en / aura-2-electra-en are the "energetic" personas.
       model: optional("DEEPGRAM_TTS_MODEL", "aura-2-apollo-en"),
+      // Deepgram's Opus default is a muffled 12 kbps; 64 kbps matches Discord's
+      // own voice bitrate. Billing is per character, so this costs nothing extra.
+      bitrate: intEnv("DEEPGRAM_TTS_BITRATE", 64000),
     },
     elevenlabs: {
       apiKey: optional("ELEVENLABS_API_KEY") || undefined,
