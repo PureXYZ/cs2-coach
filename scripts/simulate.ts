@@ -219,6 +219,51 @@ expect(ctx.pistolRounds?.first === "won", "pistol round result remembered");
 expect(ctx.streak !== undefined && ctx.streak.includes("lost"), `loss streak derived ("${ctx.streak}")`);
 
 // ---------------------------------------------------------------------------
+console.log("\n=== scenario: HE thrown, rifle back in hand, no shots — still the nade's kill ===");
+const rifleAndHe = {
+  w0: { name: "weapon_ak47", type: "Rifle", state: "holstered", ammo_clip: 30, ammo_reserve: 90 },
+  w1: { name: "weapon_hegrenade", type: "Grenade", state: "active", ammo_reserve: 1 },
+} as const;
+const rifleActive = { w0: { name: "weapon_ak47", type: "Rifle", state: "active", ammo_clip: 30, ammo_reserve: 90 } } as const;
+feed("r5 freeze", payload({ roundPhase: "freezetime", round: 4, ctScore: 1, tScore: 3, kills: 1 }));
+feed("r5 live, HE in hand", payload({ roundPhase: "live", round: 4, ctScore: 1, tScore: 3, weapons: rifleAndHe, kills: 1 }));
+feed("HE thrown, auto-swap to rifle", payload({ roundPhase: "live", round: 4, ctScore: 1, tScore: 3, weapons: rifleActive, kills: 1 }));
+feed("HE kill lands, rifle out, clip untouched", payload({ roundPhase: "live", round: 4, ctScore: 1, tScore: 3, weapons: rifleActive, state: { round_kills: 1 }, kills: 2 }));
+expect(
+  seen.filter((e) => e.type === "specialKill" && e.kind === "grenade" && e.nade === "he").length === 2,
+  "HE kill with the rifle back in hand (unfired) attributed to the grenade",
+);
+feed("r5 over", payload({ roundPhase: "over", round: 5, winTeam: "CT", ctScore: 2, tScore: 3, kills: 2, roundWins: { "1": "ct_win_elimination", "2": "t_win_bomb", "3": "t_win_elimination", "4": "t_win_bomb", "5": "ct_win_elimination" } }));
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: molly burning — kill before firing is the molly's, kill after firing is the rifle's ===");
+const rifleAndMolly = {
+  w0: { name: "weapon_ak47", type: "Rifle", state: "holstered", ammo_clip: 30, ammo_reserve: 90 },
+  w1: { name: "weapon_molotov", type: "Grenade", state: "active", ammo_reserve: 1 },
+} as const;
+const rifleFired = { w0: { name: "weapon_ak47", type: "Rifle", state: "active", ammo_clip: 26, ammo_reserve: 90 } } as const;
+const genericKillsBefore = seen.filter((e) => e.type === "kill").length;
+feed("r6 freeze", payload({ roundPhase: "freezetime", round: 5, ctScore: 2, tScore: 3, kills: 2 }));
+feed("r6 live, molly in hand", payload({ roundPhase: "live", round: 5, ctScore: 2, tScore: 3, weapons: rifleAndMolly, kills: 2 }));
+feed("molly thrown, rifle out", payload({ roundPhase: "live", round: 5, ctScore: 2, tScore: 3, weapons: rifleActive, kills: 2 }));
+feed("molly kill, no shots fired", payload({ roundPhase: "live", round: 5, ctScore: 2, tScore: 3, weapons: rifleActive, state: { round_kills: 1 }, kills: 3 }));
+expect(
+  seen.filter((e) => e.type === "specialKill" && e.kind === "grenade" && e.nade === "fire").length === 1,
+  "molly kill with the rifle in hand (unfired) attributed to the fire",
+);
+feed("rifle sprays", payload({ roundPhase: "live", round: 5, ctScore: 2, tScore: 3, weapons: rifleFired, state: { round_kills: 1 }, kills: 3 }));
+feed("kill after firing", payload({ roundPhase: "live", round: 5, ctScore: 2, tScore: 3, weapons: rifleFired, state: { round_kills: 2 }, kills: 4 }));
+expect(
+  seen.filter((e) => e.type === "specialKill" && e.kind === "grenade").length === 3,
+  "kill after gunfire NOT credited to the still-burning molly",
+);
+expect(
+  seen.filter((e) => e.type === "kill").length === genericKillsBefore + 1,
+  "kill after gunfire emitted as a regular kill",
+);
+feed("r6 over", payload({ roundPhase: "over", round: 6, winTeam: "T", ctScore: 2, tScore: 4, kills: 4, roundWins: { "1": "ct_win_elimination", "2": "t_win_bomb", "3": "t_win_elimination", "4": "t_win_bomb", "5": "ct_win_elimination", "6": "t_win_elimination" } }));
+
+// ---------------------------------------------------------------------------
 console.log("\n=== scenario: cold start mid-post-plant must not announce a fresh plant ===");
 const coldTracker = new GsiTracker();
 const coldEvents = coldTracker.update(payload({ roundPhase: "live", round: 7, bomb: "planted", ctScore: 4, tScore: 3 }));

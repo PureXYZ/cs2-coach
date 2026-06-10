@@ -20,7 +20,7 @@ export type CoachEvent =
   | { type: "matchEnd"; won: boolean | undefined; ourScore: number; theirScore: number }
   | { type: "kill"; roundKills: number; headshot: boolean }
   // Own kill with a story: knife/zeus/grenade attribution from the active weapon
-  // + recent-throw heuristics, or a clutch frag on low HP.
+  // + recent-throw/gunfire heuristics, or a clutch frag on low HP.
   | { type: "specialKill"; kind: "knife" | "zeus" | "grenade" | "lowhp"; nade?: "he" | "fire"; hp?: number }
   // Own scoreboard kill counter went DOWN while alive — only a teamkill does that.
   | { type: "teamkill" }
@@ -72,8 +72,6 @@ export interface MatchContext {
   streak?: string;
   /** Match highlights for banter callbacks, e.g. "R7: knife kill". */
   notables?: string[];
-  /** Friends in the Discord voice channel (display names) — supplied by the bot layer. */
-  friends?: string[];
   /** True while the player-block describes the user (false = dead, spectating a teammate). */
   playerIsSelf: boolean;
 }
@@ -114,7 +112,11 @@ export class GsiTracker {
   private prevSelf: PrevSelf | null = null;
   /** Own grenade inventory (units by weapon name) — diffed to detect throws. */
   private prevNades: Record<string, number> | null = null;
-  private lastNadeThrow: { kind: "he" | "fire"; at: number } | null = null;
+  /** Last throw time per nade kind — a molly can still be burning when a later HE expires. */
+  private lastNadeThrows: Partial<Record<"he" | "fire", number>> = {};
+  /** Own gun clips (rounds by weapon name) — a decrease means the player fired. */
+  private prevGunClips: Record<string, number> | null = null;
+  private lastGunfireAt: number | null = null;
   /** Spectated-teammate baseline while the user is dead. */
   private prevSpec: { steamid: string; roundKills: number } | null = null;
   private inMatch = false;
@@ -261,6 +263,7 @@ export class GsiTracker {
     if (mapPhase !== "live") {
       this.prevSelf = null;
       this.prevNades = null;
+      this.prevGunClips = null;
       this.prevSpec = null;
     } else if (isSelf && payload.player?.state) {
       const s = payload.player.state;
@@ -283,11 +286,24 @@ export class GsiTracker {
         if (this.prevNades) {
           for (const [name, units] of Object.entries(this.prevNades)) {
             if ((nades[name] ?? 0) < units) {
-              this.lastNadeThrow = { kind: NADE_KINDS[name], at: now };
+              this.lastNadeThrows[NADE_KINDS[name]] = now;
             }
           }
         }
         this.prevNades = nades;
+
+        // Gunfire tracking: a clip going down means the player fired. CS2 swaps
+        // back to the best weapon after a throw, so "holding a gun" when the nade
+        // kill lands proves nothing — "hasn't fired since the throw" is the signal
+        // that lets classifyKill credit the nade with a rifle back in hand.
+        const clips = this.gunClips(payload.player);
+        if (this.prevGunClips) {
+          for (const [name, clip] of Object.entries(clips)) {
+            const prevClip = this.prevGunClips[name];
+            if (prevClip !== undefined && clip < prevClip) this.lastGunfireAt = now;
+          }
+        }
+        this.prevGunClips = clips;
       }
 
       if (this.prevSelf) {
@@ -343,6 +359,7 @@ export class GsiTracker {
       // teammate kills/health never register as the user's.
       if (this.prevSelf && roundPhase === "freezetime") this.prevSelf = null;
       this.prevNades = null;
+      this.prevGunClips = null;
 
       // ...but the spectated teammate's kills are real information: cheer them on.
       const p = payload.player;
@@ -371,7 +388,9 @@ export class GsiTracker {
     if (roundPhase === "freezetime" && prevRoundPhase !== "freezetime") {
       this.prevSelf = null; // round_kills resets each round
       this.prevNades = null;
-      this.lastNadeThrow = null;
+      this.prevGunClips = null;
+      this.lastNadeThrows = {};
+      this.lastGunfireAt = null;
       this.prevSpec = null;
     }
 
@@ -473,9 +492,12 @@ export class GsiTracker {
 
   /**
    * Attribute a fresh kill from the active weapon + recent throws. Heuristics,
-   * honest ones: a kill while the knife is out moments after a grenade left the
-   * inventory is the grenade's (CS2 auto-swaps after the last throw), not a
-   * knife kill; the Zeus in hand is unambiguous; otherwise knife-out means knifed.
+   * honest ones: after a throw CS2 auto-swaps back to the best weapon, so a nade
+   * kill usually lands with a rifle already in hand — the giveaway is that no
+   * shot was fired between the throw and the kill. The Zeus in hand is
+   * unambiguous; otherwise knife-out means knifed. Known limitation: spraying at
+   * one enemy while the nade kills another forfeits the nade attribution — when
+   * gun and grenade are both plausible, crediting the gun is the safe call.
    */
   private classifyKill(
     player: GsiPlayer,
@@ -483,16 +505,24 @@ export class GsiTracker {
     now: number,
   ): { kind: "knife" | "zeus" | "grenade" | "lowhp"; nade?: "he" | "fire"; hp?: number } | null {
     const active = this.activeWeapon(player);
-    const throwKind = this.lastNadeThrow?.kind;
-    const nadeRecent =
-      this.lastNadeThrow !== null &&
-      throwKind !== undefined &&
-      now - this.lastNadeThrow.at <= NADE_KILL_WINDOW_MS[throwKind];
 
     if (active?.name === "weapon_taser") return { kind: "zeus" };
 
+    // Most recent throw whose kill window is still open, per kind — a molly can
+    // still be burning after a follow-up HE's window has already expired.
+    let throwKind: "he" | "fire" | undefined;
+    let throwAt = 0;
+    for (const kind of ["he", "fire"] as const) {
+      const at = this.lastNadeThrows[kind];
+      if (at !== undefined && now - at <= NADE_KILL_WINDOW_MS[kind] && at > throwAt) {
+        throwKind = kind;
+        throwAt = at;
+      }
+    }
+
     const holdingNoGun = !active || active.type === "Knife" || active.type === "Grenade" || active.type === "C4";
-    if (nadeRecent && holdingNoGun) return { kind: "grenade", nade: throwKind };
+    const firedSinceThrow = this.lastGunfireAt !== null && this.lastGunfireAt >= throwAt;
+    if (throwKind && (holdingNoGun || !firedSinceThrow)) return { kind: "grenade", nade: throwKind };
     if (active?.type === "Knife") return { kind: "knife" };
     if (health > 0 && health <= 20) return { kind: "lowhp", hp: health };
     return null;
@@ -501,6 +531,17 @@ export class GsiTracker {
   private activeWeapon(player: GsiPlayer | undefined): GsiWeapon | undefined {
     if (!player?.weapons) return undefined;
     return Object.values(player.weapons).find((w) => w.state === "active" || w.state === "reloading");
+  }
+
+  /** Clip rounds for everything that shoots — knives, grenades and the C4 never "fire" this way. */
+  private gunClips(player: GsiPlayer | undefined): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const w of Object.values(player?.weapons ?? {})) {
+      if (w.type === "Knife" || w.type === "Grenade" || w.type === "C4" || NADE_KINDS[w.name]) continue;
+      if (w.ammo_clip === undefined) continue;
+      out[w.name] = w.ammo_clip;
+    }
+    return out;
   }
 
   /** Carried units of each kill-capable grenade (CS2 GSI counts stacks via ammo fields). */

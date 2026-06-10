@@ -64,7 +64,7 @@ Put an Anthropic API key in `ANTHROPIC_API_KEY` (https://platform.claude.com). W
 - `COACH_LLM_MODEL` (default `claude-opus-4-8`) — slow moments: freezetime buy calls, halftime talks, match wrap-ups.
 - `COACH_LLM_FAST_MODEL` (default `claude-haiku-4-5`) — mid-round moments where a line landing 3 s earlier beats a smarter one: retake/save calls, round-end reactions, teamkill roasts. Set it equal to `COACH_LLM_MODEL` for Opus everywhere.
 
-Optional personality: `PLAYER_NICKNAME` (spoken name for you) and `COACH_FRIENDS` (comma-separated names for banter — the live voice-channel member list is read automatically).
+Optional personality: `PLAYER_NICKNAME` (spoken name for you — defaults to your Steam name, which TTS may mangle).
 
 ### 5. Generate + install the GSI config (the only thing CS2 needs)
 
@@ -89,6 +89,8 @@ npm start
 ```
 
 In Discord: join a voice channel with your friends, type **`/coach join`**, then queue your match. Check **`/coach status`** to confirm game state is flowing (start a match or warmup — the menu alone sends little). Test the voice with **`/coach say glhf`**.
+
+While running, every raw GSI payload (plus the events derived from it) is appended to `logs/gsi-<timestamp>.ndjson` — one JSON object per line, ~10-30 MB per match. That's the ground truth for debugging missed or wrong detections. Set `GSI_LOG_PAYLOADS=false` to turn it off; old files can be deleted freely.
 
 ## Commands
 

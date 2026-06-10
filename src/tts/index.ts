@@ -20,6 +20,11 @@ function buildProvider(name: TtsProviderName): TtsProvider | null {
         config.tts.elevenlabs.apiKey,
         config.tts.elevenlabs.voiceId,
         config.tts.elevenlabs.modelId,
+        {
+          stability: config.tts.elevenlabs.stability,
+          similarityBoost: config.tts.elevenlabs.similarityBoost,
+          style: config.tts.elevenlabs.style,
+        },
       );
     case "edge":
       return new EdgeTts(config.tts.edge.voice);

@@ -29,7 +29,6 @@ const SYNTH_DEADLINE_MS = 12_000;
  */
 export class VoiceCoach {
   private connection: VoiceConnection | null = null;
-  private channel: VoiceBasedChannel | null = null;
   private player: AudioPlayer;
   private queue: QueuedLine[] = [];
   private synthesizing = false;
@@ -53,33 +52,6 @@ export class VoiceCoach {
 
   get queueLength(): number {
     return this.queue.length;
-  }
-
-  /**
-   * Display names of the humans currently in the coach's voice channel — banter
-   * fuel for the LLM. Live via the GuildVoiceStates intent's member cache.
-   */
-  memberNames(): string[] {
-    const channel = this.currentChannel();
-    if (!channel) return [];
-    return [...channel.members.values()]
-      .filter((m) => !m.user.bot)
-      .map((m) => m.displayName);
-  }
-
-  /**
-   * An admin dragging the bot to another channel reconnects in place (the
-   * Disconnected handler recovers without tearing down), so the join-time
-   * channel reference can go stale — re-resolve it from the live connection.
-   */
-  private currentChannel(): VoiceBasedChannel | null {
-    if (!this.channel) return null;
-    const liveId = this.connection?.joinConfig.channelId;
-    if (liveId && liveId !== this.channel.id) {
-      const moved = this.channel.guild.channels.cache.get(liveId);
-      if (moved?.isVoiceBased()) this.channel = moved;
-    }
-    return this.channel;
   }
 
   async join(channel: VoiceBasedChannel): Promise<void> {
@@ -111,7 +83,6 @@ export class VoiceCoach {
         if (this.connection === connection) {
           log.warn("voice", "Voice connection lost — destroyed");
           this.connection = null;
-          this.channel = null;
         }
       }
     });
@@ -125,7 +96,6 @@ export class VoiceCoach {
 
     connection.subscribe(this.player);
     this.connection = connection;
-    this.channel = channel;
     log.info("voice", `Joined voice channel "${channel.name}" (session ${session})`);
   }
 
@@ -135,7 +105,6 @@ export class VoiceCoach {
       this.safeDestroy(this.connection);
       this.connection = null;
     }
-    this.channel = null;
     this.queue = [];
     this.player.stop(true);
   }

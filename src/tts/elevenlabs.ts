@@ -15,6 +15,11 @@ export class ElevenLabsTts implements TtsProvider {
     private readonly apiKey: string | undefined,
     private readonly voiceId: string,
     private readonly modelId: string,
+    private readonly voiceSettings: {
+      stability: number;
+      similarityBoost: number;
+      style: number;
+    },
   ) {}
 
   available(): boolean {
@@ -31,7 +36,15 @@ export class ElevenLabsTts implements TtsProvider {
         "xi-api-key": this.apiKey!,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ text, model_id: this.modelId }),
+      body: JSON.stringify({
+        text,
+        model_id: this.modelId,
+        voice_settings: {
+          stability: this.voiceSettings.stability,
+          similarity_boost: this.voiceSettings.similarityBoost,
+          style: this.voiceSettings.style,
+        },
+      }),
       // A stalled request must fail fast so the chain falls through to the next provider.
       signal: AbortSignal.timeout(10_000),
     });

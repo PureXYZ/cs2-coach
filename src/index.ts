@@ -1,6 +1,7 @@
 import { config } from "./config.js";
 import { log } from "./log.js";
 import { startGsiServer } from "./gsi/server.js";
+import { GsiPayloadLog } from "./gsi/payload-log.js";
 import { GsiTracker } from "./gsi/tracker.js";
 import { CoachEngine } from "./coach/engine.js";
 import { LlmCoach } from "./coach/llm.js";
@@ -33,32 +34,24 @@ async function main(): Promise<void> {
 
   const tracker = new GsiTracker();
 
-  // Tracker context + the social layer: who's in the voice channel (live), the
-  // configured friend nicknames, and the preferred spoken name for the player.
+  // Tracker context + the preferred spoken name for the player.
   const fullContext = () => {
     const ctx = tracker.context();
-    const playerName = config.coach.playerNickname ?? ctx.playerName;
-    // The user is in the channel too — drop exact name matches so the coach
-    // doesn't banter with them as a third person. (Different Discord/Steam
-    // spellings can slip through; the system prompt covers that case.)
-    const self = new Set([playerName, ctx.playerName, config.coach.playerNickname].filter(Boolean).map((n) => n!.toLowerCase()));
-    const friends = [...new Set([...voice.memberNames(), ...config.coach.friends])].filter(
-      (n) => !self.has(n.toLowerCase()),
-    );
-    return {
-      ...ctx,
-      playerName,
-      friends: friends.length > 0 ? friends : undefined,
-    };
+    return { ...ctx, playerName: config.coach.playerNickname ?? ctx.playerName };
   };
 
   const engine = new CoachEngine((req) => voice.say(req), llm, fullContext, () => tracker.lastUpdateAgeMs());
+
+  // Raw GSI capture for offline analysis — what does the game actually send,
+  // and which events did the tracker derive from each frame?
+  const payloadLog = config.gsi.logPayloads ? new GsiPayloadLog() : null;
 
   const gsi = startGsiServer({
     port: config.gsi.port,
     token: config.gsi.token,
     onPayload: (payload) => {
       const events = tracker.update(payload);
+      payloadLog?.write(payload, events);
       if (events.length > 0) {
         log.info("gsi", `Events: ${events.map((e) => e.type).join(", ")}`);
         engine.handle(events, fullContext());

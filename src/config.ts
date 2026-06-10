@@ -22,6 +22,14 @@ function intEnv(name: string, fallback: number): number {
   return n;
 }
 
+function floatEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const n = Number.parseFloat(raw);
+  if (Number.isNaN(n)) throw new Error(`${name} must be a number, got "${raw}"`);
+  return n;
+}
+
 export type TtsProviderName = "deepgram" | "elevenlabs" | "edge";
 
 export const config = {
@@ -29,6 +37,8 @@ export const config = {
     port: intEnv("GSI_PORT", 3000),
     // Echoed by CS2 in every payload (from the cfg's auth block). Empty = accept all.
     token: optional("GSI_TOKEN"),
+    // Append every payload (+ derived events) to logs/gsi-*.ndjson for offline analysis.
+    logPayloads: optional("GSI_LOG_PAYLOADS", "true") !== "false",
   },
 
   discord: {
@@ -56,6 +66,10 @@ export const config = {
       apiKey: optional("ELEVENLABS_API_KEY") || undefined,
       voiceId: optional("ELEVENLABS_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb"),
       modelId: optional("ELEVENLABS_MODEL_ID", "eleven_flash_v2_5"),
+      // 0–1 scale (the dashboard shows these as percentages).
+      stability: floatEnv("ELEVENLABS_STABILITY", 0.3),
+      similarityBoost: floatEnv("ELEVENLABS_SIMILARITY", 1.0),
+      style: floatEnv("ELEVENLABS_STYLE", 0.5),
     },
     edge: {
       voice: optional("EDGE_TTS_VOICE", "en-US-GuyNeural"),
@@ -84,12 +98,6 @@ export const config = {
   coach: {
     // Spoken name the coach uses for the player ("Nice one, Andy!"). Defaults to Steam name.
     playerNickname: optional("PLAYER_NICKNAME") || undefined,
-    // Extra friend names for banter, comma-separated. The bot also reads the live
-    // Discord voice channel member list; this covers nicknames it should prefer.
-    friends: optional("COACH_FRIENDS")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean),
   },
 
   // CS2 Premier/Competitive timing constants (MR12 era). GSI sends no clock to players,

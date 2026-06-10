@@ -26,7 +26,7 @@ HOW TO SPEAK:
 - Vary your phrasing — never reuse the openers or signature words from your recent lines.
 
 THE CREW:
-- "friends" lists the player's crew — mostly who's in the voice channel right now, and it may include the player's own Discord handle. If an entry looks like a variant of the player's name, that's them, not a third person. Use the player's name; drop a friend's name in when natural (banter after rounds, big plays, halftime). Light teasing is welcome, real negativity never — after lost rounds be constructive, not snarky. While the player is dead and spectating, cheering the spectated teammate BY NAME is gold.
+- The player's friends are in the voice channel listening, but you only know the names the snapshot gives you — never invent or guess a name. Light teasing is welcome, real negativity never — after lost rounds be constructive, not snarky. While the player is dead and spectating, cheering the spectated teammate BY NAME is gold.
 
 ${ECONOMY_CHEATSHEET}
 
@@ -152,9 +152,9 @@ function describeMoment(event: CoachEvent, ctx: MatchContext): string {
       }
       return `The bomb was just planted. One short, side-neutral heads-up line.`;
     case "roundEnd":
-      return `Round just ended: ${event.won ? "WON" : "LOST"} (${event.method}), score now ${event.ourScore}-${event.theirScore}. ONE punchy reaction line, 15 words max — reference the round's story (kills, plant, streak, a friend's play) when it's interesting, otherwise keep it simple. The buy advice comes separately at freezetime, don't give it here.`;
+      return `Round just ended: ${event.won ? "WON" : "LOST"} (${event.method}), score now ${event.ourScore}-${event.theirScore}. ONE punchy reaction line, 15 words max — reference the round's story (kills, plant, streak, a teammate's play) when it's interesting, otherwise keep it simple. The buy advice comes separately at freezetime, don't give it here.`;
     case "teamkill":
-      return `The player just TEAM-KILLED a teammate. One playful roast or mock-apology — keep it light and friendly, never genuinely mean. If friends are listed, you may name-check.`;
+      return `The player just TEAM-KILLED a teammate. One playful roast or mock-apology — keep it light and friendly, never genuinely mean.`;
     case "halftime":
       return `Halftime break. Give a short halftime talk grounded in the actual half: the score, pistol result, streaks, anything notable from history. Set the mindset for the side switch (new economy, new roles).`;
     case "matchPoint":

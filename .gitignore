@@ -5,3 +5,4 @@ dist/
 .DS_Store
 .research-*.txt
 cs2/gamestate_integration_coach.cfg
+logs/
