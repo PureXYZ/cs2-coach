@@ -47,9 +47,17 @@ export async function startBot(deps: BotDeps): Promise<Client> {
       if (deps.guildId) {
         const guild = await ready.guilds.fetch(deps.guildId);
         await guild.commands.set(commands);
+        // Clear the global scope — a stale global registration would make every command show up twice.
+        await ready.application.commands.set([]);
         log.info("bot", `Slash commands registered in guild ${guild.name}`);
       } else {
         await ready.application.commands.set(commands);
+        // Clear per-guild registrations left over from runs with DISCORD_GUILD_ID set.
+        const guilds = await ready.guilds.fetch();
+        for (const ref of guilds.values()) {
+          const guild = await ref.fetch();
+          await guild.commands.set([]).catch(() => {});
+        }
         log.info("bot", "Slash commands registered globally (may take up to an hour to appear)");
       }
     } catch (err) {
