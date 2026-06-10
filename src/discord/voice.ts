@@ -153,7 +153,7 @@ export class VoiceCoach {
           stream.destroy(); // session ended/changed while synthesizing — discard, don't replay
           return;
         }
-        log.info("voice", `Speaking [${next.category}]: ${next.text}`);
+        log.info("voice", `Speaking [${next.category}] ${Date.now() - next.eventAt}ms after event: ${next.text}`);
         this.player.play(createAudioResource(stream, { inputType }));
       })
       .catch((err) => {

@@ -41,6 +41,7 @@ export class LlmCoach {
       .filter(Boolean)
       .join("\n");
 
+    const startedAt = Date.now();
     try {
       const response = await this.client.messages.create(
         {
@@ -51,6 +52,7 @@ export class LlmCoach {
         },
         { timeout: this.timeoutMs, maxRetries: 0 },
       );
+      log.info("llm", `Claude responded in ${Date.now() - startedAt}ms (${event.type})`);
 
       const text = response.content
         .filter((block): block is Anthropic.TextBlock => block.type === "text")
@@ -62,7 +64,7 @@ export class LlmCoach {
       this.recordSpoken(text);
       return text;
     } catch (err) {
-      log.warn("llm", `Claude call failed (${err instanceof Error ? err.message : err}) — using rule-based line`);
+      log.warn("llm", `Claude call failed after ${Date.now() - startedAt}ms (${err instanceof Error ? err.message : err}) — using rule-based line`);
       return null;
     }
   }

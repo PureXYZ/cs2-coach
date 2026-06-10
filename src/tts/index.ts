@@ -52,11 +52,15 @@ export class TtsChain {
   async synth(text: string): Promise<TtsResult> {
     let lastErr: unknown;
     for (const provider of this.providers) {
+      const startedAt = Date.now();
       try {
-        return await provider.synth(text);
+        const result = await provider.synth(text);
+        // Providers resolve once audio starts streaming, so this is time-to-first-audio.
+        log.info("tts", `${provider.name} started streaming in ${Date.now() - startedAt}ms`);
+        return result;
       } catch (err) {
         lastErr = err;
-        log.warn("tts", `${provider.name} failed (${err instanceof Error ? err.message : err}) — trying next`);
+        log.warn("tts", `${provider.name} failed after ${Date.now() - startedAt}ms (${err instanceof Error ? err.message : err}) — trying next`);
       }
     }
     throw lastErr instanceof Error ? lastErr : new Error("All TTS providers failed");
