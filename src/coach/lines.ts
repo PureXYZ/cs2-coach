@@ -293,6 +293,156 @@ export function killLine(roundKills: number, headshot: boolean, name?: string): 
   return null; // single kills mostly stay quiet — don't spam
 }
 
+export function knifeKillLine(name?: string): string {
+  const who = name ?? "our star";
+  return pick("knifeKill", [
+    `KNIFE KILL! ${who} just humiliated someone!`,
+    "THE KNIFE! Oh that's going in the highlight reel!",
+    `Stabbed! ${who}, you menace — fifteen hundred bonus too!`,
+    "A knife kill in competitive?! Disrespect level: maximum!",
+  ]);
+}
+
+export function zeusKillLine(): string {
+  return pick("zeusKill", [
+    "ZEUS! ZAPPED HIM! That's the funniest kill in Counter-Strike!",
+    "The taser connects! Absolutely shocking behavior!",
+    "Zeus kill! Two hundred dollars well spent!",
+  ]);
+}
+
+export function nadeKillLine(nade: "he" | "fire"): string {
+  if (nade === "fire") {
+    return pick("mollyKill", [
+      "Burned them alive! Molotov kill!",
+      "Cooked! That molly found a home!",
+      "The fire did the work — beautiful utility kill!",
+    ]);
+  }
+  return pick("heKill", [
+    "HE GRENADE KILL! Right on their head!",
+    "Boom — the nade finishes it! Great damage!",
+    "Grenade kill! That's just rude!",
+  ]);
+}
+
+export function lowHpKillLine(hp: number): string {
+  return pick("lowHpKill", [
+    `On ${hp} HP and still winning fights — nerves of steel!`,
+    `${hp} health! That's a one-tap away from disaster and you took the fight anyway!`,
+    `Clutching duels at ${hp} HP — ice cold!`,
+  ]);
+}
+
+export function teamkillLine(): string {
+  return pick("teamkill", [
+    "Whoa whoa — wrong team! Say sorry and buy them something nice.",
+    "That was a TEAMMATE! New plan: shoot the other guys.",
+    "Team kill! The enemies are the ones shooting back, for reference.",
+    "Friendly fire is not friendly! Apologize in chat, quick.",
+  ]);
+}
+
+/** Cheer for the teammate the dead player is spectating; quiet for routine kills. */
+export function teammateKillLine(name: string | undefined, kills: number, health?: number): string | null {
+  const who = name ?? "your teammate";
+  if (kills >= 5) {
+    return pick("specAce", [
+      `${who.toUpperCase()} WITH THE ACE! You're watching greatness!`,
+      `ACE for ${who}! Best seat in the house!`,
+    ]);
+  }
+  if (kills === 4) {
+    return pick("specQuad", [
+      `${who} has four! One more, you can do it!`,
+      `Four kills for ${who} — the ace is loading!`,
+    ]);
+  }
+  if (kills === 3) {
+    return pick("specTriple", [
+      `${who} is going off — that's three!`,
+      `Triple for ${who}! Cheer them on!`,
+      `${who} just cleaned up three — your exit was worth it!`,
+    ]);
+  }
+  if (health !== undefined && health > 0 && health <= 20 && kills >= 1) {
+    return pick("specClutch", [
+      `${who} is doing it on ${health} HP — hold your breath!`,
+      `${who} clutching on fumes! Don't backseat, just believe!`,
+    ]);
+  }
+  return null;
+}
+
+/** Locally-derived clock callout: ~35 seconds left, no plant yet. */
+export function lateRoundLine(side: string | undefined): string {
+  if (side === "T") {
+    return pick("lateRoundT", [
+      "Thirty-five seconds — if there's no plan, make one now. Get the bomb working!",
+      "Clock's running, about thirty-five left. Commit somewhere — late hits need to be NOW.",
+      "Half a minute! Pick a site and go together — don't die to the clock.",
+    ]);
+  }
+  if (side === "CT") {
+    return pick("lateRoundCT", [
+      "Thirty-five seconds and no plant — the clock's on your side. Hold angles, no hero peeks.",
+      "Time's your friend now. Stay patient, they have to come to you.",
+      "Late round, no bomb down — discipline wins this. Don't chase.",
+    ]);
+  }
+  return pick("lateRoundNeutral", ["About thirty seconds left this round — play the clock smart."]);
+}
+
+/** Locally-derived bomb-timer callout: roughly ten seconds left on the C4. */
+export function bombTenLine(side: string | undefined): string {
+  if (side === "CT") {
+    return pick("bombTenCT", [
+      "TEN SECONDS on the bomb — if you're not on the stick already, back off and live!",
+      "Ten left! Kit defuse only territory — otherwise save your gun!",
+      "Bomb's about to pop — clear out if the defuse isn't happening!",
+    ]);
+  }
+  if (side === "T") {
+    return pick("bombTenT", [
+      "Ten seconds — it's almost yours, hold the angles, don't peek!",
+      "Almost there! Let the bomb finish the job!",
+      "Ten on the clock — stay disciplined, this round is banked!",
+    ]);
+  }
+  return pick("bombTenNeutral", ["About ten seconds on the bomb — heads up!"]);
+}
+
+/**
+ * Rule-based CT retake-or-save call when Claude isn't available (or too slow):
+ * a coarse read of the player's own gear — the honest subset of what we know.
+ */
+export function retakeDecisionLine(ctx: MatchContext): string {
+  // Dead (spectating): gear fields describe the teammate or nothing — talk to
+  // the team instead of advising a corpse about its loadout.
+  if (!ctx.playerIsSelf || (ctx.health ?? 0) <= 0) return bombPlantedLine("CT");
+  const thinGear = (ctx.armor ?? 0) === 0 || (ctx.equipValue ?? 0) < 1500 || (ctx.health ?? 100) < 40;
+  if (ctx.defuseKit) {
+    return pick("retakeKit", [
+      "Bomb's down and you've got the kit — your retake. Group up, you're on the stick!",
+      "Plant's in — you carry the kit, so rally the team and hit it together. Kit makes this winnable.",
+      "It's planted. Kit's in your pocket — trade in with the team and get on that bomb.",
+    ]);
+  }
+  if (thinGear) {
+    return pick("retakeThin", [
+      "Bomb's down and you're thin — if the retake isn't clearly there, keep what you've got alive for next round.",
+      "Plant's in. Light gear on you — only go if the team commits together, otherwise live for next round.",
+      "It's planted — with that loadout, don't force a bad retake. Clean entry together or save.",
+    ]);
+  }
+  return pick("retakeGo", [
+    "Bomb's down! Regroup and hit the retake together — about forty seconds.",
+    "It's planted — don't trickle in! Group up, trade into the site.",
+    "Plant's in — gather up, use your util, retake as a unit.",
+    "Bomb's ticking. Go in together or don't go — make the retake count.",
+  ]);
+}
+
 export function deathLine(): string | null {
   // Speak rarely on death; nobody wants narration of every death.
   if (Math.random() > 0.3) return null;

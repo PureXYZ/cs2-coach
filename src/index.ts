@@ -18,14 +18,41 @@ async function main(): Promise<void> {
     ? new LlmCoach({
         apiKey: config.llm.apiKey!,
         model: config.llm.model,
+        fastModel: config.llm.fastModel,
         maxTokens: config.llm.maxTokens,
         timeoutMs: config.llm.timeoutMs,
+        fastTimeoutMs: config.llm.fastTimeoutMs,
       })
     : null;
-  log.info("main", llm ? `LLM coach enabled (${config.llm.model})` : "LLM coach disabled — rule-based lines only");
+  log.info(
+    "main",
+    llm
+      ? `LLM coach enabled (${config.llm.model}, mid-round: ${config.llm.fastModel})`
+      : "LLM coach disabled — rule-based lines only",
+  );
 
   const tracker = new GsiTracker();
-  const engine = new CoachEngine((req) => voice.say(req), llm);
+
+  // Tracker context + the social layer: who's in the voice channel (live), the
+  // configured friend nicknames, and the preferred spoken name for the player.
+  const fullContext = () => {
+    const ctx = tracker.context();
+    const playerName = config.coach.playerNickname ?? ctx.playerName;
+    // The user is in the channel too — drop exact name matches so the coach
+    // doesn't banter with them as a third person. (Different Discord/Steam
+    // spellings can slip through; the system prompt covers that case.)
+    const self = new Set([playerName, ctx.playerName, config.coach.playerNickname].filter(Boolean).map((n) => n!.toLowerCase()));
+    const friends = [...new Set([...voice.memberNames(), ...config.coach.friends])].filter(
+      (n) => !self.has(n.toLowerCase()),
+    );
+    return {
+      ...ctx,
+      playerName,
+      friends: friends.length > 0 ? friends : undefined,
+    };
+  };
+
+  const engine = new CoachEngine((req) => voice.say(req), llm, fullContext, () => tracker.lastUpdateAgeMs());
 
   const gsi = startGsiServer({
     port: config.gsi.port,
@@ -34,7 +61,7 @@ async function main(): Promise<void> {
       const events = tracker.update(payload);
       if (events.length > 0) {
         log.info("gsi", `Events: ${events.map((e) => e.type).join(", ")}`);
-        engine.handle(events, tracker.context());
+        engine.handle(events, fullContext());
       }
     },
   });
@@ -46,7 +73,7 @@ async function main(): Promise<void> {
     status: () => ({
       gsiAgeMs: gsi.lastPayloadAgeMs(),
       ttsProviders: tts.activeNames,
-      llmModel: llm ? config.llm.model : null,
+      llmModel: llm ? `${config.llm.model} (mid-round: ${config.llm.fastModel})` : null,
     }),
   });
 

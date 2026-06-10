@@ -1,8 +1,12 @@
-import type { GsiPayload, GsiPlayer, Team } from "./types.js";
+import type { GsiPayload, GsiPlayer, GsiWeapon, Team } from "./types.js";
+import { MatchMemory } from "./memory.js";
+import { config } from "../config.js";
 
 // Events the rule engine and LLM coach react to. GSI gives players no kill feed,
 // no positions and no clock — every event here is derivable from own-player state,
-// round phase transitions and team scores only.
+// round phase transitions and team scores only. The one exception: while the user
+// is dead, the player block describes the spectated TEAMMATE, which legitimately
+// lets us see (only) that teammate's kills and health.
 export type CoachEvent =
   | { type: "matchStart"; map: string; mode: string }
   | { type: "freezetime"; round: number }
@@ -15,6 +19,13 @@ export type CoachEvent =
   | { type: "matchPoint"; forUs: boolean }
   | { type: "matchEnd"; won: boolean | undefined; ourScore: number; theirScore: number }
   | { type: "kill"; roundKills: number; headshot: boolean }
+  // Own kill with a story: knife/zeus/grenade attribution from the active weapon
+  // + recent-throw heuristics, or a clutch frag on low HP.
+  | { type: "specialKill"; kind: "knife" | "zeus" | "grenade" | "lowhp"; nade?: "he" | "fire"; hp?: number }
+  // Own scoreboard kill counter went DOWN while alive — only a teamkill does that.
+  | { type: "teamkill" }
+  // The teammate the dead user is spectating got a kill (the only friend-play GSI shows us).
+  | { type: "teammateKill"; name?: string; roundKills: number; health?: number }
   | { type: "death" }
   | { type: "mvp" };
 
@@ -23,8 +34,14 @@ export interface MatchContext {
   map?: string;
   mode?: string;
   round?: number;
+  /** "pistol" on rounds 1 and 13 — the rounds where buy advice changes completely. */
+  roundKind?: "pistol";
   roundPhase?: string;
   bomb?: string;
+  /** Locally derived clock (GSI sends none): seconds left in a live round, pre-plant. */
+  roundTimeLeftSec?: number;
+  /** Locally derived: seconds left on a planted bomb. */
+  bombTimeLeftSec?: number;
   ourSide?: Team;
   ourScore?: number;
   theirScore?: number;
@@ -42,8 +59,21 @@ export interface MatchContext {
   assists?: number;
   deaths?: number;
   mvps?: number;
+  /** Own damage dealt this round (GSI round_totaldmg). */
+  roundDamage?: number;
+  /** While dead: the teammate currently spectated (name + their state). */
+  spectating?: { name?: string; health?: number; weapons?: string[] };
   /** Last few rounds' outcomes, e.g. ["t_win_bomb", "ct_win_elimination"]. */
   recentRoundWins?: string[];
+  /** Compact per-round story, oldest first, e.g. "R5 T full WON (bomb) you 2k". */
+  history?: string[];
+  pistolRounds?: { first?: "won" | "lost"; second?: "won" | "lost" };
+  /** e.g. "won last 3" / "lost last 2". */
+  streak?: string;
+  /** Match highlights for banter callbacks, e.g. "R7: knife kill". */
+  notables?: string[];
+  /** Friends in the Discord voice channel (display names) — supplied by the bot layer. */
+  friends?: string[];
   /** True while the player-block describes the user (false = dead, spectating a teammate). */
   playerIsSelf: boolean;
 }
@@ -52,8 +82,20 @@ interface PrevSelf {
   health: number;
   roundKills: number;
   roundKillHs: number;
+  matchKills: number;
   mvps: number;
 }
+
+/** Kill-capable grenades we attribute kills to (flash/smoke/decoy kills are too rare to chase). */
+const NADE_KINDS: Record<string, "he" | "fire"> = {
+  weapon_hegrenade: "he",
+  weapon_molotov: "fire",
+  weapon_incgrenade: "fire",
+};
+
+// How long after a throw a kill may still be that grenade's doing.
+// HE detonates ~1.7s after the throw; a molotov can burn for ~7s.
+const NADE_KILL_WINDOW_MS: Record<"he" | "fire", number> = { he: 4_000, fire: 9_000 };
 
 /**
  * Rounds needed to win given the current scores: 13 in regulation (MR12), then
@@ -70,8 +112,19 @@ function winTarget(ourScore: number, theirScore: number): number {
 export class GsiTracker {
   private prev: GsiPayload | null = null;
   private prevSelf: PrevSelf | null = null;
+  /** Own grenade inventory (units by weapon name) — diffed to detect throws. */
+  private prevNades: Record<string, number> | null = null;
+  private lastNadeThrow: { kind: "he" | "fire"; at: number } | null = null;
+  /** Spectated-teammate baseline while the user is dead. */
+  private prevSpec: { steamid: string; roundKills: number } | null = null;
   private inMatch = false;
   private announcedMatchPointAt: string | null = null;
+  /** Round number as of its freezetime — map.round's increment timing at round end is unreliable. */
+  private liveRound = 0;
+  private roundLiveAt: number | null = null;
+  private bombPlantedAt: number | null = null;
+  private lastUpdateAt: number | null = null;
+  private readonly memory = new MatchMemory();
   /**
    * The user's side survives death here: once dead, the player block describes a
    * spectated teammate, but competitive auto-spectate only targets teammates, so
@@ -83,6 +136,8 @@ export class GsiTracker {
   update(payload: GsiPayload): CoachEvent[] {
     const events: CoachEvent[] = [];
     const prev = this.prev;
+    const now = Date.now();
+    this.lastUpdateAt = now;
 
     const map = payload.map;
     const round = payload.round;
@@ -102,6 +157,8 @@ export class GsiTracker {
     if (map && mapPhase === "live" && prevMapPhase !== "live" && prevMapPhase !== "intermission") {
       this.inMatch = true;
       this.announcedMatchPointAt = null;
+      this.liveRound = 0;
+      this.memory.reset();
       events.push({ type: "matchStart", map: map.name ?? "unknown", mode: map.mode ?? "unknown" });
     }
 
@@ -119,6 +176,7 @@ export class GsiTracker {
       });
       this.inMatch = false;
       this.lastKnownSide = undefined;
+      this.liveRound = 0; // a stale round number must not leak into the next match's context
       // Cleared on gameover too: if the next match's "live" transition is missed
       // (payload gap), a stale us@13/them@13 key would mute its first match point.
       this.announcedMatchPointAt = null;
@@ -129,8 +187,19 @@ export class GsiTracker {
     const roundPhase = round?.phase;
     const roundNum = (map?.round ?? 0) + 1; // map.round is the count of completed rounds
 
+    // Joined mid-round (no freezetime transition seen): adopt the round number
+    // now, while the phase makes map.round trustworthy — memory records and the
+    // LLM snapshot would otherwise file everything under round 0.
+    if (this.liveRound === 0 && mapPhase === "live" && (roundPhase === "live" || roundPhase === "freezetime")) {
+      this.liveRound = roundNum;
+    }
+
     if (roundPhase === "freezetime" && prevRoundPhase !== "freezetime") {
       events.push({ type: "freezetime", round: roundNum });
+      this.liveRound = roundNum;
+      this.roundLiveAt = null;
+      this.bombPlantedAt = null;
+      this.memory.startRound(roundNum, ourSide);
 
       // Match point check at buy time (MR12 regulation + MR3 overtime blocks).
       const { ourScore, theirScore } = this.scores(payload, ourSide);
@@ -152,51 +221,117 @@ export class GsiTracker {
 
     if (roundPhase === "live" && prevRoundPhase === "freezetime") {
       events.push({ type: "roundLive", round: roundNum });
+      this.roundLiveAt = now;
+      this.memory.roundLive(this.liveRound || roundNum, isSelf ? payload.player?.state?.equip_value : undefined);
     }
 
     if (roundPhase === "over" && prevRoundPhase !== "over" && round?.win_team) {
       const { ourScore, theirScore } = this.scores(payload, ourSide);
-      events.push({
-        type: "roundEnd",
-        won: ourSide ? round.win_team === ourSide : undefined,
-        method: this.lastRoundMethod(payload) ?? "unknown",
-        ourScore: ourScore ?? 0,
-        theirScore: theirScore ?? 0,
-      });
+      const won = ourSide ? round.win_team === ourSide : undefined;
+      const method = this.lastRoundMethod(payload) ?? "unknown";
+      events.push({ type: "roundEnd", won, method, ourScore: ourScore ?? 0, theirScore: theirScore ?? 0 });
+      this.memory.endRound(won, method);
+      this.roundLiveAt = null;
+      this.bombPlantedAt = null;
     }
 
     // --- bomb (note: plant signal is delayed ~1-2s by Valve, by design) -----
+    // prev must exist: a cold start mid-post-plant is a baseline sync, not a
+    // fresh plant — announcing it would also start a wrong 40s bomb clock.
     const prevBomb = prev?.round?.bomb;
     const bomb = round?.bomb;
-    if (bomb && bomb !== prevBomb) {
-      if (bomb === "planted") events.push({ type: "bombPlanted", ourSide });
-      if (bomb === "defused") events.push({ type: "bombDefused", ourSide });
-      if (bomb === "exploded") events.push({ type: "bombExploded", ourSide });
+    if (prev && bomb && bomb !== prevBomb) {
+      if (bomb === "planted") {
+        events.push({ type: "bombPlanted", ourSide });
+        this.bombPlantedAt = now;
+        this.memory.recordBombPlanted(this.liveRound);
+      }
+      if (bomb === "defused") {
+        events.push({ type: "bombDefused", ourSide });
+        this.bombPlantedAt = null;
+      }
+      if (bomb === "exploded") {
+        events.push({ type: "bombExploded", ourSide });
+        this.bombPlantedAt = null;
+      }
     }
 
     // --- own-player deltas (only valid while the player block is the user, and
     // only during live play: warmup has respawn kills/deaths the coach must ignore) --
     if (mapPhase !== "live") {
       this.prevSelf = null;
+      this.prevNades = null;
+      this.prevSpec = null;
     } else if (isSelf && payload.player?.state) {
       const s = payload.player.state;
+      this.prevSpec = null; // alive and self again — spectate baseline is stale
       const cur: PrevSelf = {
         health: s.health,
         roundKills: s.round_kills,
         roundKillHs: s.round_killhs,
+        matchKills: payload.player.match_stats?.kills ?? this.prevSelf?.matchKills ?? 0,
         mvps: payload.player.match_stats?.mvps ?? this.prevSelf?.mvps ?? 0,
       };
 
+      // Grenade throws first: the inventory shrinks seconds before the kill lands,
+      // so by the time round_kills ticks up the throw is already on record.
+      // Known limitation: dropping a grenade to a teammate (rare mid-live) also
+      // shrinks the inventory and could mis-credit a knife kill to "the nade" —
+      // GSI can't tell a drop from a throw, and the wrong call is harmless hype.
+      if (roundPhase === "live") {
+        const nades = this.nadeUnits(payload.player);
+        if (this.prevNades) {
+          for (const [name, units] of Object.entries(this.prevNades)) {
+            if ((nades[name] ?? 0) < units) {
+              this.lastNadeThrow = { kind: NADE_KINDS[name], at: now };
+            }
+          }
+        }
+        this.prevNades = nades;
+      }
+
       if (this.prevSelf) {
         if (cur.roundKills > this.prevSelf.roundKills && roundPhase !== "freezetime") {
-          events.push({
-            type: "kill",
-            roundKills: cur.roundKills,
-            headshot: cur.roundKillHs > this.prevSelf.roundKillHs,
-          });
+          this.memory.recordKill(this.liveRound);
+          if (cur.roundKills >= 5) this.memory.recordNotable(this.liveRound, "ACE");
+          else if (cur.roundKills === 4) this.memory.recordNotable(this.liveRound, "4k");
+
+          const special = this.classifyKill(payload.player, s.health, now);
+          if (special && special.kind !== "lowhp") {
+            const label =
+              special.kind === "grenade"
+                ? special.nade === "fire"
+                  ? "molotov kill"
+                  : "HE grenade kill"
+                : `${special.kind} kill`;
+            this.memory.recordNotable(this.liveRound, label);
+          }
+          // One spoken story per kill: the weapon story REPLACES the generic
+          // kill event below the triple, and multikill hype (triple and up)
+          // outranks it — "TRIPLE KILL" speaks uncontested.
+          if (special && cur.roundKills < 3) {
+            events.push({ type: "specialKill", ...special });
+          } else {
+            events.push({
+              type: "kill",
+              roundKills: cur.roundKills,
+              headshot: cur.roundKillHs > this.prevSelf.roundKillHs,
+            });
+          }
         }
+
+        // Scoreboard kills only go DOWN for teamkills (and suicides, which also
+        // zero our health in the same breath — skip those). Live-phase only:
+        // freezetime is damage-proof, and a freezetime payload still compares
+        // against last round's baseline, which must never produce an event.
+        if (cur.matchKills < this.prevSelf.matchKills && cur.health > 0 && roundPhase === "live") {
+          events.push({ type: "teamkill" });
+          this.memory.recordNotable(this.liveRound, "teamkilled a teammate");
+        }
+
         if (cur.health === 0 && this.prevSelf.health > 0) {
           events.push({ type: "death" });
+          this.memory.recordDeath(this.liveRound);
         }
         if (cur.mvps > this.prevSelf.mvps) {
           events.push({ type: "mvp" });
@@ -207,10 +342,37 @@ export class GsiTracker {
       // Player block is a spectated teammate — freeze our own-state baseline so
       // teammate kills/health never register as the user's.
       if (this.prevSelf && roundPhase === "freezetime") this.prevSelf = null;
+      this.prevNades = null;
+
+      // ...but the spectated teammate's kills are real information: cheer them on.
+      const p = payload.player;
+      if (roundPhase === "live" && p?.steamid && p.state) {
+        if (this.prevSpec?.steamid === p.steamid) {
+          if (p.state.round_kills > this.prevSpec.roundKills) {
+            events.push({
+              type: "teammateKill",
+              name: p.name,
+              roundKills: p.state.round_kills,
+              health: p.state.health,
+            });
+            if (p.state.round_kills === 3 && p.name) {
+              this.memory.recordNotable(this.liveRound, `${p.name} triple while you watched`);
+            }
+          }
+          this.prevSpec.roundKills = p.state.round_kills;
+        } else {
+          // New spectate target: their current round_kills are the baseline,
+          // only increments from here are kills we actually "saw".
+          this.prevSpec = { steamid: p.steamid, roundKills: p.state.round_kills };
+        }
+      }
     }
 
     if (roundPhase === "freezetime" && prevRoundPhase !== "freezetime") {
       this.prevSelf = null; // round_kills resets each round
+      this.prevNades = null;
+      this.lastNadeThrow = null;
+      this.prevSpec = null;
     }
 
     this.prev = payload;
@@ -220,6 +382,7 @@ export class GsiTracker {
   /** Compact snapshot for rules + the LLM prompt. */
   context(): MatchContext {
     const p = this.prev;
+    const now = Date.now();
     const isSelf = p ? this.isSelf(p) : false;
     // Side, scores and loss streak stay meaningful while dead via lastKnownSide.
     const ourSide = this.lastKnownSide;
@@ -233,12 +396,35 @@ export class GsiTracker {
           .map(([, v]) => v)
       : undefined;
 
+    // liveRound (set at freezetime) over raw map.round+1: during the "over"
+    // phase map.round may already have incremented, and a roundEnd snapshot
+    // claiming "round 13, pistol" while reacting to round 12 misleads the LLM.
+    const roundNum = this.liveRound > 0 ? this.liveRound : (p?.map?.round ?? 0) + 1;
+    const roundPhase = p?.round?.phase;
+    const bomb = p?.round?.bomb;
+    // Pistol rounds at 1/13 are an MR12 (competitive/Premier) fact; wingman etc. differ.
+    const isPistol = p?.map?.mode === "competitive" && (roundNum === 1 || roundNum === 13);
+
+    const roundTimeLeftSec =
+      roundPhase === "live" && bomb !== "planted" && this.roundLiveAt !== null
+        ? Math.max(0, Math.round(config.timings.roundSeconds - (now - this.roundLiveAt) / 1000))
+        : undefined;
+    const bombTimeLeftSec =
+      bomb === "planted" && this.bombPlantedAt !== null
+        ? Math.max(0, Math.round(config.timings.bombSeconds - (now - this.bombPlantedAt) / 1000))
+        : undefined;
+
+    const pistols = this.memory.pistolResults();
+
     return {
       map: p?.map?.name,
       mode: p?.map?.mode,
-      round: (p?.map?.round ?? 0) + 1,
-      roundPhase: p?.round?.phase,
-      bomb: p?.round?.bomb,
+      round: roundNum,
+      roundKind: isPistol ? "pistol" : undefined,
+      roundPhase,
+      bomb,
+      roundTimeLeftSec,
+      bombTimeLeftSec,
       ourSide,
       ourScore,
       theirScore,
@@ -255,7 +441,16 @@ export class GsiTracker {
       assists: isSelf ? p?.player?.match_stats?.assists : undefined,
       deaths: isSelf ? p?.player?.match_stats?.deaths : undefined,
       mvps: isSelf ? p?.player?.match_stats?.mvps : undefined,
+      roundDamage: isSelf ? p?.player?.state?.round_totaldmg : undefined,
+      spectating:
+        !isSelf && p?.player && p.map?.phase === "live"
+          ? { name: p.player.name, health: p.player.state?.health, weapons: this.weaponNames(p.player) }
+          : undefined,
       recentRoundWins: roundWins,
+      history: this.memory.history(),
+      pistolRounds: pistols.first || pistols.second ? pistols : undefined,
+      streak: this.memory.streak(),
+      notables: this.memory.notables(),
       playerIsSelf: isSelf,
     };
   }
@@ -264,10 +459,59 @@ export class GsiTracker {
     return this.inMatch;
   }
 
+  /** ms since the last GSI payload, or null before the first one — timer callbacks
+   *  use this so clock callouts never speak into a crashed/closed game. */
+  lastUpdateAgeMs(): number | null {
+    return this.lastUpdateAt === null ? null : Date.now() - this.lastUpdateAt;
+  }
+
   private isSelf(payload: GsiPayload): boolean {
     const provider = payload.provider?.steamid;
     const player = payload.player?.steamid;
     return !!provider && !!player && provider === player;
+  }
+
+  /**
+   * Attribute a fresh kill from the active weapon + recent throws. Heuristics,
+   * honest ones: a kill while the knife is out moments after a grenade left the
+   * inventory is the grenade's (CS2 auto-swaps after the last throw), not a
+   * knife kill; the Zeus in hand is unambiguous; otherwise knife-out means knifed.
+   */
+  private classifyKill(
+    player: GsiPlayer,
+    health: number,
+    now: number,
+  ): { kind: "knife" | "zeus" | "grenade" | "lowhp"; nade?: "he" | "fire"; hp?: number } | null {
+    const active = this.activeWeapon(player);
+    const throwKind = this.lastNadeThrow?.kind;
+    const nadeRecent =
+      this.lastNadeThrow !== null &&
+      throwKind !== undefined &&
+      now - this.lastNadeThrow.at <= NADE_KILL_WINDOW_MS[throwKind];
+
+    if (active?.name === "weapon_taser") return { kind: "zeus" };
+
+    const holdingNoGun = !active || active.type === "Knife" || active.type === "Grenade" || active.type === "C4";
+    if (nadeRecent && holdingNoGun) return { kind: "grenade", nade: throwKind };
+    if (active?.type === "Knife") return { kind: "knife" };
+    if (health > 0 && health <= 20) return { kind: "lowhp", hp: health };
+    return null;
+  }
+
+  private activeWeapon(player: GsiPlayer | undefined): GsiWeapon | undefined {
+    if (!player?.weapons) return undefined;
+    return Object.values(player.weapons).find((w) => w.state === "active" || w.state === "reloading");
+  }
+
+  /** Carried units of each kill-capable grenade (CS2 GSI counts stacks via ammo fields). */
+  private nadeUnits(player: GsiPlayer | undefined): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const w of Object.values(player?.weapons ?? {})) {
+      if (!NADE_KINDS[w.name]) continue;
+      const units = (w.ammo_clip ?? 0) + (w.ammo_reserve ?? 0);
+      out[w.name] = (out[w.name] ?? 0) + Math.max(1, units);
+    }
+    return out;
   }
 
   private scores(

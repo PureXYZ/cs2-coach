@@ -67,21 +67,35 @@ export const config = {
     // the rule engine still provides instant lines either way.
     apiKey: optional("ANTHROPIC_API_KEY") || undefined,
     enabled: !!process.env.ANTHROPIC_API_KEY && optional("LLM_ENABLED", "true") !== "false",
+    // Smart tier — slow moments (freezetime, halftime, match end) where quality wins.
     // claude-opus-4-8 = smartest. For lower latency/cost set COACH_LLM_MODEL=claude-haiku-4-5.
     model: optional("COACH_LLM_MODEL", "claude-opus-4-8"),
+    // Fast tier — mid-round moments (retake/save call, round-end react, teamkill) where a
+    // line that lands 3 seconds earlier beats a smarter one. Set to the same value as
+    // COACH_LLM_MODEL if you'd rather have Opus everywhere.
+    fastModel: optional("COACH_LLM_FAST_MODEL", "claude-haiku-4-5"),
     maxTokens: intEnv("COACH_LLM_MAX_TOKENS", 150),
     // Freezetime is ~15s; if Claude hasn't answered by then the line is useless.
     timeoutMs: intEnv("COACH_LLM_TIMEOUT_MS", 9000),
+    // Mid-round calls go stale even faster (a retake call is worthless at 12s post-plant).
+    fastTimeoutMs: intEnv("COACH_LLM_FAST_TIMEOUT_MS", 6000),
   },
 
   coach: {
     // Spoken name the coach uses for the player ("Nice one, Andy!"). Defaults to Steam name.
     playerNickname: optional("PLAYER_NICKNAME") || undefined,
+    // Extra friend names for banter, comma-separated. The bot also reads the live
+    // Discord voice channel member list; this covers nicknames it should prefer.
+    friends: optional("COACH_FRIENDS")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
   },
 
   // CS2 Premier/Competitive timing constants (MR12 era). GSI sends no clock to players,
   // so these drive locally derived timers. Not officially documented by Valve — adjust
-  // here if Valve changes them.
+  // here if Valve changes them. Note: Premier freezetime is 20s (competitive MM is 15);
+  // only ROUND_SECONDS/BOMB_SECONDS feed the clock callouts, so the default is safe either way.
   timings: {
     freezetimeSeconds: intEnv("FREEZETIME_SECONDS", 15),
     roundSeconds: intEnv("ROUND_SECONDS", 115),

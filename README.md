@@ -25,7 +25,7 @@ GSI is Valve's official, VAC-safe telemetry feed — but during your own match i
 | Team scores, loss-bonus streaks, per-round win history | Round clock / bomb countdown (derived locally instead) |
 | Map, mode, halftime, match point, game over | Grenades, bomb carrier/position |
 
-So the coach does: **economy calls** (buy/save/force from your money + loss bonus), **round-state callouts** (bomb down → retake/post-plant advice), **hype** (multikills, MVPs, match point), **mental coaching** (round losses, halftime talks), and **Claude-powered tactical lines** during freezetime. It cannot call enemy positions — nothing can while you're playing, short of screen-reading (see [docs/RESEARCH.md](docs/RESEARCH.md) for the v2 roadmap).
+So the coach does: **economy calls** (buy/save/force from your money + loss bonus), **mid-round decisions** (bomb down on CT → a Claude-made retake-or-save call weighing your gear, kit, HP and the score), **clock callouts** (derived locally: "35 seconds, get a plan", "ten on the bomb"), **special-kill hype** (knife, Zeus, grenade/molotov kills and your own teamkills — detected from your active weapon, inventory diffs and the scoreboard counter), **spectator cheering** (while you're dead, GSI shows the teammate you're watching — the coach cheers their kills by name), **match memory** (a round-by-round story — buys, results, pistols, streaks, highlights — fed into every Claude prompt so advice references what actually happened), **per-map strategy** (freezetime suggestions like nade-stacking a choke on a force buy, from a built-in map playbook), **friend banter** (it reads who's in the voice channel and name-drops, friendly only), **hype** (multikills, MVPs, match point), and **mental coaching** (round losses, halftime talks). It cannot call enemy positions or alive counts — nothing can while you're playing, short of screen-reading (see [docs/RESEARCH.md](docs/RESEARCH.md) for the v2 roadmap).
 
 Bomb-plant note: Valve intentionally delays the plant signal to players by a randomized ~1–2 s (anti-abuse), so plant reactions are slightly late by design.
 
@@ -59,7 +59,12 @@ cp .env.example .env
 
 ### 4. Claude (optional, the "smart" half of the coach)
 
-Put an Anthropic API key in `ANTHROPIC_API_KEY` (https://platform.claude.com). Without it the coach still works with instant rule-based lines. Default model is `claude-opus-4-8` (smartest); set `COACH_LLM_MODEL=claude-haiku-4-5` for the fastest/cheapest option (~$0.60/month at 20 matches).
+Put an Anthropic API key in `ANTHROPIC_API_KEY` (https://platform.claude.com). Without it the coach still works with instant rule-based lines. Two model tiers:
+
+- `COACH_LLM_MODEL` (default `claude-opus-4-8`) — slow moments: freezetime buy calls, halftime talks, match wrap-ups.
+- `COACH_LLM_FAST_MODEL` (default `claude-haiku-4-5`) — mid-round moments where a line landing 3 s earlier beats a smarter one: retake/save calls, round-end reactions, teamkill roasts. Set it equal to `COACH_LLM_MODEL` for Opus everywhere.
+
+Optional personality: `PLAYER_NICKNAME` (spoken name for you) and `COACH_FRIENDS` (comma-separated names for banter — the live voice-channel member list is read automatically).
 
 ### 5. Generate + install the GSI config (the only thing CS2 needs)
 
@@ -101,7 +106,7 @@ In Discord: join a voice channel with your friends, type **`/coach join`**, then
 | Discord bot | Free |
 | GSI | Free (built into CS2) |
 | Deepgram TTS | ~$6.75/mo at heavy usage — **$200 signup credit ≈ 2+ years free** |
-| Claude (Opus 4.8) | ~$2–6/mo at 20 matches/mo (Haiku 4.5: ~$0.60/mo) |
+| Claude (Opus smart tier + Haiku mid-round) | ~$4–10/mo at 20 matches/mo (all-Haiku: ~$1/mo) |
 
 ## Is this allowed? (VAC)
 
@@ -121,13 +126,18 @@ src/
   index.ts            wiring
   config.ts           env config
   gsi/server.ts       HTTP listener for CS2's POSTs (responds 200 instantly)
-  gsi/tracker.ts      payload diffing → events (kills, bomb, rounds, economy ctx)
-  coach/engine.ts     priorities/cooldowns; routes moments to rules or Claude
+  gsi/tracker.ts      payload diffing → events (kills, special kills, teamkills,
+                      bomb, rounds, spectated-teammate plays, derived clocks)
+  gsi/memory.ts       round-by-round match memory (buys, results, highlights)
+  coach/engine.ts     priorities/cooldowns/timers; routes moments to rules or Claude
   coach/lines.ts      instant rule-based line library
-  coach/llm.ts        Claude tactical coach (freezetime/halftime/match talk)
+  coach/llm.ts        Claude coach: smart tier (freezetime/halftime/match talk)
+                      + fast tier (retake calls, round reactions, teamkill roasts)
+  coach/knowledge.ts  economy cheat sheet + per-map strategy playbook for prompts
   tts/                deepgram | elevenlabs | edge, with fallback chain
   discord/bot.ts      slash commands
   discord/voice.ts    voice connection + prioritized speech queue
 scripts/generate-gsi-cfg.ts   writes the cfg for the gaming PC
+scripts/simulate.ts           offline GSI replay harness (npm run sim)
 cs2/                  generated gamestate_integration_coach.cfg lands here
 ```

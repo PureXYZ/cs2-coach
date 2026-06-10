@@ -12,6 +12,7 @@
     "start": "tsx src/index.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
+    "sim": "tsx scripts/simulate.ts",
     "cfg": "tsx scripts/generate-gsi-cfg.ts"
   },
   "dependencies": {

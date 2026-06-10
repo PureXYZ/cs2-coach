@@ -103,3 +103,14 @@ The first research pass recommended Cartesia Sonic-3 off a May 2026 benchmark; a
 - TTS: Coval live leaderboard API (June 10, 2026), vendor pricing pages (Deepgram, Cartesia, ElevenLabs, Azure)
 - Anthropic pricing: platform.claude.com/docs (verified June 10, 2026)
 - Demos/recording: akiver/boiler-writter, markus-wa/demoinfocs-golang, jackdlogan/steam-cs2-highlight-extractor, ISteamTimeline docs
+
+## v1.1 "smarter coach" research (June 2026, adversarially verified by a second agent pass)
+
+Facts the match-memory / special-kill / mid-round features are built on:
+
+- **Teamkill via GSI**: `player.match_stats.kills` mirrors the scoreboard K column verbatim (raw field, confirmed in antonpup's `MatchStats.cs`), and a teamkill is −1 K (can go negative). Suicide is also −1 K (`mp_suicide_penalty` default 1, still present in CS2) but zeroes health in the same/adjacent payload. ⇒ **kills decrement while alive during live phase = teamkill** is the soundest available heuristic. CSGO-era-verified; no CS2 payload capture exists publicly — worth one in-game test. `player.state.round_kills` teamkill behavior is undocumented everywhere; indirect evidence (every GSI library detects kills via round_kills increments with zero false-positive issue reports) says it counts enemy kills only.
+- **Grenade throws & weapon switch**: after a throw completes (~0.5–1 s), CS2 auto-switches to the *best* weapon (primary > pistol > knife) — never another grenade, knife only when no guns are owned. HE fuse ≈ 1.6 s; molotov ignites on impact (≤30° surfaces, 2 s air failsafe) and burns ~7 s. ⇒ kill-attribution windows: HE 4 s, fire 9 s, and "knife active + recent throw" = nade kill (the no-guns eco case).
+- **Economy (MR12, verified 2026)**: pistol $800; cap $16 000; win elim/time $3 250, bomb/defuse $3 500; loss ladder $1 400→$3 400 (lost *pistol* pays $1 900; win drops the counter by one, no reset); plant-but-lost +$800 each, planter/defuser +$300; kills — rifles/pistols $300 (CZ75 is $300 since Apr 2024), SMG $600 (P90 $300), shotgun $900 (XM1014 $600), AWP $100, knife $1 500, **Zeus $100** (since Apr 2024), HE/molly $300; **July 2025: every CT gets +$50 per T killed by any CT**; OT (MR3) resets everyone to $10 000 per half.
+- **Active Duty pool (June 2026)**: Ancient, Anubis, Dust2, Inferno, Mirage, Nuke, Overpass. Jan 2025 Train↔Vertigo, Jul 2025 Overpass↔Anubis, Jan 22 2026 Anubis↔Train (Anubis returned reworked: hole between E-box and back-of-B, reversed mid doors).
+- **Timings**: round 115 s; freezetime 15 s competitive but **20 s in Premier**; C4 40 s; defuse 10 s / 5 s with kit; plant 3.2 s; round-end → next freezetime 7 s.
+- Sources: ValveSoftware/csgo-osx-linux#3113, antonpup/CounterStrike2GSI source, cstrike15_src (`weapon_basecsgrenade.cpp`, `hegrenade_projectile.cpp`, `cs_gamerules.cpp`), prosettings.net, refrag.gg, Liquipedia, HLTV news 40693/42197/43600/43689, totalcsgo.com command DB, counterstrike.fandom.com.
