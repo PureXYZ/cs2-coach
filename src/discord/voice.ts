@@ -119,7 +119,10 @@ export class VoiceCoach {
       const dropped = this.queue.pop();
       if (dropped) log.info("voice", `Queue full — dropped: "${dropped.text.slice(0, 40)}..."`);
     }
-    this.pump();
+    // Deferred so a same-tick batch of lines is fully queued before the first one
+    // grabs the idle player — order is then decided by the priority sort above,
+    // not by tracker emission order (e.g. the MVP callout beats the round score).
+    queueMicrotask(() => this.pump());
   }
 
   private pump(): void {
