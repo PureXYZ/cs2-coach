@@ -16,15 +16,9 @@ if (!host) {
   process.exit(1);
 }
 
-const remote = [
-  "cd /root/cs2-coach",
-  "git pull --ff-only",
-  "docker build -t cs2-coach .",
-  "(docker rm -f coach >/dev/null 2>&1 || true)",
-  "docker run -d --name coach --restart unless-stopped --env-file .env -p 3000:3000 cs2-coach",
-  "sleep 5",
-  "docker logs --tail 8 coach 2>&1",
-].join(" && ");
+// The actual deploy logic lives on the host at /root/deploy.sh (documented in
+// docs/HOSTING.md) so the manual path and GitHub Actions run the exact same steps.
+const remote = "bash /root/deploy.sh";
 
 console.log(`Deploying GitHub main to ${host} ...`);
 const result = spawnSync("ssh", [host, remote], { stdio: "inherit" });

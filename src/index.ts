@@ -1,4 +1,5 @@
 import os from "node:os";
+import { Events } from "discord.js";
 import { config } from "./config.js";
 import { log } from "./log.js";
 import { startGsiServer } from "./gsi/server.js";
@@ -9,6 +10,7 @@ import { LlmCoach } from "./coach/llm.js";
 import { TtsChain } from "./tts/index.js";
 import { VoiceCoach } from "./discord/voice.js";
 import { startBot } from "./discord/bot.js";
+import { clearVoiceChannel, loadVoiceChannel } from "./discord/voice-state.js";
 
 async function main(): Promise<void> {
   // The coach often shares the PC with CS2 — make sure it never wins a CPU
@@ -77,7 +79,7 @@ async function main(): Promise<void> {
     },
   });
 
-  await startBot({
+  const client = await startBot({
     token: config.discord.token,
     guildId: config.discord.guildId,
     voice,
@@ -87,6 +89,26 @@ async function main(): Promise<void> {
       llmModel: llm ? `${config.llm.model} (mid-round: ${config.llm.fastModel})` : null,
     }),
   });
+
+  // After a restart (redeploy, crash, droplet reboot), put the coach back into
+  // its last voice channel — otherwise every auto-deploy strands it outside.
+  const saved = loadVoiceChannel();
+  if (saved) {
+    if (!client.isReady()) {
+      await new Promise<void>((resolve) => client.once(Events.ClientReady, () => resolve()));
+    }
+    try {
+      const channel = await client.channels.fetch(saved.channelId);
+      if (channel?.isVoiceBased()) {
+        await voice.join(channel);
+        log.info("main", `Rejoined voice channel "${channel.name}" after restart`);
+      } else {
+        clearVoiceChannel(); // channel no longer exists — stop trying
+      }
+    } catch (err) {
+      log.warn("main", `Could not rejoin last voice channel: ${err instanceof Error ? err.message : err}`);
+    }
+  }
 
   log.info("main", "Ready. Use /coach join in Discord, then start a CS2 match.");
 }
