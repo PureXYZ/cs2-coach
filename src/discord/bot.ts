@@ -9,6 +9,7 @@ import {
 } from "discord.js";
 import { log } from "../log.js";
 import type { VoiceCoach } from "./voice.js";
+import { clearVoiceChannel, saveVoiceChannel } from "./voice-state.js";
 
 export interface BotDeps {
   token: string;
@@ -95,12 +96,15 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
       }
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await deps.voice.join(channel);
+      // Remembered across restarts — a redeploy rejoins this channel automatically.
+      saveVoiceChannel({ guildId: channel.guild.id, channelId: channel.id });
       await interaction.editReply(`🎙️ Coach is live in **${channel.name}**. Start your match — I'm watching the game state.`);
       return;
     }
 
     case "leave": {
       deps.voice.leave();
+      clearVoiceChannel(); // deliberate leave — don't rejoin after the next restart
       await interaction.reply({ content: "Coach signing off. GG!", flags: MessageFlags.Ephemeral });
       return;
     }

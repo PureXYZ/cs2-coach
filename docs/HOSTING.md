@@ -64,13 +64,27 @@ Point the cfg at the HTTPS URL (no port): `"uri" "https://your-app.up.railway.ap
 
 ### Updating the hosted coach
 
-The host keeps a git clone of the public repo, so updates are: commit, push, then
+The host keeps a git clone of the public repo and a deploy script at `/root/deploy.sh`:
 
-```
-npm run deploy
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd /root/cs2-coach
+git pull --ff-only
+docker build -t cs2-coach .
+docker rm -f coach >/dev/null 2>&1 || true
+docker run -d --name coach --restart unless-stopped --env-file .env \
+  -p 3000:3000 -v coach-state:/app/state cs2-coach
+sleep 5
+docker logs --tail 8 coach 2>&1
 ```
 
-which SSHes into `DEPLOY_HOST` (set in `.env`), pulls main, rebuilds the Docker image, and restarts the container (~30s of downtime; rejoin voice with `/coach join`).
+(The `coach-state` volume persists the last-joined voice channel, so a restarted coach rejoins automatically; `/coach leave` clears it.)
+
+Two ways to trigger it:
+
+1. **Manual:** `npm run deploy` — SSHes into `DEPLOY_HOST` (set in `.env`) and runs the script.
+2. **Automatic:** the `Deploy` GitHub Actions workflow runs the same script on every push to main. It needs two repo secrets (Settings → Secrets and variables → Actions): `DEPLOY_HOST` (e.g. `root@1.2.3.4`) and `DEPLOY_SSH_KEY` (the private half of a dedicated keypair whose public half sits in the host's `authorized_keys`, prefixed with `restrict,command="/root/deploy.sh"` — so even a leaked key can only trigger a deploy, nothing else).
 
 **Caveat learned the hard way:** DigitalOcean App Platform (and similar gVisor-sandboxed PaaS) cannot run this app — they block the UDP traffic Discord voice needs, so `/coach join` times out even though the bot logs in. Use a real VM (droplet/VPS).
 
