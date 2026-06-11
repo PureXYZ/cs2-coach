@@ -24,6 +24,7 @@ function buildProvider(name: TtsProviderName): TtsProvider | null {
           stability: config.tts.elevenlabs.stability,
           similarityBoost: config.tts.elevenlabs.similarityBoost,
           style: config.tts.elevenlabs.style,
+          speed: config.tts.elevenlabs.speed,
         },
       );
     case "edge":

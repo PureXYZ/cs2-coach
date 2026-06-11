@@ -74,6 +74,8 @@ export const config = {
       stability: floatEnv("ELEVENLABS_STABILITY", 0.3, 0, 1),
       similarityBoost: floatEnv("ELEVENLABS_SIMILARITY", 1.0, 0, 1),
       style: floatEnv("ELEVENLABS_STYLE", 0.5, 0, 1),
+      // Speech rate multiplier, unlike the others — ElevenLabs accepts 0.7–1.2.
+      speed: floatEnv("ELEVENLABS_SPEED", 1.0, 0.7, 1.2),
     },
     edge: {
       voice: optional("EDGE_TTS_VOICE", "en-US-GuyNeural"),

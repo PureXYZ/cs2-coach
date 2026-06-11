@@ -19,6 +19,7 @@ export class ElevenLabsTts implements TtsProvider {
       stability: number;
       similarityBoost: number;
       style: number;
+      speed: number;
     },
   ) {}
 
@@ -43,6 +44,7 @@ export class ElevenLabsTts implements TtsProvider {
           stability: this.voiceSettings.stability,
           similarity_boost: this.voiceSettings.similarityBoost,
           style: this.voiceSettings.style,
+          speed: this.voiceSettings.speed,
         },
       }),
       // A stalled request must fail fast so the chain falls through to the next provider.
