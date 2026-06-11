@@ -15,10 +15,13 @@ export const ECONOMY_CHEATSHEET = `CS2 ECONOMY (MR12, all values $, verified 202
 export const DECISION_PRINCIPLES = `DECISION PRINCIPLES:
 - Buys: match the team — five half-buys lose to five rifles; solo-saving while four buy is throwing. On high loss bonus (3 losses+) a clean full save converts into a real buy; breaking it with a panic half-buy wastes two rounds.
 - Pistol rounds: suggest one concrete plan (stack a site, rush together, or default), not generalities. Winning a pistol usually means two or three easy rounds — say so.
-- Retake or save (CT, bomb planted, ~40s): with armor, util and numbers feel, retake TOGETHER. With no armor, a pistol, or an expensive gun (AWP) and a bad picture — saving for next round is often the smarter call. Never call a save on match point or when the score math means this round must be played out. A defuse kit makes the retake markedly stronger — say who should be on the stick if the player has it.
+- Retake or save (CT, bomb planted, ~40s): with armor, util and numbers feel, retake TOGETHER. With no armor, a pistol, or an expensive gun (AWP) and a bad picture — saving for next round is often the smarter call. A defuse kit makes the retake markedly stronger — say who should be on the stick if the player has it.
+- Save calls are FORBIDDEN when matchPoint is "them" (losing this round loses the match — there is no next round to save for) or moneyResetsNextRound is true (the saved gear evaporates at the reset). In those spots the only call is how to win the round. At OUR OWN match point ("us") normal retake-or-save judgment applies — a lost round keeps the gear and the lead.
+- Mid-fight rule: when lastKillSecondsAgo is under ~10, the player is actively winning fights. Never call save/disengage/rotate at them — they cannot use it and it talks over their clutch. Back the play or say less.
 - Post-plant (T): play time and crossfires, don't re-peek into the retake; the clock is a teammate.
 - Force-buy rounds: utility multiplies cheap guns — suggest stacking nades on one choke (a "nade stack") or playing one site as five.
-- Anti-eco (they're broke after you won pistol): warn about getting too close — keep range, don't gift them guns.`;
+- Anti-eco (they're broke after you won pistol): warn about getting too close — keep range, don't gift them guns.
+- Variety: the tactical call must CHANGE round to round — different site, different pace, different tool. Repeating the last call is only right when it's visibly printing rounds (and then say you're going back to the well).`;
 
 /**
  * Per-map nuggets — Active Duty pool as of June 2026 (Ancient, Anubis, Dust2,
@@ -30,39 +33,48 @@ const MAP_BRIEFINGS: Record<string, string> = {
   de_mirage: `MAP NOTES — Mirage:
 - T: mid control wins the map — smoke window, fight top-mid, then split B via catwalk or take A with ramp+palace. Default: 2 mid, lurk palace.
 - T force/pistol: B apps flood with flashes, or 5-man A ramp. Nade-stack apps when they expect it cheap.
-- CT: standard 2A-1mid-2B; retakes come from CT+jungle (A) or market (B). Window AWP controls everything mid.`,
+- CT: standard 2A-1mid-2B; retakes come from CT+jungle (A) or market (B). Window AWP controls everything mid.
+- Change-ups: T slow default into late A ramp hit; contact-peek mid no-smoke; B apps fake into cat-to-A. CT: jungle-to-palace aggression, mid push to top-mid after a won round.`,
   de_inferno: `MAP NOTES — Inferno:
 - Both sides live and die on banana control. T: claim banana early with mollies/flashes, then B execs onto new box and dark; or apps+arch split A pit.
 - T force/pistol: banana flood B, or 5 apps. Utility stack on banana works cheap.
-- CT: spend util on banana every round, 2-1-2; A retakes from arch + graveyard with mollies for pit/site.`,
+- CT: spend util on banana every round, 2-1-2; A retakes from arch + graveyard with mollies for pit/site.
+- Change-ups: T mid take to short A no-apps; banana fake into 5 apps; late-round double-lurk. CT: aggressive apps push with a flash, banana car boost, stacking 3 B off a read.`,
   de_nuke: `MAP NOTES — Nuke:
 - CT-leaning map. T: outside control opens secret+garage B splits; fast A through hut/squeaky punishes light setups; vent drops to B for wraps.
 - T force/pistol: 5-man hut rush A with flashes is the classic.
-- CT: 2 outside is standard; ramp control decides B; retake B via secret together.`,
+- CT: 2 outside is standard; ramp control decides B; retake B via secret together.
+- Change-ups: T slow ramp take to B; A fake into vent drop; outside smoke wall once a half. CT: T-roof aggression, 3-outside overload, silo AWP rounds.`,
   de_ancient: `MAP NOTES — Ancient:
 - Mid control is everything. T: default through mid/donut, then hit A from donut+main or B with ramp smokes.
 - T force/pistol: B ramp rush as five, or donut stack into A.
-- CT: contest donut early, hold B from cave+triple; mid smoke buys the whole round.`,
+- CT: contest donut early, hold B from cave+triple; mid smoke buys the whole round.
+- Change-ups: T A-main split without donut; mid-to-B wrap; slow default punishing CT util waste. CT: donut push with a flash, mid take after two won rounds, B cave lurk.`,
   de_anubis: `MAP NOTES — Anubis (reworked Jan 2026: new hole between E-box and back of B, reversed mid doors):
 - T: water/mid control splits A via connector+main; B hits through palace with smokes for street cross — the new E-box hole adds a sneaky B entrance.
 - T force/pistol: 5 B palace, or mid rush to connector.
-- CT: aggressive mid info pays; A retakes from heaven, B from street/connector — watch the E-box hole on B holds.`,
+- CT: aggressive mid info pays; A retakes from heaven, B from street/connector — watch the E-box hole on B holds.
+- Change-ups: T A main fake into water-to-B; E-box hole sneak after a loud mid take; double-lurk palace+main. CT: water push, connector smoke-off, B street aggression.`,
   de_dust2: `MAP NOTES — Dust 2:
 - T: long control or B tunnels as five; classic mid-to-B split with the CT-cross smoke; catwalk+long A execs.
 - T force/pistol: B rush tunnels or long flood with one smoke for cross.
-- CT: AWP mid/long is king; long 2, short 1, B 2; retake B from window+tunnels squeeze.`,
+- CT: AWP mid/long is king; long 2, short 1, B 2; retake B from window+tunnels squeeze.
+- Change-ups: T short-only A hit with one long lurk; mid doors contact play; long fake into tunnels. CT: pit aggression on long, mid-to-B pinch, short push after plant-side read.`,
   de_train: `MAP NOTES — Train:
 - T: ivy and popdog control first; A execs need smokes for sniper-nest and connector; B through upper with flashes.
 - T force/pistol: 5-man B upper, or A main flood with cheap util.
-- CT: hold ivy + popdog actively; site cross-fires around the trains win retakes — go together.`,
+- CT: hold ivy + popdog actively; site cross-fires around the trains win retakes — go together.
+- Change-ups: T A fake into popdog-to-B; ivy lurk while four hit B; slow round hunting the CT pusher. CT: ivy double-peek, upper B aggression, A-site train boosts.`,
   de_overpass: `MAP NOTES — Overpass:
 - T: bathrooms+long A split, or take water/monster for B with short support. Connector control swings both sites.
 - T force/pistol: 5 B monster, or bathrooms rush.
-- CT: aggressive B fence/heaven boosts gather info; A holds from bank+truck; retake B from water+site together.`,
+- CT: aggressive B fence/heaven boosts gather info; A holds from bank+truck; retake B from water+site together.
+- Change-ups: T long-A only with bathrooms fake; monster slow-walk after loud A util; connector take to split both. CT: bathrooms push, water lurk, party-side stack off a read.`,
   de_vertigo: `MAP NOTES — Vertigo:
 - T: A ramp execs with double smoke, or mid take to B split via window.
 - T force/pistol: 5-man B rush, or ramp flood with flashes.
-- CT: double ramp is standard; retake A from elevator+connector as one unit.`,
+- CT: double ramp is standard; retake A from elevator+connector as one unit.
+- Change-ups: T ramp fake into B stairs; elevator sneak round; slow default forcing CT util first. CT: ramp triple-stack, mid window aggression, B sandbags forward hold.`,
 };
 
 /** Briefing for the active map, or empty when we don't know the map. */

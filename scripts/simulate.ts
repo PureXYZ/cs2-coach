@@ -18,9 +18,11 @@ process.env.FREEZETIME_SECONDS = "1";
 const { GsiTracker } = await import("../src/gsi/tracker.js");
 const { CoachEngine } = await import("../src/coach/engine.js");
 const { config } = await import("../src/config.js");
+const { retakeDecisionLine } = await import("../src/coach/lines.js");
 import type { CoachEvent } from "../src/gsi/tracker.js";
 import type { GsiPayload, GsiWeapon } from "../src/gsi/types.js";
 import type { SpeakRequest } from "../src/coach/engine.js";
+import type { LlmCoach } from "../src/coach/llm.js";
 
 const ME = "765611980000001";
 const MATE = "765611980000002";
@@ -303,6 +305,150 @@ const coldEvents = coldTracker.update(payload({ roundPhase: "live", round: 7, bo
 expect(!coldEvents.some((e) => e.type === "bombPlanted"), "first-ever payload with bomb=planted is a baseline sync, not an event");
 const coldCtx = coldTracker.context();
 expect(coldCtx.round === 8, `mid-round join adopts the live round number (got ${coldCtx.round})`);
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: noise control — singles/doubles silent, same-batch chatter consolidated ===");
+// Fresh engines per check: synthetic event batches straight into handle(), so
+// category cooldowns from the long run above can't mask the behavior under test.
+function freshEngine(): { out: SpeakRequest[]; engine: InstanceType<typeof CoachEngine> } {
+  const out: SpeakRequest[] = [];
+  const engine2 = new CoachEngine((req) => out.push(req), null, () => tracker.context());
+  return { out, engine: engine2 };
+}
+{
+  const { out, engine: e } = freshEngine();
+  e.handle([{ type: "kill", roundKills: 1, headshot: true }], tracker.context());
+  e.handle([{ type: "kill", roundKills: 2, headshot: false }], tracker.context());
+  expect(out.length === 0, "single and double kills stay silent");
+  e.handle([{ type: "kill", roundKills: 3, headshot: false }], tracker.context());
+  expect(out.some((s) => s.category === "kill"), "triple kill still speaks");
+}
+{
+  const { out, engine: e } = freshEngine();
+  e.handle(
+    [
+      { type: "roundEnd", won: true, method: "ct_win_defuse", ourScore: 5, theirScore: 3 },
+      { type: "bombDefused", ourSide: "CT" },
+      { type: "mvp" },
+    ],
+    tracker.context(),
+  );
+  const roundEndLines = out.filter((s) => s.category === "roundEnd");
+  expect(roundEndLines.length === 1, "exactly one consolidated line for the defuse round");
+  expect(!out.some((s) => s.category === "bomb" || s.category === "mvp"), "no separate defuse/MVP chatter in the same batch");
+  // The suppression promised the round-end line tells the whole story — and the
+  // canned fallback (LLM is null here) must keep that promise, not just the LLM.
+  const text = roundEndLines[0]?.text ?? "";
+  expect(/defus|wire|stick|stole/i.test(text), `fallback line tells the defuse story ("${text.slice(0, 60)}...")`);
+  expect(text.includes("5") && text.includes("3"), "fallback line still carries the score");
+  expect(/MVP/i.test(text), "fallback line still mentions the MVP");
+}
+{
+  const { out, engine: e } = freshEngine();
+  e.handle(
+    [
+      { type: "matchEnd", won: true, ourScore: 13, theirScore: 10 },
+      { type: "freezetime", round: 24 },
+      { type: "bombDefused", ourSide: "CT" },
+    ],
+    tracker.context(),
+  );
+  expect(out.some((s) => s.category === "match"), "match-end line spoken");
+  expect(!out.some((s) => s.category === "economy" || s.category === "bomb"), "no buy advice or bomb chatter after the match ended");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: bomb planted right after the player's own kill — back the clutch, never call save ===");
+const spokenF: SpeakRequest[] = [];
+const trackerF = new GsiTracker();
+const engineF = new CoachEngine(
+  (req) => {
+    spokenF.push(req);
+    console.log(`  [say:${req.category}] ${req.text}`);
+  },
+  null,
+  () => trackerF.context(),
+);
+function feedF(label: string, p: GsiPayload): void {
+  const events = trackerF.update(p);
+  if (events.length > 0) {
+    console.log(`${label}: ${events.map((e) => e.type).join(", ")}`);
+    engineF.handle(events, trackerF.context());
+  }
+}
+feedF("warmup", payload({ mapPhase: "warmup" }));
+feedF("r1 freeze", payload({ roundPhase: "freezetime", round: 0 }));
+feedF("r1 live", payload({ roundPhase: "live", round: 0 }));
+feedF("kill mid-clutch", payload({ roundPhase: "live", round: 0, state: { round_kills: 1 }, kills: 1 }));
+feedF("plant lands seconds later", payload({ roundPhase: "live", round: 0, bomb: "planted", state: { round_kills: 1 }, kills: 1 }));
+const fightLine = spokenF.find((s) => s.category === "retake");
+expect(fightLine !== undefined, "retake-category line still spoken");
+expect(fightLine !== undefined && !/save/i.test(fightLine.text), "no save talk while the player is mid-fight");
+expect(fightLine !== undefined && /fight|finish/i.test(fightLine.text), "the line backs the ongoing fight");
+expect(typeof trackerF.context().lastKillSecondsAgo === "number", "lastKillSecondsAgo exposed in context");
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: LLM retake line in flight — dropped when a kill lands after the plant ===");
+// Mock LLM with a manually-resolved promise: the only offline way to exercise
+// tacticalMoment's stillRelevant() (the canned-fallback path never runs it).
+function llmEngine(t: InstanceType<typeof GsiTracker>, out: SpeakRequest[]): { engine: InstanceType<typeof CoachEngine>; resolve: (s: string | null) => void } {
+  let resolve: (s: string | null) => void = () => {};
+  const fakeLlm = {
+    line: () => new Promise<string | null>((r) => { resolve = r; }),
+    recordSpoken: () => {},
+  } as unknown as LlmCoach;
+  const e = new CoachEngine(
+    (req) => out.push(req),
+    fakeLlm,
+    () => t.context(),
+    () => 0,
+    () => t.lastOwnKillAtMs(),
+  );
+  return { engine: e, resolve: (s) => resolve(s) };
+}
+{
+  const out: SpeakRequest[] = [];
+  const t = new GsiTracker();
+  const { engine: e, resolve } = llmEngine(t, out);
+  const run = (p: GsiPayload) => { const ev = t.update(p); if (ev.length) e.handle(ev, t.context()); };
+  run(payload({ mapPhase: "warmup" }));
+  run(payload({ roundPhase: "freezetime", round: 0 }));
+  run(payload({ roundPhase: "live", round: 0 }));
+  run(payload({ roundPhase: "live", round: 0, bomb: "planted" })); // CT plant → LLM call in flight
+  run(payload({ roundPhase: "live", round: 0, bomb: "planted", state: { round_kills: 1 }, kills: 1 })); // kill lands mid-flight
+  resolve("Mock retake-or-save lecture.");
+  await sleep(20);
+  expect(!out.some((s) => s.category === "retake"), "in-flight retake line dropped after the player's mid-flight kill");
+}
+{
+  const out: SpeakRequest[] = [];
+  const t = new GsiTracker();
+  const { engine: e, resolve } = llmEngine(t, out);
+  const run = (p: GsiPayload) => { const ev = t.update(p); if (ev.length) e.handle(ev, t.context()); };
+  run(payload({ mapPhase: "warmup" }));
+  run(payload({ roundPhase: "freezetime", round: 0 }));
+  run(payload({ roundPhase: "live", round: 0 }));
+  run(payload({ roundPhase: "live", round: 0, bomb: "planted" }));
+  resolve("Mock retake-or-save lecture.");
+  await sleep(20);
+  expect(out.some((s) => s.category === "retake" && s.text.includes("Mock")), "LLM retake line still speaks when no kill interrupts it");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: match point + money-reset rounds known to the context ===");
+const trackerMp = new GsiTracker();
+trackerMp.update(payload({ roundPhase: "freezetime", round: 11, ctScore: 12, tScore: 5 }));
+const ctxMp = trackerMp.context();
+expect(ctxMp.matchPoint === "us", `match point derived from live scores (got ${ctxMp.matchPoint})`);
+expect(ctxMp.moneyResetsNextRound === true, "round 12 flagged as last round before the halftime money reset");
+const mustWinLine = retakeDecisionLine({
+  playerIsSelf: true,
+  health: 100,
+  armor: 0,
+  equipValue: 800,
+  matchPoint: "them",
+});
+expect(/win/i.test(mustWinLine) && !/save (it|the|for)/i.test(mustWinLine), "thin gear on match point still gets a must-win retake call, not a save");
 
 // ---------------------------------------------------------------------------
 console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`} — config timings: round=${config.timings.roundSeconds}s bomb=${config.timings.bombSeconds}s`);

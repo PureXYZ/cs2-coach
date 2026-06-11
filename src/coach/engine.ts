@@ -65,19 +65,40 @@ export class CoachEngine {
     private readonly getCtx: () => MatchContext,
     /** ms since the last GSI payload (null before the first) — staleness guard for timers. */
     private readonly payloadAgeMs: () => number | null = () => 0,
+    /** Raw epoch ms of the player's latest own kill — exact, unlike the rounded context field. */
+    private readonly lastOwnKillAt: () => number | null = () => null,
   ) {}
 
   handle(events: CoachEvent[], ctx: MatchContext): void {
+    const batch = new Set(events.map((e) => e.type));
     for (const event of events) {
       try {
-        this.handleOne(event, ctx);
+        if (this.suppressedInBatch(event.type, batch)) continue;
+        this.handleOne(event, ctx, batch);
       } catch (err) {
         log.error("coach", `Failed handling event ${event.type}`, err);
       }
     }
   }
 
-  private handleOne(event: CoachEvent, ctx: MatchContext): void {
+  /**
+   * One moment, one line: a defuse/explosion/MVP that arrives in the same GSI
+   * frame as the round (or match) end is part of that story, not its own
+   * announcement — a live session stacked three lines on a single defuse. The
+   * roundEnd line (LLM or fallback) re-tells the suppressed story itself.
+   * An MVP bundled with the NEXT freezetime instead is NOT suppressed: that
+   * round's end line already went out without it, so nothing would tell it.
+   * Timer cleanup is safe to skip here: roundEnd/matchEnd cancel all timers.
+   */
+  private suppressedInBatch(type: CoachEvent["type"], batch: Set<CoachEvent["type"]>): boolean {
+    if (batch.has("matchEnd") && ["freezetime", "roundEnd", "bombDefused", "bombExploded", "mvp"].includes(type)) {
+      return true;
+    }
+    if (batch.has("roundEnd") && ["bombDefused", "bombExploded", "mvp"].includes(type)) return true;
+    return false;
+  }
+
+  private handleOne(event: CoachEvent, ctx: MatchContext, batch: Set<CoachEvent["type"]>): void {
     switch (event.type) {
       case "matchStart":
         this.cancelTimers();
@@ -93,21 +114,31 @@ export class CoachEngine {
         this.scheduleLateRoundCallout();
         break;
 
-      case "bombPlanted":
+      case "bombPlanted": {
         this.cancelLateRoundTimer();
         this.scheduleBombCallout();
         if (event.ourSide === "CT") {
           // The nuanced retake-or-save call: fast model, gear-aware rule line as
           // fallback. A fast kit-defuse or round end can beat the LLM round-trip,
           // so the line re-checks that the bomb is still live before speaking.
+          const plantAt = Date.now();
           this.tacticalMoment(event, ctx, () => lines.retakeDecisionLine(ctx), "retake", 12_000, "fast", 3, () => {
             const now = this.getCtx();
-            return now.bomb === "planted" && now.roundPhase === "live";
+            if (now.bomb !== "planted" || now.roundPhase !== "live") return false;
+            // A kill landed while the line was in flight: the player is mid-clutch
+            // and handling it — a strategy lecture now is noise at best, "save"
+            // while they're winning at worst (a live session did exactly that).
+            // Raw timestamps: the rounded context field would misclassify kills
+            // within ±0.5s of the plant — exactly the kill-the-planter moment.
+            const killAt = this.lastOwnKillAt();
+            if (killAt !== null && killAt >= plantAt) return false;
+            return true;
           });
         } else {
           this.say(() => lines.bombPlantedLine(event.ourSide), { category: "bomb", priority: 3, maxAgeMs: 12_000 });
         }
         break;
+      }
 
       case "bombDefused":
         this.cancelBombTimer();
@@ -123,16 +154,29 @@ export class CoachEngine {
         this.cancelTimers();
         const won = event.won;
         if (won === undefined) break;
+        const tookMvp = event.mvp || batch.has("mvp");
+        // The same-batch defuse/explosion/MVP lines were suppressed on the
+        // promise that this line covers them — a promise that can't depend on
+        // the LLM being up, so the canned fallback tells the whole story too.
+        const fallback = () => {
+          const story = batch.has("bombDefused")
+            ? lines.bombDefusedLine(ctx.ourSide)
+            : batch.has("bombExploded")
+              ? lines.bombExplodedLine(ctx.ourSide)
+              : null;
+          const score = won
+            ? lines.roundWonLine(event.ourScore, event.theirScore)
+            : lines.roundLostLine(event.ourScore, event.theirScore);
+          const mvpTag = tookMvp ? " Round MVP's yours, somehow." : "";
+          return `${story ? `${story} ` : ""}${score}${mvpTag}`;
+        };
         this.tacticalMoment(
-          event,
+          { ...event, mvp: tookMvp },
           ctx,
-          () =>
-            won
-              ? lines.roundWonLine(event.ourScore, event.theirScore)
-              : lines.roundLostLine(event.ourScore, event.theirScore),
+          fallback,
           "roundEnd",
-          // 12s, not the usual 8: the score line queues behind ace/MVP hype
-          // from the same frame and is still worth hearing that late.
+          // 12s, not the usual 8: the score line queues behind ace hype from
+          // the same frame and is still worth hearing that late.
           12_000,
           "fast",
         );
@@ -157,8 +201,9 @@ export class CoachEngine {
         // Triple and up bypass the 6s cooldown: fast multikills are exactly the
         // sub-6s case, and the first-kill line must never mute the ACE line (a
         // live session lost its entire ace escalation to this cooldown).
+        // Singles and doubles stay silent — kill-by-kill narration is noise.
         this.say(
-          () => lines.killLine(event.roundKills, event.headshot, ctx.playerName),
+          () => lines.killLine(event.roundKills, ctx.playerName),
           { category: "kill", priority: 2, maxAgeMs: 5_000 },
           event.roundKills >= 3,
         );
@@ -279,7 +324,10 @@ export class CoachEngine {
       if (!this.payloadFresh()) return; // GSI went quiet — the frozen ctx would lie
       const ctx = this.getCtx();
       if (ctx.bomb !== "planted" || ctx.roundPhase !== "live") return; // defused/exploded/over already
-      this.say(() => lines.bombTenLine(ctx.ourSide), { category: "clock", priority: 3, maxAgeMs: 5_000 });
+      // A recent kill means the player is mid-fight: give them the clock, not a
+      // "back off and live" order they're actively (and rightly) disobeying.
+      const fighting = ctx.lastKillSecondsAgo !== undefined && ctx.lastKillSecondsAgo <= 12;
+      this.say(() => lines.bombTenLine(ctx.ourSide, fighting), { category: "clock", priority: 3, maxAgeMs: 5_000 });
     }, delayMs);
   }
 

@@ -52,7 +52,13 @@ async function main(): Promise<void> {
     return { ...ctx, playerName: config.coach.playerNickname ?? ctx.playerName };
   };
 
-  const engine = new CoachEngine((req) => voice.say(req), llm, fullContext, () => tracker.lastUpdateAgeMs());
+  const engine = new CoachEngine(
+    (req) => voice.say(req),
+    llm,
+    fullContext,
+    () => tracker.lastUpdateAgeMs(),
+    () => tracker.lastOwnKillAtMs(),
+  );
 
   // Raw GSI capture for offline analysis — what does the game actually send,
   // and which events did the tracker derive from each frame?

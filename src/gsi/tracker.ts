@@ -14,7 +14,9 @@ export type CoachEvent =
   | { type: "bombPlanted"; ourSide: Team | undefined }
   | { type: "bombDefused"; ourSide: Team | undefined }
   | { type: "bombExploded"; ourSide: Team | undefined }
-  | { type: "roundEnd"; won: boolean | undefined; method: string; ourScore: number; theirScore: number }
+  // mvp is filled in by the engine when the MVP event landed in the same payload
+  // batch — the round-end line then covers it instead of a separate MVP line.
+  | { type: "roundEnd"; won: boolean | undefined; method: string; ourScore: number; theirScore: number; mvp?: boolean }
   | { type: "halftime" }
   | { type: "matchPoint"; forUs: boolean }
   | { type: "matchEnd"; won: boolean | undefined; ourScore: number; theirScore: number }
@@ -47,6 +49,15 @@ export interface MatchContext {
   theirScore?: number;
   /** Consecutive losses for our team — drives loss-bonus economy advice. */
   ourLossStreak?: number;
+  /** Someone is one round from taking the match — saving is pointless, say so. */
+  matchPoint?: "us" | "them";
+  /** Last round before a half/OT money reset (MR12 round 12/24, then every 3rd) — saving is pointless. */
+  moneyResetsNextRound?: true;
+  /**
+   * Seconds since the player's own most recent kill this round (alive only).
+   * Small values mean they're mid-fight — "save"/"disengage" calls are tone-deaf.
+   */
+  lastKillSecondsAgo?: number;
   playerName?: string;
   health?: number;
   armor?: number;
@@ -120,6 +131,8 @@ export class GsiTracker {
   /** Own gun clips (rounds by weapon name) — a decrease means the player fired. */
   private prevGunClips: Record<string, number> | null = null;
   private lastGunfireAt: number | null = null;
+  /** When the player's own round_kills last ticked up — "mid-fight" signal for save-call suppression. */
+  private lastOwnKillAt: number | null = null;
   /** Spectated-teammate baseline while the user is dead. */
   private prevSpec: { steamid: string; roundKills: number } | null = null;
   private inMatch = false;
@@ -269,6 +282,7 @@ export class GsiTracker {
       this.prevNades = null;
       this.prevGunClips = null;
       this.prevSpec = null;
+      this.lastOwnKillAt = null;
     } else if (isSelf && payload.player?.state) {
       const s = payload.player.state;
       this.prevSpec = null; // alive and self again — spectate baseline is stale
@@ -320,6 +334,7 @@ export class GsiTracker {
           // A collateral or nade double can land inside one buffered frame —
           // count every increment, not every frame.
           const killsDelta = cur.roundKills - this.prevSelf.roundKills;
+          this.lastOwnKillAt = now;
           for (let i = 0; i < killsDelta; i++) this.memory.recordKill(this.liveRound);
           if (cur.roundKills >= 5) this.memory.recordNotable(this.liveRound, "ACE");
           else if (cur.roundKills === 4) this.memory.recordNotable(this.liveRound, "4k");
@@ -407,6 +422,7 @@ export class GsiTracker {
       this.prevGunClips = null;
       this.lastNadeThrows = {};
       this.lastGunfireAt = null;
+      this.lastOwnKillAt = null; // new round, new fights — last round's kill isn't "mid-fight"
       this.prevSpec = null;
     }
 
@@ -451,6 +467,16 @@ export class GsiTracker {
 
     const pistols = this.memory.pistolResults();
 
+    // Match point from the live scores (the freezetime event only fires once per
+    // stretch; mid-round consumers like the retake call need it every frame).
+    const target = ourScore !== undefined && theirScore !== undefined ? winTarget(ourScore, theirScore) : undefined;
+    const matchPoint =
+      target === undefined ? undefined : ourScore === target - 1 ? "us" : theirScore === target - 1 ? "them" : undefined;
+    // MR12: money resets at the half (after round 12), going into OT (after 24)
+    // and between OT halves (every 3 rounds) — saving into a reset burns the gear.
+    const moneyResetsNextRound =
+      p?.map?.mode === "competitive" && (roundNum === 12 || roundNum === 24 || (roundNum > 24 && (roundNum - 24) % 3 === 0));
+
     return {
       map: p?.map?.name,
       mode: p?.map?.mode,
@@ -464,6 +490,14 @@ export class GsiTracker {
       ourScore,
       theirScore,
       ourLossStreak: team?.consecutive_round_losses,
+      matchPoint,
+      moneyResetsNextRound: moneyResetsNextRound || undefined,
+      // Alive only: GSI keeps describing the dead self for the death-cam seconds
+      // before auto-spectate switches — "mid-fight" must never describe a corpse.
+      lastKillSecondsAgo:
+        isSelf && (p?.player?.state?.health ?? 0) > 0 && this.lastOwnKillAt !== null
+          ? Math.round((now - this.lastOwnKillAt) / 1000)
+          : undefined,
       playerName: isSelf ? p?.player?.name : undefined,
       health: isSelf ? p?.player?.state?.health : undefined,
       armor: isSelf ? p?.player?.state?.armor : undefined,
@@ -497,6 +531,13 @@ export class GsiTracker {
    *  use this so clock callouts never speak into a crashed/closed game. */
   lastUpdateAgeMs(): number | null {
     return this.lastUpdateAt === null ? null : Date.now() - this.lastUpdateAt;
+  }
+
+  /** Raw epoch ms of the player's own latest kill this round (null if none).
+   *  The engine compares this against the plant timestamp without the ±0.5s
+   *  error the rounded context field would introduce. */
+  lastOwnKillAtMs(): number | null {
+    return this.lastOwnKillAt;
   }
 
   private isSelf(payload: GsiPayload): boolean {

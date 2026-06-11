@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { log } from "../log.js";
 import type { MatchContext, CoachEvent } from "../gsi/tracker.js";
 import { ECONOMY_CHEATSHEET, DECISION_PRINCIPLES, mapBriefing } from "./knowledge.js";
+import { pick } from "./lines.js";
 
 /**
  * "smart" = slow moments (freezetime, halftime, match end) on the big model.
@@ -10,23 +11,31 @@ import { ECONOMY_CHEATSHEET, DECISION_PRINCIPLES, mapBriefing } from "./knowledg
  */
 export type LlmTier = "smart" | "fast";
 
-const SYSTEM_CORE = `You are "Coach" — an energetic, sharp Counter-Strike 2 coach sitting in a Discord voice channel with a player and their friends during a Premier/Competitive match. Each request gives you a JSON snapshot of the game state plus a description of the moment; you reply with ONE spoken coaching line.
+const SYSTEM_CORE = `You are "Coach" — a dry, sarcastic, perpetually unimpressed Counter-Strike 2 coach sitting in a Discord voice channel with a player and their friends during a Premier/Competitive match. The player ASKED for a negative, sarcastic coach — it's a consensual roast between friends. Each request gives you a JSON snapshot of the game state plus a description of the moment; you reply with ONE spoken coaching line.
+
+VOICE:
+- Deadpan, backhanded, weary. Mock sympathy for deaths, lowered expectations for buys, grudging respect when something is genuinely great (being annoyed about being impressed is the bit). Roast the gameplay, never the person's identity.
+- The sarcasm is the wrapper, NEVER the content: every line still carries the real call — the buy, the retake/save decision, the score, the discipline point. A joke that replaces the advice is a failed line.
+- Don't recycle joke constructions: if a recent line opened "Oh look," or "Congratulations," find a new angle.
 
 WHAT YOU CAN AND CANNOT SEE:
 - You see only the player's OWN state (money, HP, armor, weapons, kills), team scores, round history and the match memory in the snapshot. You have NO kill feed, NO positions, NO alive counts, NO enemy or teammate economy. Never invent any of those.
+- HARD GAME FACTS: only the T side can plant the bomb; only the CT side can defuse it. If our side is CT, every plant was the ENEMY's doing; if our side is T, every defuse was the ENEMY's doing. Never credit a plant or defuse to the wrong team.
 - "playerIsSelf": false means the player is DEAD — own-state fields (money, HP, weapons) are absent or belong to the "spectating" teammate. Never give a dead player advice about their current gear.
-- "spectating" means the player is DEAD and watching that teammate — those stats belong to the teammate.
+- "spectating" means the player is DEAD and watching that teammate — those stats belong to the teammate. The spectated teammate is on OUR team; they did not plant if we're CT and did not defuse if we're T.
+- "lastKillSecondsAgo" small (under ~10) means the player is mid-fight and winning it: do NOT tell them to disengage, save, or rotate — back the play or keep it to the essentials.
+- "matchPoint": "them" means losing this round loses the match — a save preserves nothing, the round must be played to win. "moneyResetsNextRound" true means saved gear evaporates at the reset — same conclusion. "matchPoint": "us" is different: normal retake-or-save judgment still applies (a lost round keeps the gear and the lead) — just close calmly.
 - Because you don't know how many players are alive, phrase mid-round advice conditionally: "if the retake isn't clean...", "if you've got the numbers...".
 - "history" and "notables" really happened — referencing them is encouraged. Inventing other past events is forbidden.
 
 HOW TO SPEAK:
 - ONE line, at most 28 words; mid-round moments want 8-15 words. Output ONLY the line — no preamble, quotes, markdown, emoji or reasoning. It goes straight to text-to-speech.
-- Plain spoken English, contractions welcome. Energetic but not exhausting: freezetime lines can breathe, mid-round lines are short and urgent-calm.
+- Plain spoken English, contractions welcome. Deadpan, not shouty; mid-round lines are short and dry-urgent.
 - Be concrete: tie the call to the actual money, gear, score, clock and history in the snapshot.
 - Vary your phrasing — never reuse the openers or signature words from your recent lines.
 
 THE CREW:
-- The player's friends are in the voice channel listening, but you only know the names the snapshot gives you — never invent or guess a name. Light teasing is welcome, real negativity never — after lost rounds be constructive, not snarky. While the player is dead and spectating, cheering the spectated teammate BY NAME is gold.
+- The player's friends are in the voice channel listening, but you only know the names the snapshot gives you — never invent or guess a name. Roasting the player is the job; teammates get lighter teasing. While the player is dead and spectating, narrating the spectated teammate BY NAME is gold.
 
 ${ECONOMY_CHEATSHEET}
 
@@ -40,6 +49,8 @@ export class LlmCoach {
   private timeoutMs: number;
   private fastTimeoutMs: number;
   private recentLines: string[] = [];
+  /** The actual PLANS called at recent freezetimes — the anti-repeat for strategy, not phrasing. */
+  private recentPlans: string[] = [];
 
   constructor(opts: {
     apiKey: string;
@@ -79,8 +90,11 @@ export class LlmCoach {
     const userContent = [
       `Game state snapshot: ${JSON.stringify(context)}`,
       `Moment: ${describeMoment(event, context)}`,
+      event.type === "freezetime" && this.recentPlans.length
+        ? `Plans you already called this match, oldest first — rotate sites and styles instead of repeating them, UNLESS the last call is visibly printing rounds (then keep it and say you're going back to the well): ${JSON.stringify(this.recentPlans)}`
+        : "",
       this.recentLines.length
-        ? `Your recent lines, oldest first (do NOT reuse their phrasing, openers, or signature words): ${JSON.stringify(this.recentLines)}`
+        ? `Your recent lines, oldest first (do NOT reuse their phrasing, openers, joke constructions or signature words): ${JSON.stringify(this.recentLines)}`
         : "",
     ]
       .filter(Boolean)
@@ -114,6 +128,10 @@ export class LlmCoach {
 
       if (!text) return null;
       this.recordSpoken(text);
+      if (event.type === "freezetime") {
+        this.recentPlans.push(text);
+        if (this.recentPlans.length > 6) this.recentPlans.shift();
+      }
       return text;
     } catch (err) {
       log.warn("llm", `${model} call failed after ${Date.now() - startedAt}ms (${err instanceof Error ? err.message : err}) — using rule-based line`);
@@ -132,40 +150,91 @@ export class LlmCoach {
   }
 }
 
+/**
+ * Rotating coaching lens for freezetime: forces the strategy itself to vary
+ * round to round (a shuffle bag — every angle plays before any repeats).
+ * The angle is a starting point, not an order: economy reality always wins.
+ */
+const STRATEGY_ANGLES = [
+  "commit to ONE site or area for this round and name it",
+  "map control first — name the key area from the map notes and how to take or hold it",
+  "a utility plan — what to throw and where, before contact",
+  "pace: either a fast hit before they're set, or a slow default that punishes impatience — pick one",
+  "anti-read: look at how the recent rounds were lost or won and counter the pattern",
+  "one discipline point: trading, crossfires, not dry-peeking, saving util for the retake",
+  "economy warfare: make their buy miserable — deny exits, keep your guns alive",
+  "do the thing this team hasn't done all half — break your own pattern",
+  "play through whatever's working this match (check history and notables for who or what is hot)",
+];
+
+/** True translation of GSI's win-condition token, relative to OUR side. */
+function methodStory(method: string, won: boolean): string {
+  if (method.includes("bomb")) return won ? "your bomb detonated" : "their bomb detonated on you";
+  if (method.includes("defuse")) return won ? "your team defused it" : "the ENEMY defused your team's plant";
+  if (method.includes("time")) return won ? "the clock ran out on them" : "the clock ran out on you";
+  if (method.includes("elimination")) return won ? "you wiped them" : "your team got wiped";
+  return method;
+}
+
 function describeMoment(event: CoachEvent, ctx: MatchContext): string {
   switch (event.type) {
     case "freezetime": {
       const pistol = ctx.roundKind === "pistol";
-      return pistol
-        ? `Freezetime of round ${event.round} — PISTOL ROUND (everyone has 800, no carryover). Give one concrete plan for this map and side: where to go, what to buy (armor vs utility vs upgraded pistol), together as five.`
-        : `Freezetime / buy period, round ${event.round}. Give ONE buy call matched to the money and loss bonus, plus ONE concrete tactical idea for this map and side (a place to hit, utility to stack, or a discipline point). If the round history shows a pattern — lost streak, won pistols, repeated bomb-site losses — use it.`;
+      if (pistol) {
+        return `Freezetime of round ${event.round} — PISTOL ROUND (everyone has 800, no carryover). Give one concrete plan for this map and side: where to go, what to buy (armor vs utility vs upgraded pistol), together as five.`;
+      }
+      const angle = pick("strategyAngle", STRATEGY_ANGLES);
+      const mustSpend = ctx.moneyResetsNextRound
+        ? " Money RESETS after this round — saving is pointless, say so if anyone might hold back."
+        : "";
+      return `Freezetime / buy period, round ${event.round}. Give ONE buy call matched to the money and loss bonus, plus ONE concrete tactical idea for this map and side. Coaching angle for the tactical idea this round (ground it in the snapshot; ignore it only if the economy dictates otherwise): ${angle}.${mustSpend} If the round history shows a pattern — lost streak, won pistols, repeated bomb-site losses — use it.`;
     }
     case "bombPlanted":
       if (event.ourSide === "CT") {
+        const mustWin =
+          ctx.matchPoint === "them"
+            ? " It's THEIR match point — losing this round loses the match, so saving is pointless. The round must be played to win."
+            : ctx.moneyResetsNextRound
+              ? " Money resets next round — saving preserves nothing, lean retake."
+              : ctx.matchPoint === "us"
+                ? " It's OUR match point — close-out mindset, but normal retake-or-save judgment applies."
+                : "";
         if (!ctx.playerIsSelf) {
-          return `Bomb just got planted — your team is CT, about 40 seconds on the clock, and the player is DEAD watching a teammate. Call the retake-or-save for the TEAM from score, economy and history only (no own-gear talk); cheering the spectated teammate by name is welcome. Short and urgent.`;
+          return `The ENEMY (T side) just planted the bomb — your team is CT, about 40 seconds on the clock. The player is DEAD, spectating teammate "${ctx.spectating?.name ?? "unknown"}" — that teammate is a CT trying to RETAKE; they did NOT plant, and any plant credit belongs to the enemy. Call the retake-or-save for the TEAM from score, economy and history only (no own-gear talk); narrating the spectated teammate by name is welcome.${mustWin} Short and dry-urgent.`;
         }
-        return `Bomb just got planted — your team is CT, about 40 seconds on the clock. Make the retake-or-save call from the snapshot: gear value, HP, armor, defuse kit, score situation and economy next round. You don't know teammate equipment or alive counts, so phrase it conditionally. Short and urgent.`;
+        const fighting =
+          ctx.lastKillSecondsAgo !== undefined && ctx.lastKillSecondsAgo <= 10
+            ? ` The player got a kill ${ctx.lastKillSecondsAgo} seconds ago — they are MID-FIGHT and winning it. Do NOT tell them to save or disengage; back the play in very few words.`
+            : "";
+        return `The ENEMY (T side) just planted the bomb — your team is CT, about 40 seconds on the clock. Make the retake-or-save call from the snapshot: gear value, HP, armor, defuse kit, score situation and economy next round. You don't know teammate equipment or alive counts, so phrase it conditionally.${mustWin}${fighting} Short and dry-urgent.`;
       }
       if (event.ourSide === "T") {
-        return `Your team just planted the bomb (T side). One short post-plant discipline line: positions, patience, play the clock.`;
+        return `YOUR team just planted the bomb (you're T side). One short post-plant discipline line: positions, patience, play the clock.`;
       }
       return `The bomb was just planted. One short, side-neutral heads-up line.`;
-    case "roundEnd":
-      return `Round just ended: ${event.won ? "WON" : "LOST"} (${event.method}), score now ${event.ourScore}-${event.theirScore}. ONE punchy reaction line, 15 words max — reference the round's story (kills, plant, streak, a teammate's play) when it's interesting, otherwise keep it simple. The buy advice comes separately at freezetime, don't give it here.`;
+    case "roundEnd": {
+      const mvp = event.mvp ? " The player also took round MVP — fold one backhanded nod to it into the same line." : "";
+      const story = event.won !== undefined ? ` (${methodStory(event.method, event.won)})` : "";
+      return `Round just ended: ${event.won ? "WON" : "LOST"}${story}, score now ${event.ourScore}-${event.theirScore}.${mvp} ONE dry reaction line, 15 words max — reference the round's story (kills, plant, streak, a teammate's play) when it's interesting, otherwise keep it simple. Get the plant/defuse sides right: T plants, CT defuses. The buy advice comes separately at freezetime, don't give it here.`;
+    }
     case "teamkill":
-      return `The player just TEAM-KILLED a teammate. One playful roast or mock-apology — keep it light and friendly, never genuinely mean.`;
+      return `The player just TEAM-KILLED a teammate. One deadpan roast or mock-apology on their behalf — sarcastic, not genuinely hostile.`;
     case "halftime":
-      return `Halftime break. Give a short halftime talk grounded in the actual half: the score, pistol result, streaks, anything notable from history. Set the mindset for the side switch (new economy, new roles).`;
+      return `Halftime break. Give a short, dry halftime talk grounded in the actual half: the score, pistol result, streaks, anything notable from history. Set the mindset for the side switch (economy resets, new roles) — sarcasm welcome, the actual reset facts mandatory.`;
     case "matchPoint":
       return event.forUs
-        ? "Match point in our favor — closing mindset, no hero plays."
-        : "Opponent match point — must-win round, anti-tilt, one round at a time.";
+        ? "Match point in our favor — closing mindset, no hero plays. Deadpan, not a pep rally."
+        : "Opponent match point — must-win round, no saving, one round at a time. Dry, not doom.";
     case "matchEnd":
+      // won is undefined when the app (re)connected too late to know our side —
+      // never let the ternary read that as a loss and roast a winning team.
+      if (event.won === undefined) {
+        return `The match just ended ${event.ourScore}-${event.theirScore}, but you don't know which score is ours. One dry, outcome-neutral sign-off — do NOT claim a win or a loss.`;
+      }
       return event.won
-        ? `The match was just WON ${event.ourScore}-${event.theirScore}. Celebrate briefly — call back the best moment from notables/history if there is one.`
-        : `The match was just lost ${event.ourScore}-${event.theirScore}. Brief, genuine, constructive sign-off — one real positive from the match if history offers one. No toxicity.`;
+        ? `The match was just WON ${event.ourScore}-${event.theirScore}. One sarcastic victory lap — grudging respect, call back the best moment from notables/history if there is one.`
+        : `The match was just lost ${event.ourScore}-${event.theirScore}. One dry sign-off — a real observation from history beats empty comfort. Roast the result, not the people; end on the queue-again note.`;
     default:
-      return `Event: ${event.type}. React appropriately in one short line.`;
+      return `Event: ${event.type}. React appropriately in one short, dry line.`;
   }
 }
