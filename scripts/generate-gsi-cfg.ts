@@ -2,9 +2,11 @@
  * Generates cs2/gamestate_integration_coach.cfg from your .env (GSI_PORT, GSI_TOKEN)
  * and this machine's LAN IP.
  *
- *   npm run cfg                 -> auto-detects this machine's LAN IPv4
- *   npm run cfg -- --host <ip>  -> use an explicit IP (run this when generating the
- *                                  cfg on a machine other than the one running the coach)
+ *   npm run cfg                  -> auto-detects this machine's LAN IPv4
+ *   npm run cfg -- --host <ip>   -> use an explicit IP (run this when generating the
+ *                                   cfg on a machine other than the one running the coach)
+ *   npm run cfg -- --host <url>  -> a full http(s):// URL is used verbatim (hosted
+ *                                   deployments, e.g. https://coach.ondigitalocean.app)
  *
  * Copy the generated file to the GAMING PC at:
  *   <Steam>\steamapps\common\Counter-Strike Global Offensive\game\csgo\cfg\
@@ -37,12 +39,18 @@ if (!host) {
 const port = process.env.GSI_PORT ?? "3000";
 const token = process.env.GSI_TOKEN ?? "";
 
+// A full URL is taken verbatim — hosted platforms terminate TLS on 443, so no port
+// belongs in the uri. A bare host/IP keeps the classic http://host:port form.
+const uri = /^https?:\/\//i.test(host)
+  ? host.replace(/\/+$/, "")
+  : `http://${host}:${port}`;
+
 // Valve KeyValues format — quoted strings, whitespace-separated, no commas/colons.
 // Spectator-only components are subscribed too: they cost nothing while playing
 // and make the same coach work if you ever run it on a spectating client.
 const cfg = `"CS2 Coach"
 {
-  "uri"        "http://${host}:${port}"
+  "uri"        "${uri}"
   "timeout"    "5.0"
   "buffer"     "0.1"
   "throttle"   "0.1"
@@ -76,7 +84,7 @@ mkdirSync(dirname(outPath), { recursive: true });
 writeFileSync(outPath, cfg, "utf8");
 
 console.log(`Wrote ${outPath}`);
-console.log(`GSI endpoint: http://${host}:${port}${token ? " (auth token included)" : " (no auth token — set GSI_TOKEN in .env!)"}`);
+console.log(`GSI endpoint: ${uri}${token ? " (auth token included)" : " (no auth token — set GSI_TOKEN in .env!)"}`);
 console.log("");
 console.log("Next: copy the file to the gaming PC at");
 console.log("  C:\\Program Files (x86)\\Steam\\steamapps\\common\\Counter-Strike Global Offensive\\game\\csgo\\cfg\\");
