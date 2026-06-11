@@ -94,6 +94,10 @@ export const config = {
     // line that lands 3 seconds earlier beats a smarter one. Set to the same value as
     // COACH_LLM_MODEL if you'd rather have Opus everywhere.
     fastModel: optional("COACH_LLM_FAST_MODEL", "claude-haiku-4-5"),
+    // Reasoning effort for the smart tier (low | medium | high | max). Opus 4.8
+    // defaults to "high"; "low" is ~20% faster for these one-liner replies.
+    // Only sent on smart-tier calls (Haiku errors on it); empty string = omit.
+    effort: optional("COACH_LLM_EFFORT", "low"),
     maxTokens: intEnv("COACH_LLM_MAX_TOKENS", 150),
     // Freezetime is ~15s; if Claude hasn't answered by then the line is useless.
     timeoutMs: intEnv("COACH_LLM_TIMEOUT_MS", 9000),

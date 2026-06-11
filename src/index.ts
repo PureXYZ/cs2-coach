@@ -34,6 +34,7 @@ async function main(): Promise<void> {
         apiKey: config.llm.apiKey!,
         model: config.llm.model,
         fastModel: config.llm.fastModel,
+        effort: config.llm.effort,
         maxTokens: config.llm.maxTokens,
         timeoutMs: config.llm.timeoutMs,
         fastTimeoutMs: config.llm.fastTimeoutMs,
