@@ -93,7 +93,7 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
         });
         return;
       }
-      await interaction.deferReply();
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await deps.voice.join(channel);
       await interaction.editReply(`🎙️ Coach is live in **${channel.name}**. Start your match — I'm watching the game state.`);
       return;
@@ -101,7 +101,7 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
 
     case "leave": {
       deps.voice.leave();
-      await interaction.reply("Coach signing off. GG!");
+      await interaction.reply({ content: "Coach signing off. GG!", flags: MessageFlags.Ephemeral });
       return;
     }
 
