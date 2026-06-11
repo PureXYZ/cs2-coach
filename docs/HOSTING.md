@@ -62,6 +62,18 @@ Point the cfg at the HTTPS URL (no port): `"uri" "https://your-app.up.railway.ap
 | The cfg file | Regenerate once with the host's address; done. |
 | Mac setup | Never needed. |
 
+### Updating the hosted coach
+
+The host keeps a git clone of the public repo, so updates are: commit, push, then
+
+```
+npm run deploy
+```
+
+which SSHes into `DEPLOY_HOST` (set in `.env`), pulls main, rebuilds the Docker image, and restarts the container (~30s of downtime; rejoin voice with `/coach join`).
+
+**Caveat learned the hard way:** DigitalOcean App Platform (and similar gVisor-sandboxed PaaS) cannot run this app — they block the UDP traffic Discord voice needs, so `/coach join` times out even though the bot logs in. Use a real VM (droplet/VPS).
+
 ### Operational tips
 
 - `GET http://<host>:3000/` is a health check returning the last-payload age — point an uptime monitor at it.
