@@ -15,7 +15,8 @@
     "typecheck": "tsc --noEmit",
     "sim": "tsx scripts/simulate.ts",
     "replay": "tsx scripts/replay-log.ts",
-    "cfg": "tsx scripts/generate-gsi-cfg.ts"
+    "cfg": "tsx scripts/generate-gsi-cfg.ts",
+    "deploy": "tsx scripts/deploy.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.1",
