@@ -45,6 +45,7 @@ export class LlmCoach {
   private client: Anthropic;
   private model: string;
   private fastModel: string;
+  private effort: Anthropic.OutputConfig["effort"];
   private maxTokens: number;
   private timeoutMs: number;
   private fastTimeoutMs: number;
@@ -56,6 +57,7 @@ export class LlmCoach {
     apiKey: string;
     model: string;
     fastModel: string;
+    effort?: string;
     maxTokens: number;
     timeoutMs: number;
     fastTimeoutMs: number;
@@ -63,6 +65,7 @@ export class LlmCoach {
     this.client = new Anthropic({ apiKey: opts.apiKey });
     this.model = opts.model;
     this.fastModel = opts.fastModel;
+    this.effort = (opts.effort || undefined) as Anthropic.OutputConfig["effort"];
     this.maxTokens = opts.maxTokens;
     this.timeoutMs = opts.timeoutMs;
     this.fastTimeoutMs = opts.fastTimeoutMs;
@@ -106,6 +109,9 @@ export class LlmCoach {
         {
           model,
           max_tokens: this.maxTokens,
+          // Opus defaults to effort "high"; "low" shaves ~20% off latency with no
+          // visible quality drop on one-liners. Smart tier only — Haiku rejects it.
+          ...(tier === "smart" && this.effort ? { output_config: { effort: this.effort } } : {}),
           system,
           messages: [{ role: "user", content: userContent }],
         },
