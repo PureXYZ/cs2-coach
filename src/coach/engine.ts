@@ -188,7 +188,7 @@ export class CoachEngine {
                 : won
                   ? lines.roundWonLine(event.ourScore, event.theirScore)
                   : lines.roundLostLine(event.ourScore, event.theirScore);
-          const mvpTag = tookMvp ? " Round MVP's yours, somehow." : "";
+          const mvpTag = tookMvp ? " And the MVP star's yours. Sure. Why not." : "";
           return `${story ? `${story} ` : ""}${score}${mvpTag}`;
         };
         this.tacticalMoment(

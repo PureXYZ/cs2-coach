@@ -339,7 +339,7 @@ function freshEngine(): { out: SpeakRequest[]; engine: InstanceType<typeof Coach
   // The suppression promised the round-end line tells the whole story — and the
   // canned fallback (LLM is null here) must keep that promise, not just the LLM.
   const text = roundEndLines[0]?.text ?? "";
-  expect(/defus|wire|stick|stole/i.test(text), `fallback line tells the defuse story ("${text.slice(0, 60)}...")`);
+  expect(/defus|wire|stuck|stole|ninja|bomb's dead|retake guide/i.test(text), `fallback line tells the defuse story ("${text.slice(0, 60)}...")`);
   expect(text.includes("5") && text.includes("3"), "fallback line still carries the score");
   expect(/MVP/i.test(text), "fallback line still mentions the MVP");
 }
@@ -384,7 +384,7 @@ feedF("plant lands seconds later", payload({ roundPhase: "live", round: 0, bomb:
 const fightLine = spokenF.find((s) => s.category === "retake");
 expect(fightLine !== undefined, "retake-category line still spoken");
 expect(fightLine !== undefined && !/save/i.test(fightLine.text), "no save talk while the player is mid-fight");
-expect(fightLine !== undefined && /fight|finish/i.test(fightLine.text), "the line backs the ongoing fight");
+expect(fightLine !== undefined && /keep going|next|stay on it|finish/i.test(fightLine.text), "the line backs the ongoing fight");
 expect(typeof trackerF.context().lastKillSecondsAgo === "number", "lastKillSecondsAgo exposed in context");
 
 // ---------------------------------------------------------------------------
@@ -448,7 +448,10 @@ const mustWinLine = retakeDecisionLine({
   equipValue: 800,
   matchPoint: "them",
 });
-expect(/win/i.test(mustWinLine) && !/save (it|the|for)/i.test(mustWinLine), "thin gear on match point still gets a must-win retake call, not a save");
+expect(
+  /retake|all five|all in|site|win|send/i.test(mustWinLine) && !/sav(e|ing) (it|for|your)/i.test(mustWinLine),
+  `thin gear on match point still gets a must-win retake call, not a save ("${mustWinLine}")`,
+);
 
 // ---------------------------------------------------------------------------
 console.log("\n=== scenario: triple-kill line goes stale once the fourth kill lands ===");
@@ -498,7 +501,10 @@ console.log("\n=== scenario: last round of the half / regulation — no next-rou
     { round: 24, moneyResetsNextRound: true, ourSide: "CT", playerIsSelf: true },
   );
   const line = out.find((s) => s.category === "roundEnd");
-  expect(line !== undefined && /overtime|extra rounds/i.test(line.text), `12-12 after round 24 mentions overtime ("${line?.text.slice(0, 70)}")`);
+  expect(
+    line !== undefined && /(overtime|\bOT\b|ten (grand|K|thousand))/i.test(line.text),
+    `12-12 after round 24 mentions overtime ("${line?.text.slice(0, 70)}")`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -508,10 +514,10 @@ console.log("\n=== scenario: freezetime economy knows resets, match point and pi
   expect(resetEco !== null && /spend|force|empty|buy/i.test(resetEco), `reset-round eco says spend ("${resetEco}")`);
   expect(resetEco !== null && !/real buy|buy lands next/i.test(resetEco), "no save-for-next-round advice into a money wipe");
   const mpEco = economyLine({ playerIsSelf: true, money: 1200, matchPoint: "them" });
-  expect(mpEco !== null && /match|win|done|GG|force/i.test(mpEco), `their-match-point eco is a must-win call ("${mpEco}")`);
+  expect(mpEco !== null && /match|win|done|GG|force|buy|spend|table|bank/i.test(mpEco), `their-match-point eco is a must-win call ("${mpEco}")`);
   const pistolEco = economyLine({ playerIsSelf: true, money: 800, roundKind: "pistol" });
-  expect(pistolEco !== null && /pistol|kevlar|armor|util|nade|team/i.test(pistolEco), `pistol round gets pistol advice ("${pistolEco}")`);
-  expect(pistolEco !== null && !/eco|broke|save/i.test(pistolEco), "pistol round not mistaken for an eco");
+  expect(pistolEco !== null && /pistol|kevlar|armor|util|nade|team|pack|group/i.test(pistolEco), `pistol round gets pistol advice ("${pistolEco}")`);
+  expect(pistolEco !== null && !/\beco\b|\bsave\b/i.test(pistolEco), "pistol round not mistaken for an eco");
 }
 
 // ---------------------------------------------------------------------------

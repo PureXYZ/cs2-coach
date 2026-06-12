@@ -190,6 +190,10 @@ export class VoiceCoach {
       }
     }
 
+    // One look-ahead only: with audio already held for the next slot, wait for
+    // the player to go idle instead of synthesizing (and leaking) a third line.
+    if (this.prefetched) return;
+
     const next = this.queue.shift();
     if (!next) return;
 
