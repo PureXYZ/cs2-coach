@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
 import {
   ChatInputCommandInteraction,
   Client,
@@ -22,6 +24,11 @@ export interface BotDeps {
   };
 }
 
+/** The coach's anthem — lives in the repo, copied into the Docker image. Resolved
+ *  from the working directory, which is the project root both locally and in the
+ *  container (WORKDIR /app). */
+const SONG_PATH = path.resolve("assets/ez4ence.ogg");
+
 const commands = [
   new SlashCommandBuilder()
     .setName("coach")
@@ -34,7 +41,9 @@ const commands = [
         .setDescription("Make the coach say something (test)")
         .addStringOption((opt) => opt.setName("text").setDescription("What to say").setRequired(true)),
     )
-    .addSubcommand((sub) => sub.setName("status").setDescription("Show GSI / voice / TTS status")),
+    .addSubcommand((sub) => sub.setName("status").setDescription("Show GSI / voice / TTS status"))
+    .addSubcommand((sub) => sub.setName("song").setDescription("Blast EZ4ENCE in the voice channel"))
+    .addSubcommand((sub) => sub.setName("stop").setDescription("Stop the song (coaching continues)")),
 ].map((c) => c.toJSON());
 
 export async function startBot(deps: BotDeps): Promise<Client> {
@@ -120,6 +129,43 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
       }
       deps.voice.say({ text, priority: 5, maxAgeMs: 30_000, category: "manual", eventAt: Date.now() });
       await interaction.reply({ content: `Saying: "${text}"`, flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    case "song": {
+      if (!deps.voice.connected) {
+        await interaction.reply({
+          content: "I'm not in a voice channel — use `/coach join` first.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      if (deps.voice.songActive) {
+        await interaction.reply({
+          content: "It's already playing. `/coach stop` if you can't handle it.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      if (!existsSync(SONG_PATH)) {
+        await interaction.reply({
+          content: "Song file is missing on the server — check the deploy.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      deps.voice.playFile(SONG_PATH);
+      // Public on purpose — the whole channel hears it, so they get to see who did this.
+      await interaction.reply({ content: "🎵 **EZ4ENCE.** You're welcome." });
+      return;
+    }
+
+    case "stop": {
+      if (deps.voice.stopSong()) {
+        await interaction.reply({ content: "Song's off. Back to work.", flags: MessageFlags.Ephemeral });
+      } else {
+        await interaction.reply({ content: "Nothing's playing.", flags: MessageFlags.Ephemeral });
+      }
       return;
     }
 
