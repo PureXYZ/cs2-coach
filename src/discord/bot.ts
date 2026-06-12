@@ -24,10 +24,33 @@ export interface BotDeps {
   };
 }
 
-/** The coach's anthem — lives in the repo, copied into the Docker image. Resolved
- *  from the working directory, which is the project root both locally and in the
- *  container (WORKDIR /app). */
-const SONG_PATH = path.resolve("assets/ez4ence.ogg");
+/** The coach's playlist — Ogg/Opus files living in the repo, copied into the Docker
+ *  image. Paths resolve from the working directory, which is the project root both
+ *  locally and in the container (WORKDIR /app). */
+const SONGS = {
+  ez4ence: {
+    choice: "EZ4ENCE",
+    file: path.resolve("assets/ez4ence.ogg"),
+    reply: "🎵 **EZ4ENCE.** You're welcome.",
+  },
+  "yi-jian-mei": {
+    choice: "Yi Jian Mei (Xue Hua Piao Piao)",
+    file: path.resolve("assets/yi-jian-mei.ogg"),
+    reply: "🎵 **Yi Jian Mei.** Xue hua piao piao, bei feng xiao xiao.",
+  },
+  zenzenzense: {
+    choice: "Zenzenzense (前前前世)",
+    file: path.resolve("assets/zenzenzense.ogg"),
+    reply: "🎵 **Zenzenzense.** Your anime training arc starts now.",
+  },
+  "sunshine-rainbow-white-pony": {
+    choice: "Sunshine Rainbow White Pony (陽光彩虹小白馬)",
+    file: path.resolve("assets/sunshine-rainbow-white-pony.ogg"),
+    reply: "🎵 **Sunshine Rainbow White Pony.** Don't ask.",
+  },
+} satisfies Record<string, { choice: string; file: string; reply: string }>;
+
+const DEFAULT_SONG: keyof typeof SONGS = "ez4ence";
 
 const commands = [
   new SlashCommandBuilder()
@@ -42,7 +65,17 @@ const commands = [
         .addStringOption((opt) => opt.setName("text").setDescription("What to say").setRequired(true)),
     )
     .addSubcommand((sub) => sub.setName("status").setDescription("Show GSI / voice / TTS status"))
-    .addSubcommand((sub) => sub.setName("song").setDescription("Blast EZ4ENCE in the voice channel"))
+    .addSubcommand((sub) =>
+      sub
+        .setName("song")
+        .setDescription("Blast a song in the voice channel")
+        .addStringOption((opt) =>
+          opt
+            .setName("title")
+            .setDescription("Which song (default: EZ4ENCE)")
+            .addChoices(...Object.entries(SONGS).map(([value, s]) => ({ name: s.choice, value }))),
+        ),
+    )
     .addSubcommand((sub) => sub.setName("stop").setDescription("Stop the song (coaching continues)")),
 ].map((c) => c.toJSON());
 
@@ -133,6 +166,7 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
     }
 
     case "song": {
+      const song = SONGS[(interaction.options.getString("title") ?? DEFAULT_SONG) as keyof typeof SONGS];
       if (!deps.voice.connected) {
         await interaction.reply({
           content: "I'm not in a voice channel — use `/coach join` first.",
@@ -142,20 +176,20 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
       }
       if (deps.voice.songActive) {
         await interaction.reply({
-          content: "It's already playing. `/coach stop` if you can't handle it.",
+          content: "A song's already playing. `/coach stop` first if you want to switch.",
           flags: MessageFlags.Ephemeral,
         });
         return;
       }
-      if (!existsSync(SONG_PATH)) {
+      if (!existsSync(song.file)) {
         await interaction.reply({
           content: "Song file is missing on the server — check the deploy.",
           flags: MessageFlags.Ephemeral,
         });
         return;
       }
-      deps.voice.playFile(SONG_PATH);
-      await interaction.reply({ content: "🎵 **EZ4ENCE.** You're welcome.", flags: MessageFlags.Ephemeral });
+      deps.voice.playFile(song.file);
+      await interaction.reply({ content: song.reply, flags: MessageFlags.Ephemeral });
       return;
     }
 
