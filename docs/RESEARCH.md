@@ -4,15 +4,15 @@
 
 ## The headline questions
 
-### Can the coach run on the laptop, separate from the gaming PC?
+### Can the coach run on a separate machine from the gaming PC?
 
 **Yes — verified.** CS2's Game State Integration is push-based: the *game client* HTTP-POSTs JSON to whatever `uri` you put in a cfg file, with no localhost restriction. Production tools do exactly this (cs2mqtt documents a remote-host URI; tournament HUDs POST across machines; an Android bomb-timer app points the cfg at a phone). The gaming PC needs only the single cfg file — no software, no agent, nothing that could affect game performance.
 
 Practical requirements:
 - Cfg location (changed from CSGO — note the extra `game\`): `<Steam>\steamapps\common\Counter-Strike Global Offensive\game\csgo\cfg\gamestate_integration_<name>.cfg`
 - The cfg is read **only at game launch** — edit it, restart CS2. No reload command exists.
-- Windows: no firewall changes (outbound allowed by default). macOS: if the application firewall is on, allow incoming for `node` via `socketfilterfw`; macOS 15 also has a "Local Network" privacy permission.
-- Bind the listener to `0.0.0.0`, give the laptop a static IP/DHCP reservation.
+- Windows gaming PC: no firewall changes (outbound allowed by default). The coach host just needs its GSI port reachable.
+- Bind the listener to `0.0.0.0`, give the coach host a stable address (the cfg hardcodes it).
 - Plain HTTP + the cfg's `auth` token block is the standard LAN setup (HTTPS technically supported but cert validation makes it impractical on a LAN IP).
 - Engine defaults are slow (`throttle 1.0` ≈ 1 update/sec); set `buffer 0.1` / `throttle 0.1` explicitly for ~100–300 ms event latency. The game won't send the next POST until the previous one gets a 2XX — respond 200 immediately, process async.
 
@@ -47,7 +47,7 @@ Critical implementation gotchas (all encoded in `src/gsi/tracker.ts`):
 
 **Discord's DAVE end-to-end-encryption protocol became mandatory for all non-stage voice connections on March 1–2, 2026** (verified). Bots without DAVE support are rejected at the voice gateway (close code 4017). This dictates the library choice:
 
-- ✅ **discord.js 14.26.4 + @discordjs/voice 0.19.2** (Node ≥ 22.12) — DAVE ships as a hard dependency via `@snazzah/davey`, with prebuilt binaries for macOS ARM64 and Windows x64 (no compiler needed on either machine). **This is the stack used.**
+- ✅ **discord.js 14.26.4 + @discordjs/voice 0.19.2** (Node ≥ 22.12) — DAVE ships as a hard dependency via `@snazzah/davey`, with prebuilt binaries for the major platforms (no compiler needed). **This is the stack used.**
 - ✅ discord.py 2.7.1 `[voice]` — viable second choice (DAVE wheels for mac/win).
 - ❌ Pycord — voice broken since DAVE enforcement (issue #3135 open).
 - ❌ Any pre-2025 tutorial/library (@discordjs/voice < 0.19, opusscript, sodium deps).
@@ -55,7 +55,7 @@ Critical implementation gotchas (all encoded in `src/gsi/tracker.ts`):
 Other verified facts driving the implementation:
 - On Node ≥ 22.12 no sodium library is needed (built-in aes-256-gcm).
 - **ffmpeg is skippable**: feeding pre-encoded Ogg/Opus or WebM/Opus into `createAudioResource` uses a demux-only path; raw 48 kHz s16le PCM uses an Opus-encode-only path. The TTS providers were chosen to emit these formats natively.
-- `@discordjs/opus` is stale and breaks on Apple Silicon; if Opus decode is ever needed (voice receive), use **mediaplex**.
+- `@discordjs/opus` is stale; if Opus decode is ever needed, use **mediaplex**.
 - Queue pattern: one persistent VoiceConnection + one AudioPlayer; play next on `AudioPlayerStatus.Idle`. Never rejoin per clip (each join = handshake + DAVE/MLS group join).
 - `GuildVoiceStates` is not a privileged intent. Home NAT works without port forwarding (outbound WSS 443 + UDP hole-punching to ports 50000–65535).
 
@@ -80,31 +80,14 @@ The first research pass recommended Cartesia Sonic-3 off a May 2026 benchmark; a
 - No existing project combines CS2 GSI + LLM + Discord voice — closest prior art is `martinszuc/dota-discord-bot` (Dota 2 GSI → TTS → discord.py voice, validates every pipeline link) and `tejashah88/gaming-ai-coach`. This project fills a real gap.
 - GSI library landscape: TypeScript is the strong ecosystem (`csgogsi` v5.0.1 used by the Lexogrine HUD ecosystem; `cs2-gsi-z`); Python GSI libs are stale. (This project parses payloads directly — the payload shape is simple enough that a dependency wasn't warranted.)
 
-## v2: talking back to the coach (researched, feasible, not yet built)
-
-- Voice **receive** works in @discordjs/voice 0.19.2 (the DAVE-receive bugs of 0.19.0/0.19.1 were fixed March 2026; zero new receive issues filed since). Caveats: Discord doesn't officially document bot receive; possible brief packet loss during DAVE rekeys when members join/leave.
-- Pipeline: `connection.receiver.subscribe(userId, {end: {behavior: AfterSilence, duration: 800}})` → per-user Opus packets → **mediaplex** decode (darwin-arm64 prebuilds) → mono downmix → **Deepgram STT** (Nova-3 streaming $0.0048/min ≈ $2.88 for 10 h/mo, or Flux with built-in end-of-turn detection; same $200 credit as TTS) → gate on a spoken **"hey coach"** trigger phrase in the transcript (wake-word engines like Porcupine cap free tiers at 3 users; push-to-talk is impractical mid-round) → Claude → existing TTS path.
-- Set `selfDeaf: false` when joining (v1 joins deafened).
-- Consent: Discord policy + privacy law require disclosed consent for voice capture — for a private friend server, an announce-on-join notice ("transcribing for coaching, audio discarded") plus friends' one-time OK covers it.
-- Prior art running this exact stack in 2026: `avatarneil/discord-voice` (@discordjs/voice + davey + per-user receive + streaming Deepgram + multi-vendor TTS).
-
-## v2: richer game data (ranked by value × safety ÷ effort)
-
-1. ~~Console log (`-condebug`) kill feed~~ — **dead end for kills**: verified that CS2 removed the CSGO-era kill/damage console lines; console.log carries chat + matchmaking events only. (Still trivially available for chat-triggered commands.)
-2. **Post-match demo pipeline** — the highest-value addition. Official share-code Web API (`GetNextMatchSharingCode`) + Game Coordinator client (`boiler-writter` v1.7.0, `node-globaloffensive`) downloads your Premier demos automatically; `demoinfocs-golang` parses full positions/kills/utility for everyone → post-game Claude analysis. Fully official, post-game only.
-3. **Steam Game Recording timelines** — CS2 pushes kill/death markers via the Steam Timelines API into `Steam\userdata\<id>\gamerecordings\timelines\timeline_*.json`. **Verified (including on this machine's own Steam files): written once at session end, not incrementally** — so post-game only. Requires background recording enabled (~6% FPS cost). Free structured kill log within seconds of CS2 exit.
-4. **Killfeed OCR / radar CV on a second machine** (capture card or OBS→NDI to the Mac) — the *only* live kill-feed option. VAC-safe by architecture (nothing touches the game machine's processes). Prior art exists (Roboflow cs2-kill-feed dataset, YOLOv8 repos). High effort.
-5. Dead ends (verified): `-netconport` requires `-tools` mode on Windows (incompatible with matchmaking); live-spectating your own match was removed in CS2; the "parse your own live demo buffer" trick was patched by Valve within a week of publication.
-
 ## Key sources
 
 - GSI component availability: antonpup/CounterStrike2GSI (README + issue #12), lupusbytes/cs2mqtt (issue #278), Valve dev wiki (via mirrors; the wiki itself is behind an anti-bot wall), tsuriga/csgo-gsi-qsguide
 - DAVE: discord.com/blog (rollout), daveprotocol.com, discordjs/discord.js issues #11419/#11449/#11441, @snazzah/davey npm
 - TTS: Coval live leaderboard API (June 10, 2026), vendor pricing pages (Deepgram, Cartesia, ElevenLabs, Azure)
 - Anthropic pricing: platform.claude.com/docs (verified June 10, 2026)
-- Demos/recording: akiver/boiler-writter, markus-wa/demoinfocs-golang, jackdlogan/steam-cs2-highlight-extractor, ISteamTimeline docs
 
-## v1.1 "smarter coach" research (June 2026, adversarially verified by a second agent pass)
+## Smarter-coach research (June 2026, adversarially verified by a second agent pass)
 
 Facts the match-memory / special-kill / mid-round features are built on:
 
