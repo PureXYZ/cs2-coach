@@ -155,8 +155,7 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
         return;
       }
       deps.voice.playFile(SONG_PATH);
-      // Public on purpose — the whole channel hears it, so they get to see who did this.
-      await interaction.reply({ content: "🎵 **EZ4ENCE.** You're welcome." });
+      await interaction.reply({ content: "🎵 **EZ4ENCE.** You're welcome.", flags: MessageFlags.Ephemeral });
       return;
     }
 
