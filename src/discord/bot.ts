@@ -66,12 +66,19 @@ function songButtons(): ActionRowBuilder<ButtonBuilder>[] {
   return rows;
 }
 
-/** Why a song can't start right now, or null when it's good to go. */
+/** Why a song can't start right now, or null when it's good to go. Picking a song
+ *  while one plays is fine — playFile() cuts straight over to the new one. */
 function songBlocked(deps: BotDeps, song: (typeof SONGS)[keyof typeof SONGS]): string | null {
   if (!deps.voice.connected) return "I'm not in a voice channel — use `/coach join` first.";
-  if (deps.voice.songActive) return "A song's already playing. `/coach stop` first if you want to switch.";
   if (!existsSync(song.file)) return "Song file is missing on the server — check the deploy.";
   return null;
+}
+
+/** Start (or switch to) a song and return the reply line for it. */
+function startSong(deps: BotDeps, song: (typeof SONGS)[keyof typeof SONGS]): string {
+  const switching = deps.voice.songActive;
+  deps.voice.playFile(song.file);
+  return switching ? `Fine, switching it up. ${song.reply}` : song.reply;
 }
 
 const commands = [
@@ -211,8 +218,7 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
         await interaction.reply({ content: blocked, flags: MessageFlags.Ephemeral });
         return;
       }
-      deps.voice.playFile(song.file);
-      await interaction.reply({ content: song.reply, flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: startSong(deps, song), flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -260,6 +266,5 @@ async function handleSongButton(interaction: ButtonInteraction, deps: BotDeps): 
     await interaction.update({ content: blocked, components: [] });
     return;
   }
-  deps.voice.playFile(song.file);
-  await interaction.update({ content: song.reply, components: [] });
+  await interaction.update({ content: startSong(deps, song), components: [] });
 }
