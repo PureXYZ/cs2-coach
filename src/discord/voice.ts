@@ -1,6 +1,8 @@
+import { createReadStream } from "node:fs";
 import {
   AudioPlayerStatus,
   NoSubscriberBehavior,
+  StreamType,
   VoiceConnectionStatus,
   createAudioPlayer,
   createAudioResource,
@@ -41,14 +43,21 @@ export class VoiceCoach {
   private prefetched: { line: QueuedLine; result: TtsResult } | null = null;
   /** Bumped on every join/leave so in-flight synths from old sessions get discarded. */
   private session = 0;
+  /** True while a song file occupies the player — coach lines queue behind it
+   *  (pump only plays on Idle) and whatever aged out by the end gets dropped. */
+  private songPlaying = false;
 
   constructor(private readonly tts: TtsChain) {
     this.player = createAudioPlayer({
       behaviors: { noSubscriber: NoSubscriberBehavior.Pause },
     });
-    this.player.on(AudioPlayerStatus.Idle, () => this.pump());
+    this.player.on(AudioPlayerStatus.Idle, () => {
+      this.songPlaying = false;
+      this.pump();
+    });
     this.player.on("error", (err) => {
       log.error("voice", "Audio player error", err);
+      this.songPlaying = false;
       this.pump();
     });
   }
@@ -59,6 +68,28 @@ export class VoiceCoach {
 
   get queueLength(): number {
     return this.queue.length;
+  }
+
+  get songActive(): boolean {
+    return this.songPlaying;
+  }
+
+  /** Play a local Ogg/Opus file immediately, cutting off any in-progress line. */
+  playFile(filePath: string): void {
+    if (!this.connection) throw new Error("Not in a voice channel");
+    const stream = createReadStream(filePath);
+    stream.on("error", (err) => log.error("voice", `Song stream error: ${err.message}`));
+    this.songPlaying = true;
+    log.info("voice", `Playing song file: ${filePath}`);
+    this.player.play(createAudioResource(stream, { inputType: StreamType.OggOpus }));
+  }
+
+  /** Stop a playing song. Returns false when no song is active. */
+  stopSong(): boolean {
+    if (!this.songPlaying) return false;
+    this.songPlaying = false;
+    this.player.stop(true); // → Idle → pump resumes queued coach lines
+    return true;
   }
 
   async join(channel: VoiceBasedChannel): Promise<void> {
@@ -119,6 +150,7 @@ export class VoiceCoach {
     }
     this.queue = [];
     this.discardPrefetch();
+    this.songPlaying = false;
     this.player.stop(true);
   }
 
