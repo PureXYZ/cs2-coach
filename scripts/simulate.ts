@@ -431,7 +431,12 @@ function llmEngine(t: InstanceType<typeof GsiTracker>, out: SpeakRequest[]): { e
   run(payload({ roundPhase: "live", round: 0, bomb: "planted" }));
   resolve("Mock retake-or-save lecture.");
   await sleep(20);
-  expect(out.some((s) => s.category === "retake" && s.text.includes("Mock")), "LLM retake line still speaks when no kill interrupts it");
+  const retakeLine = out.find((s) => s.category === "retake" && s.text.includes("Mock"));
+  expect(retakeLine !== undefined, "LLM retake line still speaks when no kill interrupts it");
+  // The relevance check must ride into the voice queue too: the line can die
+  // while queued behind other audio (defuse, round end), not just mid-LLM.
+  expect(typeof retakeLine?.stillRelevant === "function", "retake line carries stillRelevant into the queue");
+  expect(retakeLine?.stillRelevant?.() === true, "queued retake line still relevant while the bomb is live");
 }
 
 // ---------------------------------------------------------------------------
@@ -479,6 +484,58 @@ console.log("\n=== scenario: triple-kill line goes stale once the fourth kill la
   expect(tripleLine?.stillRelevant?.() === false, "triple line overtaken once the fourth kill lands");
   const quadLine = out.filter((s) => s.category === "kill")[1];
   expect(quadLine !== undefined && quadLine.stillRelevant?.() === true, "quad line is the relevant one now");
+  expect(quadLine?.supersedes?.includes("specialKill") === true, "kill lines also supersede queued special-kill stories");
+  // Player gets traded right after the 4th kill: "go get the ace" hype must
+  // not be spoken to a corpse — the quad line dies with the player.
+  run(payload({ roundPhase: "live", round: 0, state: { round_kills: 4, health: 0 }, kills: 4 }));
+  expect(quadLine?.stillRelevant?.() === false, "forward-looking quad hype dropped once the player is dead");
+}
+{
+  // The ace is backward-looking: it celebrates a finished highlight, so it
+  // still speaks even when the player got traded on the closing kill.
+  const out: SpeakRequest[] = [];
+  const t = new GsiTracker();
+  const e = new CoachEngine(
+    (req) => out.push(req),
+    null,
+    () => t.context(),
+    () => 0,
+    () => t.lastOwnKillAtMs(),
+    () => t.ownRoundKillsNow(),
+  );
+  const run = (p: GsiPayload) => { const ev = t.update(p); if (ev.length) e.handle(ev, t.context()); };
+  run(payload({ mapPhase: "warmup" }));
+  run(payload({ roundPhase: "freezetime", round: 0 }));
+  run(payload({ roundPhase: "live", round: 0 }));
+  run(payload({ roundPhase: "live", round: 0, state: { round_kills: 5 }, kills: 5 }));
+  const aceLine = out.find((s) => s.category === "kill");
+  run(payload({ roundPhase: "live", round: 0, state: { round_kills: 5, health: 0 }, kills: 5 }));
+  expect(aceLine !== undefined && aceLine.stillRelevant?.() === true, "ace line survives the player dying right after");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: mid-OT side swap and non-MR12 modes get the right round-end framing ===");
+{
+  // Round 27 ends 14-13: OT is already running and the score is NOT tied —
+  // "tied, overtime now" lines would be flatly wrong; money still resets.
+  const { out, engine: e } = freshEngine();
+  e.handle(
+    [{ type: "roundEnd", won: true, method: "ct_win_elimination", ourScore: 14, theirScore: 13 }],
+    { round: 27, mode: "competitive", moneyResetsNextRound: true, ourSide: "CT", playerIsSelf: true },
+  );
+  const line = out.find((s) => s.category === "roundEnd");
+  expect(line !== undefined && /ten (grand|K)|swap|overtime|OT/i.test(line.text), `mid-OT swap line mentions the reset ("${line?.text.slice(0, 70)}")`);
+  expect(line !== undefined && !/tied/i.test(line.text), "mid-OT swap line never claims a tied score");
+}
+{
+  // Wingman (MR8) reaching round 12: that's mid-second-half there, not halftime.
+  const { out, engine: e } = freshEngine();
+  e.handle(
+    [{ type: "roundEnd", won: true, method: "ct_win_elimination", ourScore: 6, theirScore: 5 }],
+    { round: 12, mode: "scrimcomp2v2", ourSide: "CT", playerIsSelf: true },
+  );
+  const line = out.find((s) => s.category === "roundEnd");
+  expect(line !== undefined && !/half|pistol|swap|overtime/i.test(line.text), `wingman round 12 gets a normal round react ("${line?.text.slice(0, 70)}")`);
 }
 
 // ---------------------------------------------------------------------------

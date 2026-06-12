@@ -182,7 +182,7 @@ const MAP_PLAYBOOKS: Record<string, { T: string[]; CT: string[] }> = {
       "Slow default: early car molly, hold Top Banana and apps, lurk Underpass, save util, late B exec on rotation read",
       "Pistol B flood: stack flashes over banana, five commit, plant open for banana, post-plant Dark and Oranges",
       "Apps timing rush: clear Boiler, Balcony pop flash, Pit molly, five through apps, plant for Pit, hold Close",
-      "Banana bait punish: show banana, eat the CT molly, then HE-stack Sandbags, flash through and run them down",
+      "Banana bait punish: show banana, eat the CT molly, then nade-stack Sandbags, flash through and run them down",
       "Mid-short squeeze: take Top Mid, smoke CT and Library, lurker holds Underpass flank, hit Short while apps fakes",
     ],
     CT: [

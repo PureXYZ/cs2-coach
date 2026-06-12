@@ -16,6 +16,9 @@ import type { TtsChain, TtsResult } from "../tts/index.js";
 
 interface QueuedLine extends SpeakRequest {
   enqueuedAt: number;
+  /** Set when a later line superseded this one mid-synthesis — the queue filter
+   *  can't reach a line that's already in the TTS provider's hands. */
+  superseded?: boolean;
 }
 
 /** Hard ceiling on one TTS synthesis, so a hung provider can never stall the queue. */
@@ -32,6 +35,8 @@ export class VoiceCoach {
   private player: AudioPlayer;
   private queue: QueuedLine[] = [];
   private synthesizing = false;
+  /** The line currently at the TTS provider — reachable for supersession even though it left the queue. */
+  private inFlight: QueuedLine | null = null;
   /** Audio synthesized ahead while another line plays — speaks the moment the player goes idle. */
   private prefetched: { line: QueuedLine; result: TtsResult } | null = null;
   /** Bumped on every join/leave so in-flight synths from old sessions get discarded. */
@@ -85,6 +90,11 @@ export class VoiceCoach {
         if (this.connection === connection) {
           log.warn("voice", "Voice connection lost — destroyed");
           this.connection = null;
+          // Full teardown, same as leave(): a held prefetch stream and queued
+          // lines would otherwise linger until the next /coach join.
+          this.queue = [];
+          this.discardPrefetch();
+          this.player.stop(true);
         }
       }
     });
@@ -128,6 +138,13 @@ export class VoiceCoach {
         log.info("voice", `Superseded prefetched [${this.prefetched.line.category}]: "${this.prefetched.line.text.slice(0, 40)}..."`);
         this.discardPrefetch();
       }
+      // A line mid-synthesis left the queue already — mark it so the post-synth
+      // checkpoint drops it (otherwise a triple line synthesizing when the quad
+      // arrives would still play, back-to-back with the quad line).
+      if (this.inFlight && obsolete.has(this.inFlight.category)) {
+        log.info("voice", `Superseded in-flight [${this.inFlight.category}]: "${this.inFlight.text.slice(0, 40)}..."`);
+        this.inFlight.superseded = true;
+      }
     }
     this.queue.push({ ...req, enqueuedAt: Date.now() });
     // Highest priority first; FIFO within the same priority.
@@ -144,6 +161,7 @@ export class VoiceCoach {
 
   /** Why a line must not be spoken anymore, or null while it's still good. */
   private lineDead(line: QueuedLine, now: number): string | null {
+    if (line.superseded) return "superseded";
     // Freshness is anchored to the game moment (eventAt), not to when the line
     // reached the queue, so slow LLM/TTS time counts too.
     if (now - line.eventAt > line.maxAgeMs) return "stale";
@@ -178,10 +196,16 @@ export class VoiceCoach {
 
     if (this.player.state.status === AudioPlayerStatus.Idle && this.prefetched) {
       // A strictly higher-priority arrival outranks the prefetched audio — eat
-      // the wasted synthesis and let the normal path speak the better line.
+      // the wasted synthesis, but put the LINE back in the queue: it's still
+      // fresh and relevant, only its audio is forfeit. It re-synthesizes later.
       if (this.queue.length > 0 && this.queue[0].priority > this.prefetched.line.priority) {
-        log.info("voice", `Prefetched [${this.prefetched.line.category}] outranked by [${this.queue[0].category}] — discarded`);
-        this.discardPrefetch();
+        const { line, result } = this.prefetched;
+        this.prefetched = null;
+        log.info("voice", `Prefetched [${line.category}] outranked by [${this.queue[0].category}] — re-queued`);
+        result.stream.on("error", () => {});
+        result.stream.destroy();
+        this.queue.push(line);
+        this.queue.sort((a, b) => b.priority - a.priority || a.enqueuedAt - b.enqueuedAt);
       } else {
         const { line, result } = this.prefetched;
         this.prefetched = null;
@@ -199,13 +223,18 @@ export class VoiceCoach {
 
     const session = this.session;
     this.synthesizing = true;
+    this.inFlight = next;
     this.synthWithDeadline(next.text)
       .then((result) => {
         this.synthesizing = false;
+        this.inFlight = null;
         // Late stream errors must never become uncaught exceptions.
         result.stream.on("error", (err) => log.warn("voice", `TTS stream error: ${err.message}`));
         if (session !== this.session || !this.connection) {
           result.stream.destroy(); // session ended/changed while synthesizing — discard, don't replay
+          // Re-arm regardless: a fresh session's lines may already be queued
+          // behind this dead synth, and no other pump is scheduled for them.
+          this.pump();
           return;
         }
         // The game kept moving during synthesis — drop a line whose moment
@@ -227,6 +256,7 @@ export class VoiceCoach {
       })
       .catch((err) => {
         this.synthesizing = false;
+        this.inFlight = null;
         log.error("voice", `TTS failed for line "${next.text.slice(0, 40)}..."`, err);
         this.pump();
       });

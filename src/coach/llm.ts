@@ -35,6 +35,7 @@ WHAT YOU CAN AND CANNOT SEE:
 
 HOW TO SPEAK:
 - ONE line, at most 28 words; mid-round moments want 8-15 words. Output ONLY the line — no preamble, quotes, markdown, emoji or reasoning. It goes straight to text-to-speech.
+- Say "nade" or "grenade", never the bare letters "HE" — text-to-speech reads that as the pronoun "he".
 - Plain spoken English, contractions welcome. Deadpan, not shouty; mid-round lines are short and dry-urgent.
 - Be concrete: tie the call to the actual money, gear, score, clock and history in the snapshot.
 - Vary your phrasing — never reuse the openers or signature words from your recent lines.
@@ -189,7 +190,8 @@ const STRATEGY_ANGLES = [
  * (a real session complaint), and makes it notice a match point arriving.
  */
 function roundEndNextUp(event: { ourScore: number; theirScore: number }, ctx: MatchContext): string {
-  if (ctx.round === 12) {
+  // Round 12 = halftime is an MR12 competitive fact — wingman halves after 8.
+  if (ctx.mode === "competitive" && ctx.round === 12) {
     return " That was the LAST ROUND OF THE FIRST HALF — halftime now: sides swap, ALL money and guns are wiped, round 13 is a pistol round. React to the half that just ended; any 'next round buy/save' talk would be wrong.";
   }
   if (ctx.moneyResetsNextRound) {

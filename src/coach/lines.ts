@@ -665,7 +665,7 @@ export function mvpLine(name?: string): string {
 export function halfEndLine(won: boolean, ourScore: number, theirScore: number): string {
   if (won) {
     return pick("halfEndWon", [
-      `Half's done, ${ourScore}-${theirScore}, and we took the closer. New side, fresh money. Win the damn pistol.`,
+      `Half's done, ${ourScore}-${theirScore}, and we took the closer. New side, fresh money. Same standards.`,
       `That's the half, ${ourScore}-${theirScore}, ours at the buzzer. Swap sides, wallets reset, pistol incoming.`,
       `Nice close to the half, ${ourScore}-${theirScore}. Fresh money for everyone, including them. Pistols next.`,
       `Ended the half winning, ${ourScore}-${theirScore}. Money's wiped, so the swagger resets with it. Pistol time.`,
@@ -681,13 +681,26 @@ export function halfEndLine(won: boolean, ourScore: number, theirScore: number):
   ]);
 }
 
-/** Round-end react when overtime (or another OT half) follows — fresh money, no carryover. */
+/** Round-end react when a TIED reset boundary sends the match to (more) overtime. */
 export function otNextLine(ourScore: number, theirScore: number): string {
   return pick("otNext", [
     `${ourScore}-${theirScore}. Overtime. Everyone gets ten grand and a fresh shot at disappointing me.`,
     `Couldn't finish it. ${ourScore}-${theirScore}. Overtime now. Ten K each. Try not to piss it away.`,
     `Tied at ${ourScore}-${theirScore}, so it's OT. Fresh ten thousand, full buys, zero excuses.`,
     `Overtime, ${ourScore}-${theirScore}. Twenty years and these still take time off my life. Everyone's rich again. Buy proper.`,
+  ]);
+}
+
+/**
+ * Round-end react at the MID-overtime side swap (round 27, 33, ...): OT is
+ * already running and the score is never tied here — "tied, overtime now"
+ * lines would be flatly wrong, but the money still resets to ten grand.
+ */
+export function otHalfLine(ourScore: number, theirScore: number): string {
+  return pick("otHalfSwap", [
+    `${ourScore}-${theirScore}. OT sides swap, money's back to ten grand. Stay locked in.`,
+    `Overtime rolls on, ${ourScore}-${theirScore}. Swap sides, fresh ten K each. Finish this.`,
+    `${ourScore}-${theirScore} in overtime. New half, wallets reset to ten grand. Close it out already.`,
   ]);
 }
 
