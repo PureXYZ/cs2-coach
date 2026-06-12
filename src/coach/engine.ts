@@ -17,6 +17,17 @@ export interface SpeakRequest {
    * slow LLM response can't smuggle stale advice past the freshness check.
    */
   eventAt: number;
+  /**
+   * Categories whose queued-but-unspoken lines this one makes obsolete (a quad
+   * line replaces a still-queued triple line instead of playing after it).
+   */
+  supersedes?: string[];
+  /**
+   * Re-checked right before the line is synthesized AND right before it plays:
+   * the game may have moved past the moment while the line waited in the queue
+   * ("TRIPLE KILL" must not play after the fourth kill already landed).
+   */
+  stillRelevant?: () => boolean;
 }
 
 export type Speak = (req: SpeakRequest) => void;
@@ -67,6 +78,8 @@ export class CoachEngine {
     private readonly payloadAgeMs: () => number | null = () => 0,
     /** Raw epoch ms of the player's latest own kill — exact, unlike the rounded context field. */
     private readonly lastOwnKillAt: () => number | null = () => null,
+    /** Current own round-kill count (null while dead) — staleness check for queued kill hype. */
+    private readonly ownRoundKills: () => number | null = () => null,
   ) {}
 
   handle(events: CoachEvent[], ctx: MatchContext): void {
@@ -164,10 +177,25 @@ export class CoachEngine {
             : batch.has("bombExploded")
               ? lines.bombExplodedLine(ctx.ourSide)
               : null;
-          const score = won
-            ? lines.roundWonLine(event.ourScore, event.theirScore)
-            : lines.roundLostLine(event.ourScore, event.theirScore);
-          const mvpTag = tookMvp ? " Round MVP's yours, somehow." : "";
+          // The last round before a money reset is its own story: "keep the
+          // momentum / buy right next round" talk is nonsense when the half
+          // just ended (sides swap, wallets wipe) or overtime starts. Round 12
+          // = halftime is an MR12 competitive fact — wingman halves at 8, so
+          // the gate matches moneyResetsNextRound's mode check. Tied scores at
+          // a reset boundary mean overtime is starting; untied means it's the
+          // mid-OT side swap (round 27, 33, ...) — OT is already running, so
+          // "tied, overtime now" lines would be flatly wrong there.
+          const score =
+            ctx.mode === "competitive" && ctx.round === 12
+              ? lines.halfEndLine(won, event.ourScore, event.theirScore)
+              : ctx.moneyResetsNextRound
+                ? event.ourScore === event.theirScore
+                  ? lines.otNextLine(event.ourScore, event.theirScore)
+                  : lines.otHalfLine(event.ourScore, event.theirScore)
+                : won
+                  ? lines.roundWonLine(event.ourScore, event.theirScore)
+                  : lines.roundLostLine(event.ourScore, event.theirScore);
+          const mvpTag = tookMvp ? " And the MVP star's yours. Sure. Why not." : "";
           return `${story ? `${story} ` : ""}${score}${mvpTag}`;
         };
         this.tacticalMoment(
@@ -197,17 +225,38 @@ export class CoachEngine {
         this.tacticalMoment(event, ctx, () => lines.matchEndLine(event.won, event.ourScore, event.theirScore), "match", 30_000, "smart");
         break;
 
-      case "kill":
+      case "kill": {
         // Triple and up bypass the 6s cooldown: fast multikills are exactly the
         // sub-6s case, and the first-kill line must never mute the ACE line (a
         // live session lost its entire ace escalation to this cooldown).
         // Singles and doubles stay silent — kill-by-kill narration is noise.
+        const count = event.roundKills;
         this.say(
-          () => lines.killLine(event.roundKills, ctx.playerName),
-          { category: "kill", priority: 2, maxAgeMs: 5_000 },
-          event.roundKills >= 3,
+          () => lines.killLine(count, ctx.playerName),
+          {
+            category: "kill",
+            priority: 2,
+            maxAgeMs: 5_000,
+            // A still-queued triple line is old news once the quad line exists —
+            // and a "TRIPLE KILL" that would speak after the 4th kill already
+            // landed gets dropped at the mic instead (a live session heard its
+            // triple hype while the fourth body was already on the floor).
+            supersedes: ["kill", "specialKill"],
+            stillRelevant: () => {
+              const k = this.ownRoundKills();
+              if (k !== null && k > count) return false; // a fresher kill line exists
+              // The ace is history — celebrate it even if the player got traded.
+              if (count >= 5) return true;
+              // Triple/quad lines are forward-looking ("one more for the ace") —
+              // hype for the living, not for a corpse that just got traded.
+              const now = this.getCtx();
+              return now.playerIsSelf && (now.health ?? 0) > 0;
+            },
+          },
+          count >= 3,
         );
         break;
+      }
 
       case "specialKill":
         // Canned on purpose: knife-kill hype that arrives 3 seconds late is dead air.
@@ -236,9 +285,10 @@ export class CoachEngine {
       case "teammateKill":
         // Quad/ace bypass the cooldown — the triple line a few seconds earlier
         // must never mute the best spectator moments the feature exists for.
+        // A newer spectated kill replaces a still-queued older one, same as own kills.
         this.say(
           () => lines.teammateKillLine(event.name, event.roundKills, event.health),
-          { category: "teammate", priority: 1, maxAgeMs: 6_000 },
+          { category: "teammate", priority: 1, maxAgeMs: 6_000, supersedes: ["teammate"] },
           event.roundKills >= 4,
         );
         break;
@@ -278,8 +328,12 @@ export class CoachEngine {
     // could start a second line for the same moment.
     this.lastSpokenAt.set(category, eventAt);
 
+    // stillRelevant rides along into the voice queue: the LLM-resolution check
+    // below catches a moment that died while Claude thought, but the line can
+    // ALSO die while queued behind other audio or mid-TTS — the queue re-checks
+    // right before synthesis and right before playback.
     if (!this.llm) {
-      this.say(fallback, { category, priority, maxAgeMs, eventAt }, true);
+      this.say(fallback, { category, priority, maxAgeMs, eventAt, stillRelevant }, true);
       return;
     }
 
@@ -293,7 +347,7 @@ export class CoachEngine {
       // Fallback lines join the LLM's anti-repeat memory too — the listener
       // doesn't care who authored what they just heard.
       if (!text) this.llm?.recordSpoken(final);
-      this.say(() => final, { category, priority, maxAgeMs, eventAt }, true);
+      this.say(() => final, { category, priority, maxAgeMs, eventAt, stillRelevant }, true);
     });
   }
 
@@ -358,7 +412,14 @@ export class CoachEngine {
    */
   private say(
     line: () => string | null,
-    opts: { category: string; priority: number; maxAgeMs: number; eventAt?: number },
+    opts: {
+      category: string;
+      priority: number;
+      maxAgeMs: number;
+      eventAt?: number;
+      supersedes?: string[];
+      stillRelevant?: () => boolean;
+    },
     skipCooldownCheck = false,
   ): void {
     if (!skipCooldownCheck && !this.passesCooldown(opts.category)) return;

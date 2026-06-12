@@ -18,7 +18,7 @@ process.env.FREEZETIME_SECONDS = "1";
 const { GsiTracker } = await import("../src/gsi/tracker.js");
 const { CoachEngine } = await import("../src/coach/engine.js");
 const { config } = await import("../src/config.js");
-const { retakeDecisionLine } = await import("../src/coach/lines.js");
+const { retakeDecisionLine, economyLine } = await import("../src/coach/lines.js");
 import type { CoachEvent } from "../src/gsi/tracker.js";
 import type { GsiPayload, GsiWeapon } from "../src/gsi/types.js";
 import type { SpeakRequest } from "../src/coach/engine.js";
@@ -339,7 +339,7 @@ function freshEngine(): { out: SpeakRequest[]; engine: InstanceType<typeof Coach
   // The suppression promised the round-end line tells the whole story — and the
   // canned fallback (LLM is null here) must keep that promise, not just the LLM.
   const text = roundEndLines[0]?.text ?? "";
-  expect(/defus|wire|stick|stole/i.test(text), `fallback line tells the defuse story ("${text.slice(0, 60)}...")`);
+  expect(/defus|wire|stuck|stole|ninja|bomb's dead|retake guide/i.test(text), `fallback line tells the defuse story ("${text.slice(0, 60)}...")`);
   expect(text.includes("5") && text.includes("3"), "fallback line still carries the score");
   expect(/MVP/i.test(text), "fallback line still mentions the MVP");
 }
@@ -384,7 +384,7 @@ feedF("plant lands seconds later", payload({ roundPhase: "live", round: 0, bomb:
 const fightLine = spokenF.find((s) => s.category === "retake");
 expect(fightLine !== undefined, "retake-category line still spoken");
 expect(fightLine !== undefined && !/save/i.test(fightLine.text), "no save talk while the player is mid-fight");
-expect(fightLine !== undefined && /fight|finish/i.test(fightLine.text), "the line backs the ongoing fight");
+expect(fightLine !== undefined && /keep going|next|stay on it|finish/i.test(fightLine.text), "the line backs the ongoing fight");
 expect(typeof trackerF.context().lastKillSecondsAgo === "number", "lastKillSecondsAgo exposed in context");
 
 // ---------------------------------------------------------------------------
@@ -431,7 +431,12 @@ function llmEngine(t: InstanceType<typeof GsiTracker>, out: SpeakRequest[]): { e
   run(payload({ roundPhase: "live", round: 0, bomb: "planted" }));
   resolve("Mock retake-or-save lecture.");
   await sleep(20);
-  expect(out.some((s) => s.category === "retake" && s.text.includes("Mock")), "LLM retake line still speaks when no kill interrupts it");
+  const retakeLine = out.find((s) => s.category === "retake" && s.text.includes("Mock"));
+  expect(retakeLine !== undefined, "LLM retake line still speaks when no kill interrupts it");
+  // The relevance check must ride into the voice queue too: the line can die
+  // while queued behind other audio (defuse, round end), not just mid-LLM.
+  expect(typeof retakeLine?.stillRelevant === "function", "retake line carries stillRelevant into the queue");
+  expect(retakeLine?.stillRelevant?.() === true, "queued retake line still relevant while the bomb is live");
 }
 
 // ---------------------------------------------------------------------------
@@ -448,7 +453,129 @@ const mustWinLine = retakeDecisionLine({
   equipValue: 800,
   matchPoint: "them",
 });
-expect(/win/i.test(mustWinLine) && !/save (it|the|for)/i.test(mustWinLine), "thin gear on match point still gets a must-win retake call, not a save");
+expect(
+  /retake|all five|all in|site|win|send/i.test(mustWinLine) && !/sav(e|ing) (it|for|your)/i.test(mustWinLine),
+  `thin gear on match point still gets a must-win retake call, not a save ("${mustWinLine}")`,
+);
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: triple-kill line goes stale once the fourth kill lands ===");
+{
+  const out: SpeakRequest[] = [];
+  const t = new GsiTracker();
+  const e = new CoachEngine(
+    (req) => out.push(req),
+    null,
+    () => t.context(),
+    () => 0,
+    () => t.lastOwnKillAtMs(),
+    () => t.ownRoundKillsNow(),
+  );
+  const run = (p: GsiPayload) => { const ev = t.update(p); if (ev.length) e.handle(ev, t.context()); };
+  run(payload({ mapPhase: "warmup" }));
+  run(payload({ roundPhase: "freezetime", round: 0 }));
+  run(payload({ roundPhase: "live", round: 0 }));
+  run(payload({ roundPhase: "live", round: 0, state: { round_kills: 3 }, kills: 3 }));
+  const tripleLine = out.find((s) => s.category === "kill");
+  expect(tripleLine !== undefined, "triple line queued");
+  expect(tripleLine?.supersedes?.includes("kill") === true, "kill line supersedes older queued kill hype");
+  expect(tripleLine?.stillRelevant?.() === true, "triple line relevant while the count is still 3");
+  run(payload({ roundPhase: "live", round: 0, state: { round_kills: 4 }, kills: 4 }));
+  expect(tripleLine?.stillRelevant?.() === false, "triple line overtaken once the fourth kill lands");
+  const quadLine = out.filter((s) => s.category === "kill")[1];
+  expect(quadLine !== undefined && quadLine.stillRelevant?.() === true, "quad line is the relevant one now");
+  expect(quadLine?.supersedes?.includes("specialKill") === true, "kill lines also supersede queued special-kill stories");
+  // Player gets traded right after the 4th kill: "go get the ace" hype must
+  // not be spoken to a corpse — the quad line dies with the player.
+  run(payload({ roundPhase: "live", round: 0, state: { round_kills: 4, health: 0 }, kills: 4 }));
+  expect(quadLine?.stillRelevant?.() === false, "forward-looking quad hype dropped once the player is dead");
+}
+{
+  // The ace is backward-looking: it celebrates a finished highlight, so it
+  // still speaks even when the player got traded on the closing kill.
+  const out: SpeakRequest[] = [];
+  const t = new GsiTracker();
+  const e = new CoachEngine(
+    (req) => out.push(req),
+    null,
+    () => t.context(),
+    () => 0,
+    () => t.lastOwnKillAtMs(),
+    () => t.ownRoundKillsNow(),
+  );
+  const run = (p: GsiPayload) => { const ev = t.update(p); if (ev.length) e.handle(ev, t.context()); };
+  run(payload({ mapPhase: "warmup" }));
+  run(payload({ roundPhase: "freezetime", round: 0 }));
+  run(payload({ roundPhase: "live", round: 0 }));
+  run(payload({ roundPhase: "live", round: 0, state: { round_kills: 5 }, kills: 5 }));
+  const aceLine = out.find((s) => s.category === "kill");
+  run(payload({ roundPhase: "live", round: 0, state: { round_kills: 5, health: 0 }, kills: 5 }));
+  expect(aceLine !== undefined && aceLine.stillRelevant?.() === true, "ace line survives the player dying right after");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: mid-OT side swap and non-MR12 modes get the right round-end framing ===");
+{
+  // Round 27 ends 14-13: OT is already running and the score is NOT tied —
+  // "tied, overtime now" lines would be flatly wrong; money still resets.
+  const { out, engine: e } = freshEngine();
+  e.handle(
+    [{ type: "roundEnd", won: true, method: "ct_win_elimination", ourScore: 14, theirScore: 13 }],
+    { round: 27, mode: "competitive", moneyResetsNextRound: true, ourSide: "CT", playerIsSelf: true },
+  );
+  const line = out.find((s) => s.category === "roundEnd");
+  expect(line !== undefined && /ten (grand|K)|swap|overtime|OT/i.test(line.text), `mid-OT swap line mentions the reset ("${line?.text.slice(0, 70)}")`);
+  expect(line !== undefined && !/tied/i.test(line.text), "mid-OT swap line never claims a tied score");
+}
+{
+  // Wingman (MR8) reaching round 12: that's mid-second-half there, not halftime.
+  const { out, engine: e } = freshEngine();
+  e.handle(
+    [{ type: "roundEnd", won: true, method: "ct_win_elimination", ourScore: 6, theirScore: 5 }],
+    { round: 12, mode: "scrimcomp2v2", ourSide: "CT", playerIsSelf: true },
+  );
+  const line = out.find((s) => s.category === "roundEnd");
+  expect(line !== undefined && !/half|pistol|swap|overtime/i.test(line.text), `wingman round 12 gets a normal round react ("${line?.text.slice(0, 70)}")`);
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: last round of the half / regulation — no next-round talk ===");
+{
+  const { out, engine: e } = freshEngine();
+  e.handle(
+    [{ type: "roundEnd", won: true, method: "ct_win_elimination", ourScore: 7, theirScore: 5 }],
+    { round: 12, moneyResetsNextRound: true, ourSide: "CT", playerIsSelf: true },
+  );
+  const line = out.find((s) => s.category === "roundEnd");
+  expect(line !== undefined, "round-12 end line spoken");
+  expect(line !== undefined && /half|swap|reset|pistol|break/i.test(line.text), `line talks halftime, not next-round buys ("${line?.text.slice(0, 70)}")`);
+  expect(line !== undefined && !/keep the guns|keep your guns|buy right/i.test(line.text), "no gun-carryover talk into the halftime wipe");
+}
+{
+  const { out, engine: e } = freshEngine();
+  e.handle(
+    [{ type: "roundEnd", won: false, method: "t_win_bomb", ourScore: 12, theirScore: 12 }],
+    { round: 24, moneyResetsNextRound: true, ourSide: "CT", playerIsSelf: true },
+  );
+  const line = out.find((s) => s.category === "roundEnd");
+  expect(
+    line !== undefined && /(overtime|\bOT\b|ten (grand|K|thousand))/i.test(line.text),
+    `12-12 after round 24 mentions overtime ("${line?.text.slice(0, 70)}")`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: freezetime economy knows resets, match point and pistols ===");
+{
+  const resetEco = economyLine({ playerIsSelf: true, money: 1200, ourLossStreak: 3, moneyResetsNextRound: true });
+  expect(resetEco !== null && /spend|force|empty|buy/i.test(resetEco), `reset-round eco says spend ("${resetEco}")`);
+  expect(resetEco !== null && !/real buy|buy lands next/i.test(resetEco), "no save-for-next-round advice into a money wipe");
+  const mpEco = economyLine({ playerIsSelf: true, money: 1200, matchPoint: "them" });
+  expect(mpEco !== null && /match|win|done|GG|force|buy|spend|table|bank/i.test(mpEco), `their-match-point eco is a must-win call ("${mpEco}")`);
+  const pistolEco = economyLine({ playerIsSelf: true, money: 800, roundKind: "pistol" });
+  expect(pistolEco !== null && /pistol|kevlar|armor|util|nade|team|pack|group/i.test(pistolEco), `pistol round gets pistol advice ("${pistolEco}")`);
+  expect(pistolEco !== null && !/\beco\b|\bsave\b/i.test(pistolEco), "pistol round not mistaken for an eco");
+}
 
 // ---------------------------------------------------------------------------
 console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`} — config timings: round=${config.timings.roundSeconds}s bomb=${config.timings.bombSeconds}s`);

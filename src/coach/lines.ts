@@ -1,10 +1,11 @@
 import type { MatchContext } from "../gsi/tracker.js";
 
-// Canned lines, persona: a dry, sarcastic, perpetually unimpressed coach —
-// the user's explicit preference (consensual roast). The informational payload
-// (buy calls, retake/save, scores, clocks) must survive every joke; sarcasm is
-// the wrapper, never the content. Authored via a writers-room pass (4 comedic
-// lenses → per-group judges → voice unifier), then hand-curated.
+// Canned lines, persona: a sarcastic, snide, perpetually unimpressed esports
+// coach — the user's explicit preference (consensual roast). Spoken register on
+// purpose: short sentences, contractions, CS slang, the occasional swear. The
+// informational payload (buy calls, retake/save, scores, clocks) must survive
+// every joke; sarcasm is the wrapper, never the content. Authored via a
+// writers-room workflow (4 comedic lenses → per-group judges), hand-curated.
 
 function shuffle<T>(arr: T[]): T[] {
   for (let i = arr.length - 1; i > 0; i--) {
@@ -79,18 +80,22 @@ function mapDisplayName(raw: string): string {
 export function matchStartLine(rawMap: string): string {
   if (!rawMap || rawMap === "unknown") {
     return pick("matchStartNoMap", [
-      "Game found. Map's a mystery, much like your positioning.",
-      "Somewhere a server found us a map. Walk in like you've practiced. Lie if needed.",
-      "Queue popped, destination unknown. Lower your expectations now to save time later.",
+      "Match found. Don't know the map yet. My disappointment works on all of them.",
+      "We're in. No clue where yet. Surprise me. Pleasantly, for once.",
+      "Queue popped. Wherever we land, buy armor and aim at heads.",
+      "Here we go again. Map unknown. Wake the hell up, warmup's over.",
     ]);
   }
   const map = mapDisplayName(rawMap);
   return pick("matchStart", [
-    `New match on ${map}. Expectations set at sea level. Climb if you can.`,
-    `Welcome to ${map}, where your stats historically go to die. Prove the trend wrong.`,
-    `${map} again. The map's not the problem, but sure, let's blame it anyway.`,
-    `Loading into ${map}. Set your hopes to moderate and your crosshair to head level.`,
-    `My ${map} notes from your last game are mostly sighs. Let's add a page.`,
+    `${map}. Great. Let's see what we ruin today.`,
+    `Match found. ${map}. God help us all.`,
+    `We're on ${map}. Pistol first. Don't do anything weird.`,
+    `Oh good, ${map}. Home of your worst whiffs. Let's add to the collection.`,
+    `Here we go, ${map}. Crosshair at head height. It's free and you still won't do it.`,
+    `New match on ${map}. Set your expectations low. I set mine in 2009.`,
+    `Back on ${map}. Same shit, new lobby.`,
+    `Fresh game on ${map}. Zero deaths so far. Career best. Don't fuck it up.`,
   ]);
 }
 
@@ -101,162 +106,244 @@ export function economyLine(ctx: MatchContext): string | null {
   const equip = ctx.equipValue ?? 0;
   const losses = ctx.ourLossStreak ?? 0;
 
+  // Pistol rounds first: the generic ladder reads $800 as "eco" and starts
+  // talking about saving — on a round where everyone is equally broke by design.
+  if (ctx.roundKind === "pistol") {
+    return pick("ecoPistol", [
+      "Pistol round. Armor or util, pick one. And stay together. Yes, all five of you.",
+      "Eight hundred bucks. Armor or util, one each. Five guys, one direction. Shock the shit out of me.",
+      "Glock money, everyone. Armor or a flash, not both. Move as a pack.",
+      "Kevlar or a flash, your pick. Then five-man it like you actually like each other.",
+      "It's pistols, not a talent show. Armor or util each, then play it as five.",
+      "Twenty years of pistol rounds and the advice hasn't changed. Armor or util, and stay grouped.",
+      "Don't get cute on pistol. Armor or a nade, and everybody swings the same damn fight.",
+      "Pick armor or util, then group up. Pistol-round heroes die first and broke.",
+    ]);
+  }
+  // Their match point: lose this round and the match ends — "save for next
+  // round" is advice about a round that won't exist.
+  if (ctx.matchPoint === "them") {
+    return pick("ecoMustWin", [
+      "Match point, theirs. Money means nothing now. Buy what's there and win the damn thing.",
+      "Do or die. A full wallet looks stupid on the losing team. Buy up.",
+      "They're one round from ending this. Economy's officially canceled. Everything goes on the table.",
+      "No tomorrow if we lose this one. Empty the bank, grab anything that shoots.",
+      "Quick math: lose this, match over. Saving is the dumbest shit available. Spend.",
+      "It's win or handshake time. Buy whatever's left and make it count.",
+    ]);
+  }
+  // Last round before a money wipe (half end, overtime boundaries): saved cash
+  // and gear evaporate, so the only wrong buy is no buy.
+  if (ctx.moneyResetsNextRound) {
+    return pick("ecoSpendReset", [
+      "It's all gone at the end of this round anyway. Spend every damn cent. Force it.",
+      "The bank resets after this one. Saving now is just burning money politely. Buy it all.",
+      "Saving into a reset. Bold plan. Terrible plan. Buy everything you can carry.",
+      "Your wallet dies with this round. Take it down with you. Full force.",
+      "This cash doesn't carry over. Force the buy. Dying rich is for idiots.",
+      "Money zeroes out after this either way. Max the buy. Spend it angry.",
+      "No point hoarding, it's all getting wiped. Empty the account, buy stupid shit, win loud.",
+    ]);
+  }
+
   if (equip >= 3500) {
     return pick("ecoKitted", [
-      "Already fully kitted. Try not to donate that rifle to their economy.",
-      "Full loadout already. The gun stays with you this round. Novel concept.",
-      "Nothing to buy. Just don't hand them the rifle this time, it skews my spreadsheet.",
-      "Treat that rifle like rent money. You're set, so don't throw it away.",
-      "Everything's bought. This is usually when you run it down mid. Break the pattern.",
-      "Kitted out. Protect that gun like it's the last one. It might be.",
-      "No shopping needed. Keep the rifle out of enemy hands. That's the whole assignment.",
+      "Wallet stays shut, you've got everything. Bring that rifle home alive.",
+      "Nothing to buy. Keep the gun. That's it. That's the whole damn speech.",
+      "Kitted. Zero shopping. Try dying less, it's free.",
+      "Shop's closed. Don't gift-wrap the AK for them on the way out.",
+      "Everything's bought. Treat the rifle like it's insured. Then remember it isn't.",
+      "Geared up, util and all. The only way to fuck this up is dying for free.",
+      "Inventory's full, skip the store. Dead bodies with full kits make me physically ill.",
+      "Fully equipped. Per my last timeout, we do not hand out free rifles to strangers.",
+      "You're loaded already. Donating rifles to their broke asses is not a strat.",
+      "All set. Spend zero. A dry peek right now is a yard sale.",
     ]);
   }
   if (money >= 4700) {
     return pick("ecoFullBuy", [
-      "You're rich. Rifle, armor, full utility. Spend it. Money wins nothing sitting there.",
-      "Big bank this round. Full buy. Yes, the grenades too. They do things.",
-      "Over forty-seven hundred in the bank. Full buy, no hoarding. Money can't aim, but it helps.",
-      "Quit sitting on the pile. Full buy: rifle, armor, grenades, the works.",
-      "Spend it all. A rich player with no nades is just a sad rich player.",
-      "Flush for once. Rifle, armor, and the grenades. Broke isn't your excuse this round.",
-      "Buy everything. Rifle, vest, helmet, grenades. This isn't a retirement fund.",
+      "You're rich. Full buy. Rifle, armor, and yes, the nades too.",
+      "If you leave the buy menu without util, get your ass back in. We're not broke.",
+      "Buy it all. Even the molly you never throw. No shortcuts.",
+      "Money's not the problem this round. Full buy, all the util. The aim's the problem.",
+      "Wallet's fat. Empty it. Rifle, kevlar, grenades. The whole menu.",
+      "No half kits today. Skip the util again and we're doing a six a.m. demo review.",
+      "Full buy. Every slot. Saving nades for later is not a strategy.",
+      "Forty-seven hundred plus. And util means buying it, not admiring it.",
+      "Spend it. Gun, armor, grenades, all of it. Your bank account isn't winning shit this round.",
+      "Big money, big buy. And get the smokes, you cheap bastard.",
     ]);
   }
   if (money >= 3700) {
     return pick("ecoBuy", [
-      "Rifle and armor. Utility if the math works. It rarely does for you.",
-      "You can afford a real gun. Rifle, armor, maybe a nade. Growth.",
-      "Grab the rifle and the vest. Utility's optional, hitting shots apparently is too.",
-      "Mid-tier money: rifle, armor, a flash if it fits. The flash works better when actually thrown.",
-      "Today's drill: rifle, armor, utility if the budget smiles. We practiced this. Allegedly.",
-      "Enough for a rifle and a vest. Squeeze in utility if you can. Miracles not included.",
-      "Get armored and rifled up. Spare change goes to grenades.",
+      "Decent money. Rifle and armor. Util only if the math works.",
+      "Mid buy. Rifle, armor. Nades are a luxury today, not a goddamn right.",
+      "Rifle plus armor. Change left over? Grab a flash. If not, don't cry.",
+      "Enough for the essentials. Gun and plates. Grenades are dessert, not dinner.",
+      "Not rich, not broke. Gun and armor. Util's a maybe, armor's not fucking optional.",
+      "Gun first, armor second, util a distant third. Welcome to the middle class, it sucks here.",
+      "Solid buy round. Armor and a rifle. Util comes last, like you on the scoreboard.",
+      "Nothing fancy. Rifle, armor. Flash if it fits. Don't get cute.",
+      "Plates, rifle, one flash tops. Don't force a full kit on half-assed money.",
+      "You can afford a rifle and kevlar, so buy a rifle and kevlar. Flash if anything's left.",
     ]);
   }
   if (money <= 1800) {
     if (losses >= 2) {
       return pick("ecoSaveStreak", [
-        "Full save. The loss bonus is the only thing improving here. Real buy next round.",
-        "Another loss, another payout. Save again, the real buy lands next round.",
-        "Pockets empty, morale emptier. Save this one, the bonus money funds next round's buy.",
-        "Silver lining to all this losing: max loss bonus. Full save now, full buy next.",
-        "Stack the loss bonus, save now, buy properly next round. Losing strategically, your specialty.",
+        "Full save. The loss bonus is cooking. Next round we're rich. Touch nothing.",
+        "Hands off the buy menu. Bonus is maxed. Full buy next round. Trust the math.",
+        "Zero spending. That loss streak's the only damn thing we've grown all half. It pays next round.",
+        "Pistols out, dignity away. Next round it's rifles for everyone.",
+        "This round's a write-off, save everything. Next round the bank opens. Don't ruin it forcing a Deagle.",
+        "Don't buy shit. The bonus maxes after this. Eat this round, feast the next.",
+        "Nobody buys. Bonus money lands next round, and then we shop like adults.",
+        "Save this one. I know it hurts like hell. Real buy next round, promise.",
       ]);
     }
     return pick("ecoSave", [
-      "Account's at zero. Eco round: pistol at most, hunt a pick, don't gift them a rifle.",
-      "Eco time. The plan is taking their guns, not handing over yours.",
-      "Broke again. Pistol or nothing. Sneak a pick, exit breathing. That's the dream.",
-      "Save round. Maybe a pistol. The enemy doesn't need handouts, they're beating you for free.",
-      "Wallet's empty. Pistol and a prayer. Play for picks, exit alive.",
-      "Can't afford feelings, let alone rifles. Eco: picks and survival only.",
-      "Pistol round by poverty. Play for picks together, don't feed them free rifles.",
+      "Eco. Pistols at most. Take a pick if it's free, then get out alive.",
+      "Full eco. Die holding nothing, fine. Don't die holding their next damn rifle.",
+      "Stack up, take one shot, leave. An eco's a robbery, not a shootout.",
+      "Under eighteen hundred means pistols only. Pick or no pick, you exit breathing. Non-negotiable.",
+      "Tighten the belt. Anything you buy now, they inherit in ninety seconds. Pistol, picks, leave.",
+      "Broke-ass round. Cheap pistol, sneaky angles, and run when it goes bad. It will go bad.",
+      "That money's not a buy, it's a cry for help. Eco, grab a pick, exit alive.",
+      "Bank's empty. One lucky pistol kill beats a half-assed force. Play for that, then walk.",
+      "Budget round. Spend nothing, annoy them, get out. Real guns come back later.",
+      "Plan's simple. One pick, one exit, no hero movie.",
     ]);
   }
   return pick("ecoAwkward", [
-    "Awkward money. Force or save, but with the team. Solo forcing is charity.",
-    "Money's in between. Match the team's call. Buying alone helps exactly one team, theirs.",
-    "Tricky number. Do whatever the team does. A lone force has never once worked for you.",
-    "Half-buy territory. Force together or save together. The economy is a group project.",
-    "Team forces, you force. Team saves, you save. Independent thought stays holstered.",
+    "Awkward money. Force or save, I honestly don't give a shit which. Just match each other.",
+    "Force as five or save as five. A solo Galil is just a delivery.",
+    "Coin-flip money. Heads we force, tails we save. All five flip the same coin.",
+    "Money's in no-man's land. Sync the buy with the boys. Freelancing it is bot behavior.",
+    "Weird buy round. Half a buy each is a full waste. Everyone makes the same call.",
+    "Don't solo buy. Don't solo save. The team picks one, you copy it. Wild concept.",
+    "Mixed buys are why my hair's gray. One plan, five people. Decide fast.",
+    "Tweener money. Lone-wolfing the buy menu helps exactly fucking nobody. Force or save as a team.",
   ]);
 }
 
 export function bombPlantedLine(ourSide: string | undefined): string {
   if (ourSide === "CT") {
     return pick("plantedCT", [
-      "Bomb's down. Forty seconds. Group up and retake together. Trickling in is a queue to die.",
-      "That's a plant. Collect your teammates and hit it together. One-man retakes have a known ending.",
-      "Live bomb, our problem. One regroup, one call, one retake. Together.",
-      "Enemy plant. Retake as a unit — single-file entries just pad their stats.",
-      "Forty seconds to retake. Gather the team first, then go. In that order.",
+      "Bomb's down. Group up. Nobody freelances.",
+      "Forty seconds. Find your friends first. Then take it back.",
+      "They planted. Shocking. Gather up, then go.",
+      "Plant's in. Trickle in one by one and I'm logging off.",
+      "That's a plant. Retake as five, not five separate funerals.",
+      "There it goes. Form up and hit that shit together.",
+      "Nobody's winning this one-man-army shit. Regroup first.",
+      "It's planted. Retake together or don't fucking bother.",
     ]);
   }
   if (ourSide === "T") {
     return pick("plantedT", [
-      "Plant's down. Set crossfires, let the clock work. Re-peeking is how leads get refunded.",
-      "Down and ticking. Sit in your crossfire and do nothing. You're great at nothing.",
-      "We planted. The clock fights for you now — hold the crossfire and hush.",
-      "Good, it's planted. Don't re-peek the kill you already won. Hold your angle.",
-      "Timer's doing the work now. Crossfire up, stay patient, every re-peek lowers our win probability.",
+      "Planted. Crossfires up. Re-peek and we're having words.",
+      "Bomb's ticking. The clock's our best fragger now. Let it work.",
+      "We planted. Great. Now do nothing. Beautifully.",
+      "Nice plant. Now play boring as hell. Boring wins post-plants.",
+      "Hold your spot. Curiosity kills more post-plants than AWPs do.",
+      "Kills are optional now. Living isn't.",
+      "Bomb's down. Sit in your crossfires and shut the hell up.",
+      "Timer's running. Every second you don't peek is free damn money.",
     ]);
   }
   // Side unknown (e.g. just reconnected) — stay neutral.
   return pick("plantedNeutral", [
-    "Confirmed plant. The round has a deadline now.",
-    "Somebody planted. Forty-ish seconds of consequences incoming.",
-    "Heads up, the bomb's down. Clock's running for someone.",
+    "Bomb's down. Forty seconds. Someone's about to have a shit day.",
+    "That's a plant. Clock's live. Look alive.",
+    "Plant's in. Clock's the boss from here.",
   ]);
 }
 
 export function bombDefusedLine(ourSide: string | undefined): string {
   if (ourSide === "CT") {
     return pick("defusedCT", [
-      "Defused. You actually stole that round. I'm mildly startled.",
-      "Clipped the wires and their hopes. Fine, that was good.",
-      "Kit on the stick, round in our pocket. The projections did not see that coming.",
-      "Ninja defuse. Decades of coaching and you can still surprise me.",
+      "Defused. We stole that shit. Act natural.",
+      "Stuck it. Their plant, our paycheck. Love a refund.",
+      "Wire's cut, round's ours. They can cry about it.",
+      "Ninja'd it right back. I'm annoyed at how proud I am.",
+      "Bomb's dead. Someone finally watched a damn retake guide.",
+      "Round stolen. Somebody on their team is getting yelled at right now.",
     ]);
   }
   if (ourSide === "T") {
     return pick("defusedT", [
-      "They defused it. Your round, taken like an unlocked bike.",
-      "Round's gone, defused clean. Somebody guarded that plant with their imagination.",
-      "Our plant, their defuse. All that work to get it down, none to protect it. Poetic.",
-      "Kit beats clock, their round. Next time guard the bomb like it pays rent.",
+      "They defused. Nobody watched the damn bomb. Incredible work, everyone.",
+      "Our plant, their defuse. Watching it was the whole job.",
+      "That bomb had zero babysitters. Now it's theirs. Cool cool.",
+      "We planted it and then wandered off. Defused. Of course.",
+      "That's their defuse. Ten bucks says nobody had eyes on the bomb.",
+      "Somebody just defused in our living room. Where the hell was everybody?",
     ]);
   }
   return pick("defusedNeutral", [
-    "Wire's cut somewhere. Someone's celebrating, someone's typing in all caps.",
-    "Defuse on the feed. One team's thrilled. The odds say it wasn't us.",
+    "Bomb's defused. Somewhere, a T player is screaming into a pillow.",
+    "Defuse went through. Hope that was us.",
   ]);
 }
 
 export function bombExplodedLine(ourSide: string | undefined): string {
   if (ourSide === "T") {
     return pick("explodedT", [
-      "Boom. Our bomb, their problem. The clock did the heavy lifting, but I'll count it.",
-      "Detonation. Round's ours. The bomb remains our most consistent performer this match.",
-      "Bomb went off, round's ours. The plan survived everyone's improvising.",
-      "It exploded, we get paid. Genuinely competent. Don't get used to my tone.",
+      "Kaboom. That damn near looked rehearsed.",
+      "There's the detonation. See what not re-peeking buys? A whole round.",
+      "That's the sound of us getting paid.",
+      "Site's a crater. Love it when a plan works.",
+      "Their retake never showed up. Our round, easy as hell.",
+      "Bomb did its job. You did yours. Shocking, honestly.",
     ]);
   }
   if (ourSide === "CT") {
     return pick("explodedCT", [
-      "Forty whole seconds of warning and we still missed the appointment.",
-      "Beaten by a timer. The bomb doesn't even shoot back.",
-      "Kaboom, on your watch. That retake needed to start twenty seconds sooner.",
-      "Heard that explosion? That was our loss bonus going up. Small silver linings.",
+      "Boom. That was ours. Retake was fucking late.",
+      "It exploded. We planned that retake like a group project. Nobody started.",
+      "There goes the site. Slow-ass retake. My knees move faster.",
+      "That sound means the retake never happened. Round over.",
+      "Explosion, our side. You can't out-wait a bomb, it always wins.",
+      "Round's gone. Next time the retake starts before the beeping does.",
     ]);
   }
   return pick("explodedNeutral", [
-    "Big boom somewhere. A round just ended. Consult the scoreboard for the emotional verdict.",
-    "Something detonated. Hopefully that was the plan and not the surprise.",
+    "That was the bomb. Somebody's payday, somebody's problem.",
+    "Big boom. Round's decided. Hope to hell it was ours.",
   ]);
 }
 
 export function roundWonLine(ourScore: number, theirScore: number): string {
   return pick("roundWon", [
-    `We take that one. ${ourScore} to ${theirScore}. Don't spend all the confidence at once.`,
-    `Chalk that one up, ${ourScore} to ${theirScore}. Keep the guns, keep the momentum, stay humble. Or quiet.`,
-    `${ourScore}-${theirScore}. The plan worked, which means somebody accidentally followed it.`,
-    `Securing rounds now, ${ourScore}-${theirScore}. I'd act surprised but my face is tired.`,
-    `Score's ${ourScore} to ${theirScore}. Winning looks weird on you. Don't stop.`,
-    `Suspiciously competent, ${ourScore}-${theirScore}. Who are you people.`,
-    `Round's ours, ${ourScore}-${theirScore}. Almost looked rehearsed. It wasn't, but almost.`,
+    `That's ours. ${ourScore}-${theirScore}. Settle down.`,
+    `A win. ${ourScore}-${theirScore}. I'll allow it.`,
+    `Score's ${ourScore}-${theirScore}. Do that again, but on purpose.`,
+    `Okay, that worked. ${ourScore}-${theirScore}. Run that shit back.`,
+    `Round won. ${ourScore}-${theirScore}. I had doubts. Keeping them.`,
+    `One for us. ${ourScore}-${theirScore}. I'd celebrate, but I've seen your follow-up rounds.`,
+    `Winner winner. ${ourScore}-${theirScore}. Whatever that was, bottle it.`,
+    `Somehow we won that. ${ourScore}-${theirScore}. The comms said otherwise the whole damn time.`,
+    `Nice round. ${ourScore}-${theirScore}. Don't make me regret the compliment.`,
+    `We took that. ${ourScore}-${theirScore}. Almost looked like a damn plan.`,
+    `Hell yeah. ${ourScore}-${theirScore}. Next one's still a normal round, by the way.`,
+    `There it is. ${ourScore}-${theirScore}. One more like that and I might relax a muscle.`,
   ]);
 }
 
 export function roundLostLine(ourScore: number, theirScore: number): string {
   return pick("roundLost", [
-    `Round lost. ${ourScore}-${theirScore}. Reset, buy right, pretend that didn't happen.`,
-    `That round's gone, ${ourScore} to ${theirScore}. Grieve later, win now.`,
-    `Their round, ${ourScore}-${theirScore}. Annoying, fixable, and entirely on tape. Adjust.`,
-    `Scoreboard says ${ourScore}-${theirScore}. It says nothing about the next round. Go take that one.`,
-    `Down a round at ${ourScore}-${theirScore}. The comeback starts with not tilting.`,
-    `There goes a round, ${ourScore} to ${theirScore}. Rounds are like buses, win the next one.`,
-    `Ouch, ${ourScore} to ${theirScore}. Park the ego and play the next one properly.`,
+    `Lost that one. ${ourScore}-${theirScore}. Breathe. Reset. Next.`,
+    `${ourScore}-${theirScore}. Whatever the hell that was, don't do it again.`,
+    `That round stunk. ${ourScore}-${theirScore}. Flush it.`,
+    `They get one. ${ourScore}-${theirScore}. Don't make it a habit.`,
+    `Somebody got baited that round. Can't see it, can still feel it. ${ourScore}-${theirScore}. Next.`,
+    `Quick question. What the fuck was the plan there? Genuinely asking. ${ourScore}-${theirScore}.`,
+    `Oof. ${ourScore}-${theirScore}. They played it better. There, I said it. Now hit back.`,
+    `Gave that one away, ${ourScore}-${theirScore}. Tilt is a choice. Don't fucking choose it.`,
+    `Dropped it. ${ourScore}-${theirScore}. The next round doesn't give a damn about this one.`,
+    `Let it go, ${ourScore}-${theirScore}. Stop replaying it in your head. That's my job, and it's miserable.`,
+    `Yeah, that's a loss, ${ourScore}-${theirScore}. Crosshair up, ego down, go again.`,
+    `Round's gone. ${ourScore}-${theirScore}. Short memory. Play on.`,
   ]);
 }
 
@@ -265,24 +352,40 @@ export function killLine(roundKills: number, name?: string): string | null {
   const who = name ?? "our star";
   if (roundKills >= 5) {
     return pick("killAce", [
-      `${who} just got an ace. I had a roast ready and you ruined it.`,
-      `An ace. Fine. ${who} earns one compliment, redeemable never.`,
-      "That's an ace. Genuinely good. This conversation never happened.",
+      "An ace. Damn it. That was clean.",
+      "Five for five. Shit. Okay. Respect.",
+      `${who} just aced. Clip it before I deny everything.`,
+      `All five. I hate that I'm impressed. Good shit, ${who}.`,
+      "Ace. You get one nice sentence: that was filthy.",
+      "Whatever. Ace. Incredible. Moving on.",
+      "My notes say you can't shoot. The ace disagrees. Noted.",
+      `Whole lobby cleared by ${who}. Fine. You're him. Today only.`,
     ]);
   }
   if (roundKills === 4) {
     return pick("killQuad", [
-      `Four kills, ${who}. One more and I'll have to revise my entire opinion of you.`,
-      "Quad kill. The ace is right there. Don't trip over it.",
-      "That makes four. One left. No pressure, except all of it.",
+      "Four. One more and I'll say something nice.",
+      "Quad. Number five's waiting. Don't keep him long.",
+      `${who}'s on four. I'm not blinking.`,
+      "Don't whiff the fifth. I'll lose my shit.",
+      `One left, ${who}. No pressure. Okay, all the pressure.`,
+      "Holy shit, four. Clear your corners, close it out.",
+      `Who the hell let ${who} cook? That's four.`,
+      "That's four. Finish it and I'll claim credit.",
     ]);
   }
   if (roundKills === 3) {
     return pick("killTriple", [
-      `A triple from ${who}. Who are you and what did you do with my player.`,
-      "Triple kill. Tonight's demo review just got slightly less painful.",
-      `Someone check on ${who}, that was three whole kills.`,
-      "Three of them down. Apparently practice pays off once a season.",
+      "Huh. Three. I'll update your file.",
+      `Three of 'em. Okay, ${who}'s awake.`,
+      "That's a triple. Don't ego peek the rest.",
+      "Look at you. Three down. Almost looked like a plan.",
+      "Damn, a triple. Even the scoreboard's confused.",
+      "Triple kill. Who the hell lent you that aim?",
+      `A triple, ${who}. So you do listen sometimes.`,
+      "Shit. Three kills. Warn me next time.",
+      `${who} with a triple. Fine. Small nod from the bench.`,
+      "Don't get weird about it, but that was a triple.",
     ]);
   }
   // Singles and doubles stay silent: play-by-play of routine kills is noise —
@@ -293,51 +396,71 @@ export function killLine(roundKills: number, name?: string): string | null {
 export function knifeKillLine(name?: string): string {
   const who = name ?? "our star";
   return pick("knifeKill", [
-    `A knife kill in competitive. ${who}, their family saw that.`,
-    `Fifteen hundred dollars and a ruined ego — ${who} just knifed someone in competitive.`,
-    "Knifed. In a competitive match. That person is uninstalling as we speak.",
-    `${who} brought a knife to a gunfight and won. Disgusting. Beautiful.`,
+    "A knife kill. In comp. Filthy shit. I love it.",
+    `${who} just knifed a man. He's uninstalling as we speak.`,
+    "Knifed. That's not a kill, that's a damn message.",
+    "You had a gun. You chose the knife. Respect.",
+    "Stabbed in a gunfight. His whole damn family felt that.",
+    "The knife? He has to live with that forever.",
+    "That's a knife kill. He's already typing angry. Perfect.",
+    `The blade, ${who}. Maximum disrespect. I approve this message.`,
   ]);
 }
 
 export function zeusKillLine(): string {
   return pick("zeusKill", [
-    "Tased. Someone bought full armor and died to a glorified cattle prod. Art.",
-    "Death by Zeus. Two hundred dollars of pure disrespect. I respect it.",
-    "Zapped. Somewhere, a player is staring silently at their monitor.",
+    "Zeus kill. Two hundred dollars of disrespect, paid in full.",
+    "He had a rifle. You had a battery. Damn.",
+    "Zapped. He's gonna hear that crackle in his sleep.",
+    "That's a Zeus kill. He's never telling anyone about this.",
+    "The Zeus connects. His ego just fucking flatlined.",
+    "Tased. He died embarrassed. As intended.",
   ]);
 }
 
 export function nadeKillLine(nade: "he" | "fire"): string {
   if (nade === "fire") {
     return pick("mollyKill", [
-      "Molly kill. They had every chance to leave the fire. They stayed for the ambiance.",
-      "Cooked. Your grenade did more damage than your last three gunfights combined.",
-      "Roasted by your incendiary. Least personal kill in the game. Still counts.",
+      "Molly kill. He stood in it. On purpose, apparently.",
+      "Cooked him. Medium rare. Chef shit.",
+      "He died to a puddle of fire. Slowly. With options.",
+      "A molly frag. The floor was lava and he lost.",
+      "Fire did the work. You just watched. Teamwork.",
+      "Burned him alive. Not even your fault. Hell of a molly.",
     ]);
   }
   return pick("heKill", [
-    "Direct hit. They tried to catch the grenade with their face.",
-    // "Grenade", not "HE" — TTS reads a standalone "HE" as the pronoun.
-    "Grenade kill. You threw money at the problem and the problem died. Valid strategy.",
-    "Naded them out of existence. The grenade aims better than you do, most rounds.",
+    // "Nade"/"grenade", never a bare "HE" — TTS reads that as the pronoun.
+    "Nade kill. Direct deposit, right into his face.",
+    "Frag grenade, actual frag. The name finally makes sense.",
+    "He ate the whole nade. Every bit. Greedy.",
+    "Zero bullets, one nade, full kill. Efficient as hell.",
+    "Grenade kill. Physics did the hard part. Take the credit anyway.",
+    "Boom. Naded him. Cheapest damn funeral on the server.",
   ]);
 }
 
 export function lowHpKillLine(hp: number): string {
   return pick("lowHpKill", [
-    `You won that at ${hp} HP. Practically a ghost with a gun. Unsettling.`,
-    `${hp} health and you took the duel anyway. Medically inadvisable, weirdly admirable.`,
-    `Clutched it at ${hp} HP. Now go hide — health doesn't regenerate here.`,
+    `${hp} HP and you swung anyway. Shit worked. Somehow.`,
+    `Clutched a duel at ${hp} HP. One dink and you were dust.`,
+    `You had ${hp} HP and an ego. The ego won.`,
+    `That was a coin flip at ${hp} HP. It landed your way.`,
+    `He lost to a guy on ${hp} HP. He's never recovering.`,
+    `Won that on ${hp} HP. Pure fucking audacity.`,
   ]);
 }
 
 export function teamkillLine(): string {
   return pick("teamkill", [
-    "Outstanding aim, catastrophic target selection. That was your teammate. Apologize in chat.",
-    "Friendly fire, minus the friendly. Type the apology and mean it.",
-    "Your victim was wearing our colors. We shoot the other five. Apologize.",
-    "Congratulations on the kill nobody wanted. Apologize before the kick vote starts.",
+    "That was your teammate. Type sorry in chat. Now.",
+    "Wrong jersey, genius. Open chat, type sorry, mean that shit.",
+    "Great spray control, shame about the target. Chat. Sorry. Go.",
+    "Congrats, you're the enemy team's MVP. Now type sorry in chat.",
+    "Shot your own damn guy. Apologize in chat, then think about it.",
+    "One less gun for us, thanks. Apology in chat, pronto.",
+    "He was on YOUR team. One sorry in chat, minimum.",
+    "Friendly fire isn't friendly. Apologize in chat and buy him something.",
   ]);
 }
 
@@ -346,27 +469,35 @@ export function teammateKillLine(name: string | undefined, kills: number, health
   const who = name ?? "your teammate";
   if (kills >= 5) {
     return pick("specAce", [
-      `Death has perks. Front-row seat for the ace show from ${who}.`,
-      `From the bench you just watched ${who} ace. Take notes. Several notes.`,
+      `Ace. ${who} killed everybody. You contributed a death.`,
+      `That's an ace for ${who}. I'm annoyed at how impressed I am.`,
+      `Five for five. ${who} aced it while you spectated. Teamwork, technically.`,
+      `${who} just aced. Damn. That never gets old.`,
     ]);
   }
   if (kills === 4) {
     return pick("specQuad", [
-      `${who} has four. You have a death cam. Cheer quietly.`,
-      `Count it: four for ${who}. One more and you'll have witnessed history from the cheap seats.`,
+      `Four for ${who}. One more and you owe them dinner.`,
+      `${who}'s on four. You're watching a carry from the floor.`,
+      `That's a quad from ${who}. The ace watch is officially on.`,
+      `Holy shit, ${who} just hit four. Best thing you've watched all day.`,
     ]);
   }
   if (kills === 3) {
     return pick("specTriple", [
-      `Meanwhile ${who} drops a triple, and you're a camera with opinions.`,
-      `Watch and learn from the couch — ${who} just got a triple.`,
-      `Triple for ${who}. No pressure from the corpse section, please.`,
+      `Triple for ${who}. Your death really set that up nicely.`,
+      `${who}'s got three. Turns out staying alive helps.`,
+      `There's the triple. ${who}'s cleaning up. Stay dead, you've earned the rest.`,
+      `Three kills for ${who}. So that's what aiming looks like.`,
+      `Watch close. ${who}'s on three. Free fucking masterclass.`,
     ]);
   }
   if (health !== undefined && health > 0 && health <= 20 && kills >= 1) {
     return pick("specClutch", [
-      `All eyes on ${who}, alive at ${health} HP. The math says no. Watch anyway.`,
-      `${who} is clutching this at ${health} HP. Pray quietly, you've done enough.`,
+      `${who} is clutching this on ${health} HP. Disgusting. Respect.`,
+      `${health} HP and ${who}'s still winning fights. Shit's unfair.`,
+      `${who}'s alive on ${health} HP and going for it. That looks illegal.`,
+      `Look at ${who}. ${health} HP, ice in the veins. Take notes, ghost.`,
     ]);
   }
   return null;
@@ -376,20 +507,27 @@ export function teammateKillLine(name: string | undefined, kills: number, health
 export function lateRoundLine(side: string | undefined): string {
   if (side === "T") {
     return pick("lateRoundT", [
-      "Thirty-five seconds and no plant. Pick a site, commit now, the bomb isn't decorative.",
-      "Half a minute left. Stop touring the map and get that bomb down somewhere.",
-      "You have thirty-five seconds to remember the objective. Hit a site and plant. Now.",
+      "Thirty-five seconds, no plant. Pick a site and hit it. Now.",
+      "Clock's bleeding. Commit somewhere. The bomb isn't a souvenir.",
+      "Tick tock. The default's over. Hit something.",
+      "Stop hunting picks. Plant the damn bomb. That's the whole round.",
+      "Half a minute. Plant now or donate the round.",
+      "No plant. Clock doesn't give a shit. Send it.",
     ]);
   }
   if (side === "CT") {
     return pick("lateRoundCT", [
-      "No plant with thirty-five seconds left. The clock's on your payroll. Hold, don't go hunting.",
-      "Clock check: half a minute left and they've done nothing. Hold tight, the timer frags for us.",
-      "Time wins this at thirty-five seconds — hold, and nobody volunteers for a highlight.",
+      "Thirty-five, no plant. The clock's on our payroll. Hold.",
+      "No bomb down. Sit your ass tight and let them panic.",
+      "Time pressure's all theirs. Camping's legal as hell right now.",
+      "Half a minute. They're the desperate ones. Act like it.",
+      "Hold your angles. Patience pays. Hero peeks don't.",
+      "Don't chase. They have to come to you. Stay home.",
     ]);
   }
   return pick("lateRoundNeutral", [
-    "Half a minute left, no plant. Somebody's master plan has quietly fallen apart.",
+    "Thirty seconds, no plant. Somebody's about to panic. Don't be them.",
+    "Clock's getting loud, no bomb down. Someone make a damn decision.",
   ]);
 }
 
@@ -400,25 +538,35 @@ export function bombTenLine(side: string | undefined, fighting = false): string 
     // "back off" order aimed at someone who's clearly winning the exchange.
     if (fighting) {
       return pick("bombTenCTFighting", [
-        "Swinging with ten seconds left? Fine — finish them fast.",
-        "Mid-massacre with ten seconds on the bomb. Keep going, then get on it.",
-        "Detonation in ten seconds. Close this fight out — I've got faith. Some.",
+        "Finish him. Fast. You've got fuck-all for time.",
+        "Close it out. The bomb's not waiting for style points.",
+        "Win it quick, then kit or quit.",
+        "You've got this. Make it quick.",
       ]);
     }
     return pick("bombTenCT", [
-      "Ten seconds. If you're not on the stick already, walk away and live.",
-      "That bomb has ten seconds. No defuse started means no defuse. Get clear and survive.",
-      "Clock says ten seconds. Unless you're already sticking it, run and keep that gun.",
+      "Ten seconds. Not defusing? Run.",
+      "It's about to pop. Clear out. Save your ass.",
+      "Bail. Now. Dying to the bomb is the saddest shit in CS.",
+      "Too late to stick. Walk away. Guns are expensive.",
+      "That beeping's speeding up. Get gone.",
+      "Drop the hero act. Off the site. Keep that rifle alive.",
     ]);
   }
   if (side === "T") {
     return pick("bombTenT", [
-      "Don't peek. Ten seconds left. Even you can stand still that long.",
-      "Hold and hush. Ten more seconds and the round pays out.",
-      "Only ten seconds to survive. Re-peeking now would be a bold new kind of stupid.",
+      "Ten seconds. Don't peek. Don't even fucking breathe.",
+      "Stand still. The check clears in ten.",
+      "Freeze. Statues win post-plants. Be a statue.",
+      "Just exist for ten more seconds. That's the whole damn job.",
+      "Almost there. Peek now and I'm flipping the desk.",
+      "Nobody move. It's over. Don't get cute at the buzzer.",
     ]);
   }
-  return pick("bombTenNeutral", ["Final ten seconds on the bomb. However this ends, it ends loudly."]);
+  return pick("bombTenNeutral", [
+    "Ten on the bomb. This ends loud or it ends quiet.",
+    "Final seconds. Whatever you're doing, do it faster.",
+  ]);
 }
 
 /**
@@ -433,9 +581,10 @@ export function retakeDecisionLine(ctx: MatchContext): string {
   // play in few words. A retake-or-save lecture talks over the only person playing.
   if (ctx.lastKillSecondsAgo !== undefined && ctx.lastKillSecondsAgo <= 10) {
     return pick("retakeFighting", [
-      "You started this fight. Finish it.",
-      "Keep the fight going, you've got them rattled. Take the next one.",
-      "Good kill — now finish it. The bomb can wait three more seconds.",
+      "There you go. Keep going.",
+      "That's one. Next, please.",
+      "Filthy. Stay on it.",
+      "Good. Breathe. Finish it.",
     ]);
   }
   // THEIR match point (a lost round ends the match — nothing left to save for)
@@ -444,31 +593,39 @@ export function retakeDecisionLine(ctx: MatchContext): string {
   // losing a round at 12-5 keeps the gear and the lead.
   if (ctx.matchPoint === "them" || ctx.moneyResetsNextRound) {
     return pick("retakeMustWin", [
-      "A save gets you nothing past this round. All five in, win the retake.",
-      "Saving's pointless here — there's nothing to carry it into. Go win the round.",
-      "Win it or it's all gone anyway. Everybody commits to the retake.",
+      "No save. None. Everybody retakes.",
+      "Saving means jack shit here. All five on site, right now.",
+      "Forget the guns. They're worth zero if we lose. Go win it.",
+      "All in. There's no tomorrow money. Take the site back.",
+      "This one's win or fucking nothing. Send everybody.",
     ]);
   }
   const thinGear = (ctx.armor ?? 0) === 0 || (ctx.equipValue ?? 0) < 1500 || (ctx.health ?? 100) < 40;
   if (ctx.defuseKit) {
     return pick("retakeKit", [
-      "You've got the kit, so you're the defuser. Team clears, you stick.",
-      "Designated defuser today — the kit's in your pocket. Retake with the team, they clear your path.",
-      "Carrying the kit makes you important for once. Team goes, you go, you defuse.",
+      "You've got the kit. They clear, you stick. That's the job.",
+      "Kit carrier. Congrats, you're important now. Get on the damn bomb.",
+      "One job: the bomb. They shoot, you snip.",
+      "You're the defuser today. Everyone else is furniture. Get to work.",
+      "Forget kills. Stick that shit and win.",
     ]);
   }
   if (thinGear) {
     return pick("retakeThin", [
-      "Held together with tape. Only go if all five commit — otherwise save for next round.",
-      "With that loadout, a solo retake is a tribute, not a play. Full squad or save.",
-      "Thin gear, thinner odds. Full team push or nothing. Saving beats donating.",
+      "You're paper right now. All five go or you save.",
+      "No armor, no hero shit. Group retake or keep the gun.",
+      "That loadout's held together with tape. Full squad goes, or you don't.",
+      "One bad peek ends you. Retake with everyone or just hide.",
+      "Broke and brave is just broke. Five-man retake or walk away.",
     ]);
   }
   return pick("retakeGo", [
-    "Gear's good enough. Retake together, trade every fight, and nobody enters alone. Nobody.",
-    "Decent loadout, live bomb. Stack up, hit the site together, trade like you've met before.",
-    "Take it back together. Trade the kills, hold hands if you must.",
-    "This retake's winnable if you go in as five. Trickling converts it into their highlight reel.",
+    "Gear's good. Retake as five. Trade everything.",
+    "Nobody solos this shit. Pair up, swing together, punish every peek.",
+    "Stack up and go. Whoever entries, refrag him. That's the plan.",
+    "You're geared. Walk in with friends. Nobody dies for free.",
+    "Retake time. Buddy system. Anyone entering alone gets benched.",
+    "Full kit, no excuses. Hit the site as a unit.",
   ]);
 }
 
@@ -476,85 +633,151 @@ export function deathLine(): string | null {
   // Speak rarely on death; nobody wants narration of every death.
   if (Math.random() > 0.2) return null;
   return pick("death", [
-    "Dead. Shocking. Give your team the info before it expires.",
-    "Died doing what you love: peeking. Give your team the info, then start grieving.",
-    "That death cam means one job left: talk. Positions, numbers, give your team the info.",
-    "Another grave for the collection. Pass the info to your team, ghost duty starts now.",
+    "You're dead. Mic on. Tell them what the hell you saw.",
+    "Dead. Tragic. Now talk: where he was, how lit he is.",
+    "Down again. At least donate the info. Where, what gun.",
+    "That's a death, not a vacation. Give the damn info.",
+    "Dying's free, silence isn't. Call out what killed you.",
+    "Ghosts can talk in this game. Position, weapon, go.",
+    "You died. Happens a lot. Info first, sulk later.",
+    "Welp. Dead body, live mic. Get the info out.",
   ]);
 }
 
 export function mvpLine(name?: string): string {
-  // Lines address the player directly when no name is known.
-  const who = name ?? "you";
+  const who = name ?? "our star";
   return pick("mvp", [
-    "Round MVP. Somebody had to get it. Glad it was you, somehow.",
-    `Well, well, ${who} carried a round. Don't make me start believing in you.`,
-    `The MVP medal goes to ${who}. I ran the numbers twice. They held up. Disturbing.`,
-    "Look at you, MVP. Updating my file from concerning to occasionally useful.",
+    `MVP, ${who}. The bar was on the floor. You cleared it.`,
+    "Our MVP, everybody. One good round and the ego's already loading.",
+    "Round MVP. Frame that shit. Might not happen twice.",
+    "Look who's MVP. Same guy I yelled at all damn half. Growth.",
+    `${who} gets the MVP. You get five seconds of smugness, max.`,
+    "Star on the scoreboard. Enjoy it. Rent's due next round.",
+    `That star's yours, ${who}. Don't ask what the competition looked like.`,
+    `Hell must be chilly today. ${who} got the MVP star.`,
+  ]);
+}
+
+/**
+ * Round-end react for the LAST round of the first half (round 12): "keep the
+ * guns / buy right next round" talk is wrong here — sides swap and money wipes.
+ */
+export function halfEndLine(won: boolean, ourScore: number, theirScore: number): string {
+  if (won) {
+    return pick("halfEndWon", [
+      `Half's done, ${ourScore}-${theirScore}, and we took the closer. New side, fresh money. Same standards.`,
+      `That's the half, ${ourScore}-${theirScore}, ours at the buzzer. Swap sides, wallets reset, pistol incoming.`,
+      `Nice close to the half, ${ourScore}-${theirScore}. Fresh money for everyone, including them. Pistols next.`,
+      `Ended the half winning, ${ourScore}-${theirScore}. Money's wiped, so the swagger resets with it. Pistol time.`,
+      `Closed the half with a W. ${ourScore}-${theirScore}. Everything resets. Cash, sides, my patience. Pistols when we're back.`,
+    ]);
+  }
+  return pick("halfEndLost", [
+    `Lost the last one, ${ourScore}-${theirScore}. Money resets. Pistols don't give a shit about first halves.`,
+    `That's the half, ${ourScore}-${theirScore}. Ugly ending. Good news: it all resets. Even that.`,
+    `${ourScore}-${theirScore} at the break, and yeah, that last round was ass. Wipe it. New side, new bank.`,
+    `Half's over, ${ourScore}-${theirScore}. Cash resets, and that whole side can't hurt you anymore.`,
+    `Rough finish, ${ourScore}-${theirScore}. New side, fresh money. My halftime speech is two words: do better.`,
+  ]);
+}
+
+/** Round-end react when a TIED reset boundary sends the match to (more) overtime. */
+export function otNextLine(ourScore: number, theirScore: number): string {
+  return pick("otNext", [
+    `${ourScore}-${theirScore}. Overtime. Everyone gets ten grand and a fresh shot at disappointing me.`,
+    `Couldn't finish it. ${ourScore}-${theirScore}. Overtime now. Ten K each. Try not to piss it away.`,
+    `Tied at ${ourScore}-${theirScore}, so it's OT. Fresh ten thousand, full buys, zero excuses.`,
+    `Overtime, ${ourScore}-${theirScore}. Twenty years and these still take time off my life. Everyone's rich again. Buy proper.`,
+  ]);
+}
+
+/**
+ * Round-end react at the MID-overtime side swap (round 27, 33, ...): OT is
+ * already running and the score is never tied here — "tied, overtime now"
+ * lines would be flatly wrong, but the money still resets to ten grand.
+ */
+export function otHalfLine(ourScore: number, theirScore: number): string {
+  return pick("otHalfSwap", [
+    `${ourScore}-${theirScore}. OT sides swap, money's back to ten grand. Stay locked in.`,
+    `Overtime rolls on, ${ourScore}-${theirScore}. Swap sides, fresh ten K each. Finish this.`,
+    `${ourScore}-${theirScore} in overtime. New half, wallets reset to ten grand. Close it out already.`,
   ]);
 }
 
 export function halftimeLine(ctx: MatchContext): string {
   const our = ctx.ourScore;
   const their = ctx.theirScore;
-  // Templates already say "halftime" — keep the score fragment bare so TTS
-  // doesn't stutter "Halftime! 7-5 at the half. Great half..."
-  const score = our !== undefined && their !== undefined ? ` ${our}-${their}.` : "";
+  const score = our !== undefined && their !== undefined ? `${our}-${their}` : "the score";
   if (our !== undefined && their !== undefined && our > their) {
     return pick("halftimeAhead", [
-      `Halftime!${score} A lead. Sides swap and money resets, so earn it twice.`,
-      `Halftime.${score} Winning at the break. Economy resets, so does my skepticism.`,
-      `Halftime!${score} We're ahead. New side, fresh economy, don't hand the lead back.`,
+      `Halftime, ${score}, we're up. Money resets, so the lead's the only damn thing you keep.`,
+      `Up at half, ${score}. The lead carries over. The guns don't. Win the pistol.`,
+      `${score} at half. Ahead, somehow. Sides swap, cash resets, and smug doesn't win pistols.`,
+      `We lead ${score} at the half. Don't frame it yet. New side, broke wallets, earn it again.`,
+      `Halfway done and winning, ${score}. Weird feeling, right? Swap sides, reset money, don't get cute.`,
     ]);
   }
   if (our !== undefined && their !== undefined && our < their) {
     return pick("halftimeBehind", [
-      `Halftime!${score} First half's a sunk cost. Fresh money, fresh side, go take it back.`,
-      `Halftime.${score} Down at the break. Sides swap, wallets reset, excuses don't carry over.`,
-      `Halftime!${score} Behind, but sides swap and money resets. The comeback starts with one clean buy.`,
+      `Halftime, down ${score}. Could be worse. Barely. Fresh side, fresh money. Win the damn pistol.`,
+      `We're losing ${score}. Were. Half's over, everything resets. Comeback starts at the pistol.`,
+      `Down ${score} at the break. Good news: money resets. Bad news: you still have to aim.`,
+      `That half was dogshit, ${score}. It's also over. New money, new side. Go take the pistol.`,
+      `Break time, ${score} against us. Everyone's broke now, both teams. They've got to beat us all over again.`,
     ]);
   }
   return pick("halftimeEven", [
-    `Halftime.${score} Dead even. Money resets on the swap. Someone has to blink. Not us.`,
-    `Halftime!${score} Tied. A literal coin flip now, so bring a heavier coin this half.`,
-    `Halftime.${score} All square. New side, clean economy. Mediocrity this consistent is almost impressive.`,
+    `A whole half and we learned nothing. ${score}. Money resets, pistol decides.`,
+    `Halftime, ${score}. Dead even. We're exactly as average as them. Fix that after the swap.`,
+    `All square at the break, ${score}. New half, new money. First to blink loses.`,
+    `${score} at half, a coin flip. Cash resets. Win the damn pistol and stop flipping coins.`,
   ]);
 }
 
 export function matchPointLine(forUs: boolean): string {
   return forUs
     ? pick("matchPointUs", [
-        "Match point. Close it clean. No hero plays, no victory laps before the victory.",
-        "The match ends right here if nobody freelances. So nobody freelances.",
-        "A single round from winning it all. The fastest way to ruin it is creativity. Avoid creativity.",
-        "Professionals end it here quietly. The highlight reel can wait one round.",
+        "Match point, us. Close it clean. No hero shit.",
+        "One round from winning. Play it boring. Boring closes matches.",
+        "We're on match point. Do not get cute. Cute is how teams lose match points.",
+        "Listen up. Match point. Anybody planning a hero play, don't.",
+        "This is the close-out. Hold your angles, trade properly, take zero dumb fights. That's the whole list.",
+        "Smell that? That's the win. Don't fumble it on some highlight-reel bullshit. Clean round.",
       ])
     : pick("matchPointThem", [
-        "Cushion's gone. We don't lose this round, simple as that. Calm and clean.",
-        "Their match point, not their match. Win this round and the pressure flips sides.",
-        "Zero margin now, so play sharp, not scared. Tilt loses this faster than they can.",
-        "Backs to the wall. Forget the score, play this round on its merits.",
+        "They have match point. Nobody saves a thing. Win or go down shooting.",
+        "Must-win round. Use every nade you own. You can't take them with you.",
+        "Lose this and we're queueing again. No saving guns for a round that won't fucking exist.",
+        "Match point against us. So what. Win this round, then shut them the hell up.",
+        "Saving is canceled. Take the round or the guns won't matter anyway.",
+        "Backs against the wall. Fine. I coach better annoyed. Full send, drag them back.",
       ]);
 }
 
 export function matchEndLine(won: boolean | undefined, ourScore: number, theirScore: number): string {
   if (won === true) {
     return pick("matchWon", [
-      `Match won, ${ourScore}-${theirScore}. Enjoy it. I'll find something to critique by tomorrow.`,
-      `Somehow that's a win, ${ourScore}-${theirScore}. Against my projections and several laws of probability.`,
-      `Victory, ${ourScore}-${theirScore}. I'm proud in a quiet, deniable way.`,
+      `We won, ${ourScore}-${theirScore}. I'm a little proud. It'll pass.`,
+      `Match over, ${ourScore}-${theirScore}, our way. I'd say I never doubted you, but I was there.`,
+      `GG, ${ourScore}-${theirScore}. You won, I aged ten years. Fair trade, I guess.`,
+      `That's a W, ${ourScore}-${theirScore}. You played some actual damn CS today. Briefly, but still.`,
+      `Scoreboard reads ${ourScore}-${theirScore}. That was good, damn it. There, I said it. Never again.`,
+      `Dub secured. ${ourScore}-${theirScore}. Screenshot it. Future you won't believe it.`,
     ]);
   }
   if (won === false) {
     return pick("matchLost", [
-      `Lost the match, ${ourScore}-${theirScore}. The demo will be educational, the way autopsies are.`,
-      `Dropped it, ${ourScore}-${theirScore}. It happens. To us, often. Next one.`,
-      `It ends ${ourScore}-${theirScore}. They were better today. Tomorrow's stats start blank. Use that.`,
+      `Match lost. ${ourScore}-${theirScore}. I've seen worse losses. Give me a minute, I'll remember one.`,
+      `${ourScore}-${theirScore}. That's a loss. The queue button still works, thank god.`,
+      `We lost ${ourScore}-${theirScore}. The game gave us chances. We said no thanks. Again soon.`,
+      `Well, that was shit. ${ourScore}-${theirScore}. Sip of water, shake it off, queue again.`,
+      `Final's ${ourScore}-${theirScore}, them. Don't queue angry, queue focused. There's a difference, allegedly.`,
+      `That one's over, ${ourScore}-${theirScore}. Brutal. One more game. Spite is excellent fuel.`,
     ]);
   }
   return pick("matchOver", [
-    `And that's a wrap at ${ourScore}-${theirScore}. Celebrate at your own risk.`,
-    `All done at ${ourScore}-${theirScore}. You do the math, I'll do the sighing.`,
-    `Final score ${ourScore}-${theirScore}. Interpret it however your mood requires.`,
+    `Match is over, ${ourScore}-${theirScore}. I showed up late, so you tell me how to feel.`,
+    `That's a wrap at ${ourScore}-${theirScore}. Missed most of it, so I'll assume you were incredible. Next game.`,
+    `Game's done, ${ourScore}-${theirScore}. No idea how that went, which might be a blessing.`,
   ]);
 }
