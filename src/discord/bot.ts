@@ -1,6 +1,10 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonInteraction,
+  ButtonStyle,
   ChatInputCommandInteraction,
   Client,
   Events,
@@ -29,28 +33,46 @@ export interface BotDeps {
  *  locally and in the container (WORKDIR /app). */
 const SONGS = {
   ez4ence: {
-    choice: "EZ4ENCE",
+    name: "EZ4ENCE",
     file: path.resolve("assets/ez4ence.ogg"),
     reply: "🎵 **EZ4ENCE.** You're welcome.",
   },
   "yi-jian-mei": {
-    choice: "Yi Jian Mei (Xue Hua Piao Piao)",
+    name: "Xue Hua Piao Piao",
     file: path.resolve("assets/yi-jian-mei.ogg"),
     reply: "🎵 **Yi Jian Mei.** Xue hua piao piao, bei feng xiao xiao.",
   },
   zenzenzense: {
-    choice: "Zenzenzense (前前前世)",
+    name: "Zenzenzense",
     file: path.resolve("assets/zenzenzense.ogg"),
     reply: "🎵 **Zenzenzense.** Your anime training arc starts now.",
   },
   "sunshine-rainbow-white-pony": {
-    choice: "Sunshine Rainbow White Pony (陽光彩虹小白馬)",
+    name: "White Pony",
     file: path.resolve("assets/sunshine-rainbow-white-pony.ogg"),
     reply: "🎵 **Sunshine Rainbow White Pony.** Don't ask.",
   },
-} satisfies Record<string, { choice: string; file: string; reply: string }>;
+} satisfies Record<string, { name: string; file: string; reply: string }>;
 
-const DEFAULT_SONG: keyof typeof SONGS = "ez4ence";
+/** One button per song, chunked into rows of five (Discord's per-row limit). */
+function songButtons(): ActionRowBuilder<ButtonBuilder>[] {
+  const buttons = Object.entries(SONGS).map(([value, song]) =>
+    new ButtonBuilder().setCustomId(`song:${value}`).setLabel(song.name).setStyle(ButtonStyle.Secondary),
+  );
+  const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+  for (let i = 0; i < buttons.length; i += 5) {
+    rows.push(new ActionRowBuilder<ButtonBuilder>().addComponents(buttons.slice(i, i + 5)));
+  }
+  return rows;
+}
+
+/** Why a song can't start right now, or null when it's good to go. */
+function songBlocked(deps: BotDeps, song: (typeof SONGS)[keyof typeof SONGS]): string | null {
+  if (!deps.voice.connected) return "I'm not in a voice channel — use `/coach join` first.";
+  if (deps.voice.songActive) return "A song's already playing. `/coach stop` first if you want to switch.";
+  if (!existsSync(song.file)) return "Song file is missing on the server — check the deploy.";
+  return null;
+}
 
 const commands = [
   new SlashCommandBuilder()
@@ -72,8 +94,8 @@ const commands = [
         .addStringOption((opt) =>
           opt
             .setName("title")
-            .setDescription("Which song (default: EZ4ENCE)")
-            .addChoices(...Object.entries(SONGS).map(([value, s]) => ({ name: s.choice, value }))),
+            .setDescription("Which song (leave empty to pick from buttons)")
+            .addChoices(...Object.entries(SONGS).map(([value, s]) => ({ name: s.name, value }))),
         ),
     )
     .addSubcommand((sub) => sub.setName("stop").setDescription("Stop the song (coaching continues)")),
@@ -109,6 +131,14 @@ export async function startBot(deps: BotDeps): Promise<Client> {
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {
+    if (interaction.isButton() && interaction.customId.startsWith("song:")) {
+      try {
+        await handleSongButton(interaction, deps);
+      } catch (err) {
+        log.error("bot", "Song button failed", err);
+      }
+      return;
+    }
     if (!interaction.isChatInputCommand() || interaction.commandName !== "coach") return;
     try {
       await handleCommand(interaction, deps);
@@ -166,26 +196,19 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
     }
 
     case "song": {
-      const song = SONGS[(interaction.options.getString("title") ?? DEFAULT_SONG) as keyof typeof SONGS];
-      if (!deps.voice.connected) {
+      const key = interaction.options.getString("title") as keyof typeof SONGS | null;
+      if (!key) {
         await interaction.reply({
-          content: "I'm not in a voice channel — use `/coach join` first.",
+          content: "Pick your poison:",
+          components: songButtons(),
           flags: MessageFlags.Ephemeral,
         });
         return;
       }
-      if (deps.voice.songActive) {
-        await interaction.reply({
-          content: "A song's already playing. `/coach stop` first if you want to switch.",
-          flags: MessageFlags.Ephemeral,
-        });
-        return;
-      }
-      if (!existsSync(song.file)) {
-        await interaction.reply({
-          content: "Song file is missing on the server — check the deploy.",
-          flags: MessageFlags.Ephemeral,
-        });
+      const song = SONGS[key];
+      const blocked = songBlocked(deps, song);
+      if (blocked) {
+        await interaction.reply({ content: blocked, flags: MessageFlags.Ephemeral });
         return;
       }
       deps.voice.playFile(song.file);
@@ -222,4 +245,21 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
       return;
     }
   }
+}
+
+/** A click on the `/coach song` button picker — update() swaps the ephemeral
+ *  picker message for the outcome, so the buttons disappear once one is used. */
+async function handleSongButton(interaction: ButtonInteraction, deps: BotDeps): Promise<void> {
+  const song = SONGS[interaction.customId.slice("song:".length) as keyof typeof SONGS];
+  if (!song) {
+    await interaction.update({ content: "That song's gone from the playlist.", components: [] });
+    return;
+  }
+  const blocked = songBlocked(deps, song);
+  if (blocked) {
+    await interaction.update({ content: blocked, components: [] });
+    return;
+  }
+  deps.voice.playFile(song.file);
+  await interaction.update({ content: song.reply, components: [] });
 }

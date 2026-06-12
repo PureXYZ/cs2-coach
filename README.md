@@ -106,7 +106,7 @@ While running, every raw GSI payload (plus the events derived from it) is append
 | `/coach leave` | Leaves voice |
 | `/coach say <text>` | Speak arbitrary text (test) |
 | `/coach status` | GSI freshness, voice/queue, TTS chain, LLM model |
-| `/coach song [title]` | Plays one of the coach's covers in the voice channel — EZ4ENCE (default), Yi Jian Mei, Zenzenzense, or Sunshine Rainbow White Pony |
+| `/coach song [title]` | Plays one of the coach's covers in the voice channel — pick from buttons, or pass a title directly (EZ4ENCE, Xue Hua Piao Piao, Zenzenzense, White Pony) |
 | `/coach stop` | Stops the song; coaching lines resume |
 
 ## Costs
