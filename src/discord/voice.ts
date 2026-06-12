@@ -62,7 +62,7 @@ export class VoiceCoach {
       channelId: channel.id,
       guildId: channel.guild.id,
       adapterCreator: channel.guild.voiceAdapterCreator,
-      selfDeaf: true, // v1 doesn't listen; flip to false for the talk-back phase
+      selfDeaf: true, // the coach speaks but never listens
     });
 
     // An unhandled 'error' event on an EventEmitter crashes the process.
