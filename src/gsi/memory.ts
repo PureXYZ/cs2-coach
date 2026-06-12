@@ -44,11 +44,15 @@ export class MatchMemory {
    * without this, ensure() would open a phantom duplicate record for it.
    */
   private lastClosed: RoundRecord | null = null;
+  /** Own deaths inside the first ~20s of a round — a repeatable habit, counted
+   *  rather than spammed into notables (the LLM sees the count in the snapshot). */
+  private earlyDeathCount = 0;
 
   reset(): void {
     this.rounds = [];
     this.current = null;
     this.lastClosed = null;
+    this.earlyDeathCount = 0;
   }
 
   /** Freezetime: open the record for the upcoming round. */
@@ -90,6 +94,15 @@ export class MatchMemory {
     this.ensure(round).myDeath = true;
   }
 
+  recordEarlyDeath(): void {
+    this.earlyDeathCount++;
+  }
+
+  /** Deaths inside the first ~20s of a round, across the match so far. */
+  earlyDeaths(): number {
+    return this.earlyDeathCount;
+  }
+
   recordBombPlanted(round: number): void {
     this.ensure(round).bombPlanted = true;
   }
@@ -113,6 +126,15 @@ export class MatchMemory {
     this.rounds.push(cur);
     this.lastClosed = cur;
     this.current = null;
+  }
+
+  /**
+   * Every closed round record (plus the open one, if a match ends without a
+   * final round-over frame) — the raw material for the post-match scorecard
+   * and the cross-session store.
+   */
+  allRounds(): readonly RoundRecord[] {
+    return this.current ? [...this.rounds, this.current] : this.rounds;
   }
 
   /** Compact per-round history strings for the LLM, most recent last. */

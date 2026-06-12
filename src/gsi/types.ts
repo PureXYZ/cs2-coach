@@ -30,7 +30,8 @@ export interface GsiMap {
   /** casual | competitive | scrimcomp2v2 | deathmatch | ... (Premier reports "competitive") */
   mode?: string;
   name?: string;
-  phase?: "warmup" | "live" | "intermission" | "gameover";
+  /** timeout_ct / timeout_t appear while a team's tactical timeout runs. */
+  phase?: "warmup" | "live" | "intermission" | "gameover" | "timeout_ct" | "timeout_t";
   /** Current round number (increments at round end). */
   round?: number;
   team_ct?: GsiTeamState;

@@ -1,15 +1,18 @@
 import os from "node:os";
-import { Events } from "discord.js";
+import { Events, type Client } from "discord.js";
 import { config } from "./config.js";
 import { log } from "./log.js";
 import { startGsiServer } from "./gsi/server.js";
 import { GsiPayloadLog } from "./gsi/payload-log.js";
-import { GsiTracker } from "./gsi/tracker.js";
+import { GsiTracker, type CoachEvent, type MatchContext } from "./gsi/tracker.js";
 import { CoachEngine } from "./coach/engine.js";
 import { LlmCoach } from "./coach/llm.js";
+import { SessionStore } from "./coach/session-store.js";
+import { buildDebriefData, buildMatchRecord, scorecardText } from "./coach/debrief.js";
+import { LeetifyClient, pollForLeetifyStats } from "./leetify.js";
 import { TtsChain } from "./tts/index.js";
 import { VoiceCoach } from "./discord/voice.js";
-import { startBot } from "./discord/bot.js";
+import { postDebrief, postLeetifyFollowup, startBot } from "./discord/bot.js";
 import { clearVoiceChannel, loadVoiceChannel } from "./discord/voice-state.js";
 
 async function main(): Promise<void> {
@@ -49,20 +52,74 @@ async function main(): Promise<void> {
 
   const tracker = new GsiTracker();
 
+  // Cross-session match history (state/ volume) — what lets the coach remember
+  // last night's pistols. Written at every matchEnd, read into smart prompts.
+  const sessions = new SessionStore();
+  log.info("main", `Session memory: ${sessions.count} past match(es) on file`);
+
+  // /coach quiet's shared flag: the engine checks it (skipping lines AND LLM
+  // spend); the bot toggles it and flushes anything already queued or speaking.
+  const quiet = { on: false };
+
   // Tracker context + the preferred spoken name for the player.
   const fullContext = () => {
     const ctx = tracker.context();
     return { ...ctx, playerName: config.coach.playerNickname ?? ctx.playerName };
   };
 
-  const engine = new CoachEngine(
-    (req) => voice.say(req),
-    llm,
-    fullContext,
-    () => tracker.lastUpdateAgeMs(),
-    () => tracker.lastOwnKillAtMs(),
-    () => tracker.ownRoundKillsNow(),
-  );
+  // Assigned after startBot below; matchEnd can only fire once the bot is up.
+  let client: Client | undefined;
+
+  // Session recording + the text debrief + the Leetify follow-up. Runs on its
+  // own (the voice wrap-up line goes out in parallel); latency doesn't matter.
+  const handleMatchEnd = async (event: Extract<CoachEvent, { type: "matchEnd" }>, ctx: MatchContext) => {
+    const report = tracker.matchReport();
+    // Snapshot the PAST-sessions form before recording this match into the store.
+    const pastForm = sessions.recentForm(ctx.map);
+    const record = buildMatchRecord(event, ctx, report);
+    sessions.record(record);
+
+    if (!config.debrief.enabled || !client) return;
+    const channelId = config.debrief.channelId ?? loadVoiceChannel()?.channelId;
+    if (!channelId) {
+      log.info("debrief", "No channel to post the debrief to — set COACH_DEBRIEF_CHANNEL_ID or use /coach join once");
+      return;
+    }
+
+    const data = buildDebriefData(record);
+    if (llm) {
+      data.coachNotes =
+        (await llm.debrief({
+          scorecard: scorecardText(data),
+          history: tracker.fullHistory(),
+          notables: report.notables,
+          recentForm: pastForm,
+        })) ?? undefined;
+    }
+    const message = await postDebrief(client, channelId, data);
+
+    // Leetify parses the demo server-side — poll until the match appears
+    // (usually 5-15 min), then reply to the debrief with their numbers.
+    const steam64 = tracker.steamId();
+    const since = tracker.matchStartedAtMs();
+    if (message && config.leetify.enabled && steam64 && since) {
+      const stats = await pollForLeetifyStats(new LeetifyClient(config.leetify.apiKey), steam64, since, ctx.map);
+      if (stats) await postLeetifyFollowup(message, stats);
+    }
+  };
+
+  const engine = new CoachEngine((req) => voice.say(req), llm, {
+    getCtx: fullContext,
+    payloadAgeMs: () => tracker.lastUpdateAgeMs(),
+    lastOwnKillAt: () => tracker.lastOwnKillAtMs(),
+    ownRoundKills: () => tracker.ownRoundKillsNow(),
+    fullHistory: () => tracker.fullHistory(),
+    recentForm: () => sessions.recentForm(tracker.context().map),
+    isQuiet: () => quiet.on,
+    onMatchEnd: (event, ctx) => {
+      handleMatchEnd(event, ctx).catch((err) => log.error("debrief", "Post-match handling failed", err));
+    },
+  });
 
   // Raw GSI capture for offline analysis — what does the game actually send,
   // and which events did the tracker derive from each frame?
@@ -81,14 +138,25 @@ async function main(): Promise<void> {
     },
   });
 
-  const client = await startBot({
+  client = await startBot({
     token: config.discord.token,
     guildId: config.discord.guildId,
     voice,
+    quiet: {
+      get: () => quiet.on,
+      set: (on) => {
+        quiet.on = on;
+        // Muting mid-sentence should actually shut the coach up, not just
+        // stop the NEXT line — flush the queue and cut the current one off.
+        if (on) voice.clearCoachLines();
+        log.info("main", on ? "Coach muted via /coach quiet" : "Coach unmuted");
+      },
+    },
     status: () => ({
       gsiAgeMs: gsi.lastPayloadAgeMs(),
       ttsProviders: tts.activeNames,
       llmModel: llm ? `${config.llm.model} (mid-round: ${config.llm.fastModel})` : null,
+      sessionsOnFile: sessions.count,
     }),
   });
 

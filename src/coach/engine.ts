@@ -50,6 +50,9 @@ const COOLDOWNS_MS: Record<string, number> = {
   teamkill: 20_000,
   teammate: 12_000,
   clock: 25_000,
+  // The canned timeout call (LLM-less setups) — once it's been said, the next
+  // few freezetimes of the same losing streak don't need it repeated.
+  timeout: 300_000,
 };
 
 /** Clock callouts bail when GSI went quiet (game crash, disconnect, menu).
@@ -64,6 +67,25 @@ const PAYLOAD_FRESH_MS = 15_000;
  * rule line as fallback. GSI sends no clock, so the engine also runs its own
  * round/bomb timers off the phase transitions for time-based callouts.
  */
+export interface EngineDeps {
+  /** Fresh context supplier for timer-driven callouts (the game moved on since scheduling). */
+  getCtx: () => MatchContext;
+  /** ms since the last GSI payload (null before the first) — staleness guard for timers. */
+  payloadAgeMs?: () => number | null;
+  /** Raw epoch ms of the player's latest own kill — exact, unlike the rounded context field. */
+  lastOwnKillAt?: () => number | null;
+  /** Current own round-kill count (null while dead) — staleness check for queued kill hype. */
+  ownRoundKills?: () => number | null;
+  /** Unabridged round history, swapped in for the storytelling moments (halftime, match end). */
+  fullHistory?: () => string[];
+  /** Cross-session trend lines from the session store — smart-tier prompts only. */
+  recentForm?: () => string[] | undefined;
+  /** True while /coach quiet has the coach muted — skips both lines and LLM spend. */
+  isQuiet?: () => boolean;
+  /** Fired once per matchEnd, quiet or not: session recording + the text debrief. */
+  onMatchEnd?: (event: Extract<CoachEvent, { type: "matchEnd" }>, ctx: MatchContext) => void;
+}
+
 export class CoachEngine {
   private lastSpokenAt = new Map<string, number>();
   private lateRoundTimer: NodeJS.Timeout | null = null;
@@ -72,15 +94,20 @@ export class CoachEngine {
   constructor(
     private readonly speak: Speak,
     private readonly llm: LlmCoach | null,
-    /** Fresh context supplier for timer-driven callouts (the game moved on since scheduling). */
-    private readonly getCtx: () => MatchContext,
-    /** ms since the last GSI payload (null before the first) — staleness guard for timers. */
-    private readonly payloadAgeMs: () => number | null = () => 0,
-    /** Raw epoch ms of the player's latest own kill — exact, unlike the rounded context field. */
-    private readonly lastOwnKillAt: () => number | null = () => null,
-    /** Current own round-kill count (null while dead) — staleness check for queued kill hype. */
-    private readonly ownRoundKills: () => number | null = () => null,
+    private readonly deps: EngineDeps,
   ) {}
+
+  private getCtx(): MatchContext {
+    return this.deps.getCtx();
+  }
+
+  private lastOwnKillAt(): number | null {
+    return this.deps.lastOwnKillAt?.() ?? null;
+  }
+
+  private ownRoundKills(): number | null {
+    return this.deps.ownRoundKills?.() ?? null;
+  }
 
   handle(events: CoachEvent[], ctx: MatchContext): void {
     const batch = new Set(events.map((e) => e.type));
@@ -115,12 +142,23 @@ export class CoachEngine {
     switch (event.type) {
       case "matchStart":
         this.cancelTimers();
-        this.say(() => lines.matchStartLine(event.map), { category: "match", priority: 2, maxAgeMs: 15_000 });
+        // Smart tier so the greeting can call back to past sessions (recentForm) —
+        // the match is in warmup/first freezetime, latency doesn't matter here.
+        this.tacticalMoment(event, ctx, () => lines.matchStartLine(event.map), "match", 15_000, "smart", 2);
         break;
 
       case "freezetime":
         this.cancelTimers();
         this.tacticalMoment(event, ctx, () => lines.economyLine(ctx), "economy", 12_000, "smart");
+        // With the LLM on, the freezetime prompt folds the timeout call into the
+        // buy line; the LLM-less setup still has to make the call somehow.
+        if (!this.llm && (ctx.ourTimeoutsLeft ?? 0) > 0 && (ctx.ourLossStreak ?? 0) >= 4) {
+          this.say(() => lines.timeoutCallLine(ctx.ourLossStreak ?? 4), {
+            category: "timeout",
+            priority: 2,
+            maxAgeMs: 12_000,
+          });
+        }
         break;
 
       case "roundLive":
@@ -222,6 +260,12 @@ export class CoachEngine {
 
       case "matchEnd":
         this.cancelTimers();
+        // Quiet or not: the session store and the text debrief still want the match.
+        try {
+          this.deps.onMatchEnd?.(event, ctx);
+        } catch (err) {
+          log.error("coach", "onMatchEnd hook failed", err);
+        }
         this.tacticalMoment(event, ctx, () => lines.matchEndLine(event.won, event.ourScore, event.theirScore), "match", 30_000, "smart");
         break;
 
@@ -321,6 +365,8 @@ export class CoachEngine {
     /** Re-checked right before speaking — the game may have resolved the moment mid-flight. */
     stillRelevant?: () => boolean,
   ): void {
+    // Muted: skip the line AND the LLM spend (the game tracking carries on).
+    if (this.deps.isQuiet?.()) return;
     if (!this.passesCooldown(category)) return;
     const eventAt = Date.now();
     // Reserve the category at launch, not at resolution: while the LLM call is
@@ -340,6 +386,15 @@ export class CoachEngine {
     // Snapshot the context now; the game moves on while Claude thinks. Staleness
     // is anchored to eventAt, so a slow response gets dropped instead of spoken late.
     const snapshot = { ...ctx };
+    if (tier === "smart") {
+      // Slow moments get the expensive extras: cross-session form for callbacks,
+      // and — at the two storytelling moments — the unabridged round history.
+      snapshot.recentForm = this.deps.recentForm?.();
+      if (event.type === "halftime" || event.type === "matchEnd") {
+        const full = this.deps.fullHistory?.();
+        if (full && full.length > (snapshot.history?.length ?? 0)) snapshot.history = full;
+      }
+    }
     void this.llm.line(snapshot, event, tier).then((text) => {
       if (stillRelevant && !stillRelevant()) return;
       const final = text ?? fallback();
@@ -360,11 +415,13 @@ export class CoachEngine {
     if (delayMs <= 0) return;
     this.lateRoundTimer = setTimeout(() => {
       this.lateRoundTimer = null;
-      if (Math.random() < 0.5) return;
       if (!this.payloadFresh()) return; // GSI went quiet — don't talk into a dead game
       const ctx = this.getCtx();
       if (ctx.roundPhase !== "live" || ctx.bomb) return; // round resolved or bomb already down
-      this.say(() => lines.lateRoundLine(ctx.ourSide), { category: "clock", priority: 2, maxAgeMs: 8_000 });
+      // Carrying the C4 with no plant this late is always worth the words;
+      // the generic nudge keeps its random skip so it isn't every-round nagging.
+      if (!ctx.hasBomb && Math.random() < 0.5) return;
+      this.say(() => lines.lateRoundLine(ctx.ourSide, ctx.hasBomb ?? false), { category: "clock", priority: 2, maxAgeMs: 8_000 });
     }, delayMs);
   }
 
@@ -401,7 +458,7 @@ export class CoachEngine {
   }
 
   private payloadFresh(): boolean {
-    const age = this.payloadAgeMs();
+    const age = this.deps.payloadAgeMs?.() ?? 0;
     return age !== null && age <= PAYLOAD_FRESH_MS;
   }
 
@@ -422,6 +479,8 @@ export class CoachEngine {
     },
     skipCooldownCheck = false,
   ): void {
+    // Muted: drop before cooldowns and shuffle bags so nothing is consumed.
+    if (this.deps.isQuiet?.()) return;
     if (!skipCooldownCheck && !this.passesCooldown(opts.category)) return;
     const text = line();
     if (!text) return;

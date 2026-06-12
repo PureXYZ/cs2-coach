@@ -59,7 +59,7 @@ sleep 5
 docker logs --tail 8 coach 2>&1
 ```
 
-(The `coach-state` volume persists the last-joined voice channel, so a restarted coach rejoins automatically; `/coach leave` clears it.)
+(The `coach-state` volume persists the last-joined voice channel — so a restarted coach rejoins automatically; `/coach leave` clears it — and `sessions.json`, the cross-session match history the coach's "remember last night" callbacks come from.)
 
 Two ways to trigger it:
 
@@ -73,6 +73,7 @@ Two ways to trigger it:
 - `GET http://<host>:3000/` is a health check returning the last-payload age — point an uptime monitor at it.
 - Keep `GSI_TOKEN` long and random (it's the only auth on the GSI endpoint).
 - If the host or container restarts, the bot rejoins the last voice channel on its own (persisted in the `coach-state` volume).
+- The cross-session match history lives in the same volume (`state/sessions.json`, capped at 50 matches) — deleting it just resets the coach's memory of past sessions, nothing else breaks.
 
 ## Local (dev/testing)
 

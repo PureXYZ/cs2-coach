@@ -29,6 +29,9 @@ WHAT YOU CAN AND CANNOT SEE:
 - "spectating" means the player is DEAD and watching that teammate — those stats belong to the teammate. The spectated teammate is on OUR team; they did not plant if we're CT and did not defuse if we're T.
 - "lastKillSecondsAgo" small (under ~10) means the player is mid-fight and winning it: do NOT tell them to disengage, save, or rotate — back the play or keep it to the essentials.
 - "matchPoint": "them" means losing this round loses the match — a save preserves nothing, the round must be played to win. "moneyResetsNextRound" true means saved gear evaporates at the reset — same conclusion. "matchPoint": "us" is different: normal retake-or-save judgment still applies (a lost round keeps the gear and the lead) — just close calmly.
+- "hasBomb" true means the player is personally carrying the C4 — getting it planted is literally their job.
+- "earlyDeaths" counts the player's deaths inside the first 20 seconds of rounds THIS match — at 2+ it's a pattern (over-peeking on the opening) worth calling out.
+- "recentForm" lines are REAL results from this player's PREVIOUS play sessions, recorded by you. They're callback and roast material ("third night in a row you've thrown the pistols") — use at most one such callback per line, and never invent past results beyond what's listed.
 - MR12 ROUND STRUCTURE: rounds 1-12 are the first half, 13-24 the second; rounds 1 and 13 are pistol rounds. Round 12 is the LAST round of the half — after it sides swap and ALL money and guns are wiped. Round 24 ends regulation; 12-12 goes to overtime (MR3, fresh $10000, money resets every 3 OT rounds). Across ANY reset boundary there is no "next round" to buy, save, or carry guns for — never suggest it.
 - Because you don't know how many players are alive, phrase mid-round advice conditionally: "if the retake isn't clean...", "if you've got the numbers...".
 - "history" and "notables" really happened — referencing them is encouraged. Inventing other past events is forbidden.
@@ -46,6 +49,15 @@ THE CREW:
 ${ECONOMY_CHEATSHEET}
 
 ${DECISION_PRINCIPLES}`;
+
+const DEBRIEF_SYSTEM = `You are "Coach" — a dry, sarcastic, perpetually unimpressed CS2 coach. All match you've been talking in the team's Discord voice channel; the match just ended and now you're WRITING the post-match debrief posted to their text channel. The player asked for a negative, sarcastic coach — it's a consensual roast between friends.
+
+Write ONE paragraph, 60-100 words. Same voice you speak in: short sentences, contractions, CS slang, a swear where it earns its place (shit/damn/hell/fuck — never slurs). Roast the gameplay, never anyone's identity; grudging respect where something genuinely deserves it.
+
+Rules:
+- Every claim must come from the data given (scorecard, rounds, highlights, recent form). Never invent kills, rounds or events.
+- Cover: the result, the one thing that actually decided the match, the player's own showing, and END with exactly one concrete thing to fix next session.
+- Plain text only — no markdown headers, no bullet lists, no emoji, no sign-off.`;
 
 export class LlmCoach {
   private client: Anthropic;
@@ -154,6 +166,52 @@ export class LlmCoach {
   }
 
   /**
+   * Post-match written debrief for the Discord text channel — same coach, but
+   * writing a short paragraph instead of speaking a line. Latency is irrelevant
+   * after the match, so this always runs on the smart model with a generous
+   * timeout. Returns null on error; the scorecard embed then ships without it.
+   */
+  async debrief(input: {
+    scorecard: string;
+    history: string[];
+    notables: string[];
+    recentForm?: string[];
+  }): Promise<string | null> {
+    const userContent = [
+      `Final scorecard:\n${input.scorecard}`,
+      input.history.length ? `Round by round:\n${input.history.join("\n")}` : "",
+      input.notables.length ? `Highlights: ${JSON.stringify(input.notables)}` : "",
+      input.recentForm?.length ? `Recent form from past sessions: ${JSON.stringify(input.recentForm)}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+    const startedAt = Date.now();
+    try {
+      const response = await this.client.messages.create(
+        {
+          model: this.model,
+          max_tokens: 400,
+          ...(this.effort ? { output_config: { effort: this.effort } } : {}),
+          system: DEBRIEF_SYSTEM,
+          messages: [{ role: "user", content: userContent }],
+        },
+        { timeout: 20_000, maxRetries: 1 },
+      );
+      log.info("llm", `${this.model} wrote the debrief in ${Date.now() - startedAt}ms`);
+      const text = response.content
+        .filter((block): block is Anthropic.TextBlock => block.type === "text")
+        .map((block) => block.text)
+        .join(" ")
+        .trim();
+      return text || null;
+    } catch (err) {
+      log.warn("llm", `Debrief generation failed (${err instanceof Error ? err.message : err}) — posting the scorecard without it`);
+      return null;
+    }
+  }
+
+  /**
    * Track a line the coach spoke at an LLM-handled moment, whoever produced it.
    * Fallback rule lines go through here too, so Claude doesn't unknowingly
    * paraphrase something the listener heard one freezetime ago.
@@ -214,10 +272,22 @@ function methodStory(method: string, won: boolean): string {
 
 function describeMoment(event: CoachEvent, ctx: MatchContext): string {
   switch (event.type) {
+    case "matchStart": {
+      const form = ctx.recentForm?.length
+        ? " The recentForm lines are this player's actual previous sessions — a dry callback to the last result is gold here."
+        : "";
+      return `A new match is starting on ${ctx.map ?? event.map}. One greeting line in character: expectations appropriately low, plus ONE concrete focus point for the match (pistols, trading, util — pick from history if it shows a habit).${form}`;
+    }
     case "freezetime": {
+      // The timeout call outranks the strategy angle: 4+ straight losses with a
+      // timeout in the bank is the one freezetime where the call writes itself.
+      const timeout =
+        (ctx.ourTimeoutsLeft ?? 0) > 0 && (ctx.ourLossStreak ?? 0) >= 4
+          ? ` We have lost ${ctx.ourLossStreak} rounds in a row and a tactical timeout is still available — the line MUST tell the team to vote the timeout NOW (breathe, reset, fix one thing), alongside the buy call.`
+          : "";
       const pistol = ctx.roundKind === "pistol";
       if (pistol) {
-        return `Freezetime of round ${event.round} — PISTOL ROUND (everyone has 800, no carryover). Give one concrete plan for this map and side: where to go, what to buy (armor vs utility vs upgraded pistol), together as five.`;
+        return `Freezetime of round ${event.round} — PISTOL ROUND (everyone has 800, no carryover). Give one concrete plan for this map and side: where to go, what to buy (armor vs utility vs upgraded pistol), together as five.${timeout}`;
       }
       const angle = pick("strategyAngle", STRATEGY_ANGLES);
       const mustSpend = ctx.moneyResetsNextRound
@@ -235,7 +305,7 @@ function describeMoment(event: CoachEvent, ctx: MatchContext): string {
       const playbook = options.length
         ? ` Playbook options for this map and side — pick one, adapt it, or call something better, but don't repeat a recent plan: (1) ${options.join(" (2) ")}.`
         : "";
-      return `Freezetime / buy period, round ${event.round}. Give ONE buy call matched to the money and loss bonus, plus ONE concrete tactical idea for this map and side. Coaching angle for the tactical idea this round (ground it in the snapshot; ignore it only if the economy dictates otherwise): ${angle}.${playbook}${mustSpend}${mp} If the round history shows a pattern — lost streak, won pistols, repeated bomb-site losses — use it.`;
+      return `Freezetime / buy period, round ${event.round}. Give ONE buy call matched to the money and loss bonus, plus ONE concrete tactical idea for this map and side. Coaching angle for the tactical idea this round (ground it in the snapshot; ignore it only if the economy dictates otherwise): ${angle}.${playbook}${mustSpend}${mp}${timeout} If the round history shows a pattern — lost streak, won pistols, repeated bomb-site losses — use it.`;
     }
     case "bombPlanted":
       if (event.ourSide === "CT") {

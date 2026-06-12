@@ -66,7 +66,7 @@ const MAP_NAMES: Record<string, string> = {
 };
 
 /** GSI gives raw tokens like "de_dust2"; TTS would read that as "de underscore dust two". */
-function mapDisplayName(raw: string): string {
+export function mapDisplayName(raw: string): string {
   // Workshop maps arrive as "workshop/3070284539/de_cache" — keep only the map token.
   const token = raw.split("/").pop() ?? raw;
   const known = MAP_NAMES[token.toLowerCase()];
@@ -504,7 +504,21 @@ export function teammateKillLine(name: string | undefined, kills: number, health
 }
 
 /** Locally-derived clock callout: ~35 seconds left, no plant yet. */
-export function lateRoundLine(side: string | undefined): string {
+export function lateRoundLine(side: string | undefined, hasBomb = false): string {
+  // The player is personally carrying the C4 — the generic "someone plant"
+  // nudge lands very differently when the someone is them.
+  if (side === "T" && hasBomb) {
+    return pick("lateRoundCarrier", [
+      "That's a bomb on your back, not a camera. Thirty-five seconds. Go plant.",
+      "Walking the bomb around like a dog. Thirty seconds. It needs a site, now.",
+      "A or B, your pick, but pick one. You're carrying. Thirty-ish seconds.",
+      "It's you, the bomb, and thirty seconds. One of you better fucking commit.",
+      "Holy shit, you still have it. Half a minute. Get it down somewhere.",
+      "The bomb doesn't plant from your pocket. Find a site, walk it in.",
+      "You've got the C4. That makes you the plan. Clock's at thirty-five. Plant.",
+      "Quit scouting. You're the delivery guy and the package is late. Any site. Go.",
+    ]);
+  }
   if (side === "T") {
     return pick("lateRoundT", [
       "Thirty-five seconds, no plant. Pick a site and hit it. Now.",
@@ -566,6 +580,24 @@ export function bombTenLine(side: string | undefined, fighting = false): string 
   return pick("bombTenNeutral", [
     "Ten on the bomb. This ends loud or it ends quiet.",
     "Final seconds. Whatever you're doing, do it faster.",
+  ]);
+}
+
+/**
+ * Canned fallback for the tactical-timeout call (LLM-less setups): 4+ straight
+ * losses with a timeout in the bank. With the LLM enabled the freezetime
+ * prompt folds the timeout into the buy call instead.
+ */
+export function timeoutCallLine(lossStreak: number): string {
+  return pick("timeoutCall", [
+    `That's ${lossStreak} in a row. Timeout, please. Even I need a minute, and I'm sitting down.`,
+    "Scoreboard looks like a crime scene. Take the fucking tac and stop donating rounds.",
+    "Vote the timeout, people. A short break where nobody dies. Imagine that.",
+    "Saving the tactical for what, another ass-kicking? Use it. Catch your breath.",
+    "Still digging, huh? Timeout. Shovels down, figure out where this went sideways.",
+    "Timeout won't fix your aim, but breathing might. Hit it. Right now.",
+    "We've burned through plans A, B, and C. Timeout. Go find us a damn D.",
+    "Good news: timeouts are free. Bad news: everything else. Call it, regroup, run it back.",
   ]);
 }
 

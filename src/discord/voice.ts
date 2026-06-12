@@ -84,6 +84,20 @@ export class VoiceCoach {
     this.player.play(createAudioResource(stream, { inputType: StreamType.OggOpus }));
   }
 
+  /**
+   * Drop every queued, prefetched and in-flight coach line and cut off the one
+   * currently speaking — /coach quiet's "shut up NOW". A playing song survives
+   * (silencing that is /coach stop's job).
+   */
+  clearCoachLines(): void {
+    this.queue = [];
+    this.discardPrefetch();
+    // A line mid-synthesis already left the queue — flag it so the post-synth
+    // checkpoint discards the audio instead of speaking it.
+    if (this.inFlight) this.inFlight.superseded = true;
+    if (!this.songPlaying) this.player.stop(true);
+  }
+
   /** Stop a playing song. Returns false when no song is active. */
   stopSong(): boolean {
     if (!this.songPlaying) return false;

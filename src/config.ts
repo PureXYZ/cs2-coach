@@ -110,6 +110,21 @@ export const config = {
     playerNickname: optional("PLAYER_NICKNAME") || undefined,
   },
 
+  debrief: {
+    // Post a scorecard embed + Opus-written debrief paragraph after each match.
+    enabled: optional("COACH_DEBRIEF", "true") !== "false",
+    // Where to post it. Default: the chat of the voice channel the coach was in.
+    channelId: optional("COACH_DEBRIEF_CHANNEL_ID") || undefined,
+  },
+
+  leetify: {
+    // After the debrief, poll Leetify (they parse the demo server-side) and
+    // reply with ADR/K-D/rating once the match shows up. Needs the player to
+    // have a Leetify account; works keyless at stricter rate limits.
+    enabled: optional("LEETIFY_ENABLED", "true") !== "false",
+    apiKey: optional("LEETIFY_API_KEY") || undefined,
+  },
+
   // CS2 Premier/Competitive timing constants (MR12 era). GSI sends no clock to players,
   // so these drive locally derived timers. Not officially documented by Valve — adjust
   // here if Valve changes them. Note: Premier freezetime is 20s (competitive MM is 15);

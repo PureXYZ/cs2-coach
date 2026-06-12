@@ -3,24 +3,32 @@ import path from "node:path";
 import {
   ChatInputCommandInteraction,
   Client,
+  EmbedBuilder,
   Events,
   GatewayIntentBits,
   GuildMember,
   MessageFlags,
   SlashCommandBuilder,
+  type Message,
 } from "discord.js";
 import { log } from "../log.js";
 import type { VoiceCoach } from "./voice.js";
+import type { DebriefData } from "../coach/debrief.js";
+import type { LeetifyMatchStats } from "../leetify.js";
 import { clearVoiceChannel, saveVoiceChannel } from "./voice-state.js";
 
 export interface BotDeps {
   token: string;
   guildId?: string;
   voice: VoiceCoach;
+  /** /coach quiet's flag — owned by index.ts so the engine shares it. */
+  quiet: { get: () => boolean; set: (on: boolean) => void };
   status: () => {
     gsiAgeMs: number | null;
     ttsProviders: string[];
     llmModel: string | null;
+    /** Cross-session memory size, for the status readout. */
+    sessionsOnFile: number;
   };
 }
 
@@ -42,6 +50,7 @@ const commands = [
         .addStringOption((opt) => opt.setName("text").setDescription("What to say").setRequired(true)),
     )
     .addSubcommand((sub) => sub.setName("status").setDescription("Show GSI / voice / TTS status"))
+    .addSubcommand((sub) => sub.setName("quiet").setDescription("Mute/unmute the coach (game tracking continues)"))
     .addSubcommand((sub) => sub.setName("song").setDescription("Blast EZ4ENCE in the voice channel"))
     .addSubcommand((sub) => sub.setName("stop").setDescription("Stop the song (coaching continues)")),
 ].map((c) => c.toJSON());
@@ -168,6 +177,18 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
       return;
     }
 
+    case "quiet": {
+      const on = !deps.quiet.get();
+      deps.quiet.set(on);
+      await interaction.reply({
+        content: on
+          ? "🔇 Coach is muted — still watching the game and keeping score. `/coach quiet` again to unmute."
+          : "🎙️ Coach is back on the mic. You asked for this.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
     case "status": {
       const s = deps.status();
       const gsi =
@@ -180,12 +201,76 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
         content: [
           `**GSI:** ${gsi}`,
           `**Voice:** ${deps.voice.connected ? "✅ connected" : "❌ not in a channel"} (queue: ${deps.voice.queueLength})`,
+          `**Coach:** ${deps.quiet.get() ? "🔇 muted (`/coach quiet` to unmute)" : "🎙️ speaking"}`,
           `**TTS:** ${s.ttsProviders.join(" → ")}`,
           `**LLM:** ${s.llmModel ?? "disabled (rule-based lines only)"}`,
+          `**Memory:** ${s.sessionsOnFile} past match${s.sessionsOnFile === 1 ? "" : "es"} on file`,
         ].join("\n"),
         flags: MessageFlags.Ephemeral,
       });
       return;
     }
+  }
+}
+
+/**
+ * Post the match-debrief embed. Returns the message (for the Leetify follow-up
+ * reply) or null when the channel is missing or unpostable — a debrief that
+ * can't post must never take the coach down.
+ */
+export async function postDebrief(client: Client, channelId: string, data: DebriefData): Promise<Message | null> {
+  try {
+    const channel = await client.channels.fetch(channelId);
+    if (!channel?.isTextBased() || !("send" in channel)) {
+      log.warn("bot", `Debrief channel ${channelId} is not a postable text channel`);
+      return null;
+    }
+    const embed = new EmbedBuilder()
+      .setTitle(data.title)
+      .setColor(data.won === undefined ? 0x95a5a6 : data.won ? 0x2ecc71 : 0xe74c3c)
+      .setTimestamp(new Date());
+    if (data.coachNotes) embed.setDescription(data.coachNotes);
+    if (data.playerLine) embed.addFields({ name: "You", value: data.playerLine, inline: true });
+    if (data.pistolsLine) embed.addFields({ name: "Pistols", value: data.pistolsLine, inline: true });
+    if (data.buysLine) embed.addFields({ name: "Buys", value: data.buysLine, inline: true });
+    if (data.highlights.length) {
+      embed.addFields({
+        name: "Highlights",
+        value: data.highlights.map((h) => `• ${h}`).join("\n").slice(0, 1024),
+      });
+    }
+    return await channel.send({ embeds: [embed] });
+  } catch (err) {
+    log.warn("bot", `Could not post the debrief: ${err instanceof Error ? err.message : err}`);
+    return null;
+  }
+}
+
+/**
+ * Reply to the debrief once Leetify's demo parse lands. Their guidelines:
+ * metrics shown exactly as the API provides them, attribution required, and
+ * nothing stored — this posts and forgets.
+ */
+export async function postLeetifyFollowup(message: Message, stats: LeetifyMatchStats): Promise<void> {
+  const parts = [
+    stats.kdRatio !== undefined ? `K/D **${stats.kdRatio}**` : undefined,
+    stats.adr !== undefined ? `ADR **${stats.adr}**` : undefined,
+    stats.hsKills !== undefined ? `**${stats.hsKills}** HS kills` : undefined,
+    stats.tradeKills !== undefined ? `**${stats.tradeKills}** trade kills` : undefined,
+    stats.leetifyRating !== undefined
+      ? `Leetify rating **${stats.leetifyRating >= 0 ? "+" : ""}${stats.leetifyRating}**`
+      : undefined,
+    stats.reactionTimeMs !== undefined ? `TTD **${stats.reactionTimeMs}ms**` : undefined,
+    stats.preaim !== undefined ? `preaim **${stats.preaim}°**` : undefined,
+  ].filter(Boolean);
+  if (parts.length === 0) return;
+  try {
+    const embed = new EmbedBuilder()
+      .setColor(0xf1c40f)
+      .setTitle("The Leetify numbers are in")
+      .setDescription(`${parts.join(" · ")}\n\n[Data Provided by Leetify](https://leetify.com/)`);
+    await message.reply({ embeds: [embed] });
+  } catch (err) {
+    log.warn("bot", `Could not post the Leetify follow-up: ${err instanceof Error ? err.message : err}`);
   }
 }
