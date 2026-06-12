@@ -61,6 +61,7 @@ async function main(): Promise<void> {
     fullContext,
     () => tracker.lastUpdateAgeMs(),
     () => tracker.lastOwnKillAtMs(),
+    () => tracker.ownRoundKillsNow(),
   );
 
   // Raw GSI capture for offline analysis — what does the game actually send,

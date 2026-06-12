@@ -18,7 +18,7 @@ process.env.FREEZETIME_SECONDS = "1";
 const { GsiTracker } = await import("../src/gsi/tracker.js");
 const { CoachEngine } = await import("../src/coach/engine.js");
 const { config } = await import("../src/config.js");
-const { retakeDecisionLine } = await import("../src/coach/lines.js");
+const { retakeDecisionLine, economyLine } = await import("../src/coach/lines.js");
 import type { CoachEvent } from "../src/gsi/tracker.js";
 import type { GsiPayload, GsiWeapon } from "../src/gsi/types.js";
 import type { SpeakRequest } from "../src/coach/engine.js";
@@ -449,6 +449,70 @@ const mustWinLine = retakeDecisionLine({
   matchPoint: "them",
 });
 expect(/win/i.test(mustWinLine) && !/save (it|the|for)/i.test(mustWinLine), "thin gear on match point still gets a must-win retake call, not a save");
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: triple-kill line goes stale once the fourth kill lands ===");
+{
+  const out: SpeakRequest[] = [];
+  const t = new GsiTracker();
+  const e = new CoachEngine(
+    (req) => out.push(req),
+    null,
+    () => t.context(),
+    () => 0,
+    () => t.lastOwnKillAtMs(),
+    () => t.ownRoundKillsNow(),
+  );
+  const run = (p: GsiPayload) => { const ev = t.update(p); if (ev.length) e.handle(ev, t.context()); };
+  run(payload({ mapPhase: "warmup" }));
+  run(payload({ roundPhase: "freezetime", round: 0 }));
+  run(payload({ roundPhase: "live", round: 0 }));
+  run(payload({ roundPhase: "live", round: 0, state: { round_kills: 3 }, kills: 3 }));
+  const tripleLine = out.find((s) => s.category === "kill");
+  expect(tripleLine !== undefined, "triple line queued");
+  expect(tripleLine?.supersedes?.includes("kill") === true, "kill line supersedes older queued kill hype");
+  expect(tripleLine?.stillRelevant?.() === true, "triple line relevant while the count is still 3");
+  run(payload({ roundPhase: "live", round: 0, state: { round_kills: 4 }, kills: 4 }));
+  expect(tripleLine?.stillRelevant?.() === false, "triple line overtaken once the fourth kill lands");
+  const quadLine = out.filter((s) => s.category === "kill")[1];
+  expect(quadLine !== undefined && quadLine.stillRelevant?.() === true, "quad line is the relevant one now");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: last round of the half / regulation — no next-round talk ===");
+{
+  const { out, engine: e } = freshEngine();
+  e.handle(
+    [{ type: "roundEnd", won: true, method: "ct_win_elimination", ourScore: 7, theirScore: 5 }],
+    { round: 12, moneyResetsNextRound: true, ourSide: "CT", playerIsSelf: true },
+  );
+  const line = out.find((s) => s.category === "roundEnd");
+  expect(line !== undefined, "round-12 end line spoken");
+  expect(line !== undefined && /half|swap|reset|pistol|break/i.test(line.text), `line talks halftime, not next-round buys ("${line?.text.slice(0, 70)}")`);
+  expect(line !== undefined && !/keep the guns|keep your guns|buy right/i.test(line.text), "no gun-carryover talk into the halftime wipe");
+}
+{
+  const { out, engine: e } = freshEngine();
+  e.handle(
+    [{ type: "roundEnd", won: false, method: "t_win_bomb", ourScore: 12, theirScore: 12 }],
+    { round: 24, moneyResetsNextRound: true, ourSide: "CT", playerIsSelf: true },
+  );
+  const line = out.find((s) => s.category === "roundEnd");
+  expect(line !== undefined && /overtime|extra rounds/i.test(line.text), `12-12 after round 24 mentions overtime ("${line?.text.slice(0, 70)}")`);
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: freezetime economy knows resets, match point and pistols ===");
+{
+  const resetEco = economyLine({ playerIsSelf: true, money: 1200, ourLossStreak: 3, moneyResetsNextRound: true });
+  expect(resetEco !== null && /spend|force|empty|buy/i.test(resetEco), `reset-round eco says spend ("${resetEco}")`);
+  expect(resetEco !== null && !/real buy|buy lands next/i.test(resetEco), "no save-for-next-round advice into a money wipe");
+  const mpEco = economyLine({ playerIsSelf: true, money: 1200, matchPoint: "them" });
+  expect(mpEco !== null && /match|win|done|GG|force/i.test(mpEco), `their-match-point eco is a must-win call ("${mpEco}")`);
+  const pistolEco = economyLine({ playerIsSelf: true, money: 800, roundKind: "pistol" });
+  expect(pistolEco !== null && /pistol|kevlar|armor|util|nade|team/i.test(pistolEco), `pistol round gets pistol advice ("${pistolEco}")`);
+  expect(pistolEco !== null && !/eco|broke|save/i.test(pistolEco), "pistol round not mistaken for an eco");
+}
 
 // ---------------------------------------------------------------------------
 console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`} — config timings: round=${config.timings.roundSeconds}s bomb=${config.timings.bombSeconds}s`);

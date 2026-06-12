@@ -101,6 +101,34 @@ export function economyLine(ctx: MatchContext): string | null {
   const equip = ctx.equipValue ?? 0;
   const losses = ctx.ourLossStreak ?? 0;
 
+  // Pistol rounds first: the generic ladder reads $800 as "eco" and starts
+  // talking about saving — on a round where everyone is equally broke by design.
+  if (ctx.roundKind === "pistol") {
+    return pick("ecoPistol", [
+      "Pistol round. Armor or util, pick one, and play it together as five.",
+      "Eight hundred each. Kevlar or nades — choose, then stick with the team.",
+      "Pistol time. Don't get cute solo, the team that groups up wins this one.",
+    ]);
+  }
+  // Their match point: lose this round and the match ends — "save for next
+  // round" is advice about a round that won't exist.
+  if (ctx.matchPoint === "them") {
+    return pick("ecoMustWin", [
+      "Their match point. A save means GG — buy whatever you've got and go win it.",
+      "Lose this and we're done. Money stopped mattering, spend it and fight.",
+      "No next round to save for. Force everything, this is the whole match.",
+    ]);
+  }
+  // Last round before a money wipe (half end, overtime boundaries): saved cash
+  // and gear evaporate, so the only wrong buy is no buy.
+  if (ctx.moneyResetsNextRound) {
+    return pick("ecoSpendReset", [
+      "Money's gone after this round anyway. Spend all of it, force it up.",
+      "Wallet resets next round — saving now is donating to nobody. Buy everything.",
+      "Last round before the reset. Empty the account, every dollar dies at the swap.",
+    ]);
+  }
+
   if (equip >= 3500) {
     return pick("ecoKitted", [
       "Already fully kitted. Try not to donate that rifle to their economy.",
@@ -491,6 +519,34 @@ export function mvpLine(name?: string): string {
     `Well, well, ${who} carried a round. Don't make me start believing in you.`,
     `The MVP medal goes to ${who}. I ran the numbers twice. They held up. Disturbing.`,
     "Look at you, MVP. Updating my file from concerning to occasionally useful.",
+  ]);
+}
+
+/**
+ * Round-end react for the LAST round of the first half (round 12): "keep the
+ * guns / buy right next round" talk is wrong here — sides swap and money wipes.
+ */
+export function halfEndLine(won: boolean, ourScore: number, theirScore: number): string {
+  if (won) {
+    return pick("halfEndWon", [
+      `Half's ours, ${ourScore}-${theirScore}. Sides swap, money's wiped — win the pistol and keep it rolling.`,
+      `That's the half, ${ourScore}-${theirScore}. Everything resets now, so bring the lead, not the guns.`,
+      `${ourScore}-${theirScore} at the break. New side, fresh wallets, pistol next. Same energy.`,
+    ]);
+  }
+  return pick("halfEndLost", [
+    `Half ends ${ourScore}-${theirScore}. Clean slate now — new side, fresh money, pistol round next.`,
+    `That half's over, ${ourScore}-${theirScore}. Money resets, sides swap, excuses stay here.`,
+    `${ourScore}-${theirScore} at the swap. Whole new game on the other side — start it with the pistol.`,
+  ]);
+}
+
+/** Round-end react when overtime (or another OT half) follows — fresh money, no carryover. */
+export function otNextLine(ourScore: number, theirScore: number): string {
+  return pick("otNext", [
+    `${ourScore}-${theirScore}. Overtime. Fresh ten grand each — nobody gets to be tired now.`,
+    `Still tied at ${ourScore}-${theirScore}, so we do overtime. Full reset, full buys, no excuses.`,
+    `${ourScore}-${theirScore} means extra rounds. Money resets to ten grand — settle it properly.`,
   ]);
 }
 

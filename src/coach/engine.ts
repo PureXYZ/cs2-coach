@@ -17,6 +17,17 @@ export interface SpeakRequest {
    * slow LLM response can't smuggle stale advice past the freshness check.
    */
   eventAt: number;
+  /**
+   * Categories whose queued-but-unspoken lines this one makes obsolete (a quad
+   * line replaces a still-queued triple line instead of playing after it).
+   */
+  supersedes?: string[];
+  /**
+   * Re-checked right before the line is synthesized AND right before it plays:
+   * the game may have moved past the moment while the line waited in the queue
+   * ("TRIPLE KILL" must not play after the fourth kill already landed).
+   */
+  stillRelevant?: () => boolean;
 }
 
 export type Speak = (req: SpeakRequest) => void;
@@ -67,6 +78,8 @@ export class CoachEngine {
     private readonly payloadAgeMs: () => number | null = () => 0,
     /** Raw epoch ms of the player's latest own kill — exact, unlike the rounded context field. */
     private readonly lastOwnKillAt: () => number | null = () => null,
+    /** Current own round-kill count (null while dead) — staleness check for queued kill hype. */
+    private readonly ownRoundKills: () => number | null = () => null,
   ) {}
 
   handle(events: CoachEvent[], ctx: MatchContext): void {
@@ -164,9 +177,17 @@ export class CoachEngine {
             : batch.has("bombExploded")
               ? lines.bombExplodedLine(ctx.ourSide)
               : null;
-          const score = won
-            ? lines.roundWonLine(event.ourScore, event.theirScore)
-            : lines.roundLostLine(event.ourScore, event.theirScore);
+          // The last round before a money reset is its own story: "keep the
+          // momentum / buy right next round" talk is nonsense when the half
+          // just ended (sides swap, wallets wipe) or overtime starts.
+          const score =
+            ctx.round === 12
+              ? lines.halfEndLine(won, event.ourScore, event.theirScore)
+              : ctx.moneyResetsNextRound
+                ? lines.otNextLine(event.ourScore, event.theirScore)
+                : won
+                  ? lines.roundWonLine(event.ourScore, event.theirScore)
+                  : lines.roundLostLine(event.ourScore, event.theirScore);
           const mvpTag = tookMvp ? " Round MVP's yours, somehow." : "";
           return `${story ? `${story} ` : ""}${score}${mvpTag}`;
         };
@@ -197,17 +218,29 @@ export class CoachEngine {
         this.tacticalMoment(event, ctx, () => lines.matchEndLine(event.won, event.ourScore, event.theirScore), "match", 30_000, "smart");
         break;
 
-      case "kill":
+      case "kill": {
         // Triple and up bypass the 6s cooldown: fast multikills are exactly the
         // sub-6s case, and the first-kill line must never mute the ACE line (a
         // live session lost its entire ace escalation to this cooldown).
         // Singles and doubles stay silent — kill-by-kill narration is noise.
+        const count = event.roundKills;
         this.say(
-          () => lines.killLine(event.roundKills, ctx.playerName),
-          { category: "kill", priority: 2, maxAgeMs: 5_000 },
-          event.roundKills >= 3,
+          () => lines.killLine(count, ctx.playerName),
+          {
+            category: "kill",
+            priority: 2,
+            maxAgeMs: 5_000,
+            // A still-queued triple line is old news once the quad line exists —
+            // and a "TRIPLE KILL" that would speak after the 4th kill already
+            // landed gets dropped at the mic instead (a live session heard its
+            // triple hype while the fourth body was already on the floor).
+            supersedes: ["kill", "specialKill"],
+            stillRelevant: () => (this.ownRoundKills() ?? count) === count,
+          },
+          count >= 3,
         );
         break;
+      }
 
       case "specialKill":
         // Canned on purpose: knife-kill hype that arrives 3 seconds late is dead air.
@@ -236,9 +269,10 @@ export class CoachEngine {
       case "teammateKill":
         // Quad/ace bypass the cooldown — the triple line a few seconds earlier
         // must never mute the best spectator moments the feature exists for.
+        // A newer spectated kill replaces a still-queued older one, same as own kills.
         this.say(
           () => lines.teammateKillLine(event.name, event.roundKills, event.health),
-          { category: "teammate", priority: 1, maxAgeMs: 6_000 },
+          { category: "teammate", priority: 1, maxAgeMs: 6_000, supersedes: ["teammate"] },
           event.roundKills >= 4,
         );
         break;
@@ -358,7 +392,14 @@ export class CoachEngine {
    */
   private say(
     line: () => string | null,
-    opts: { category: string; priority: number; maxAgeMs: number; eventAt?: number },
+    opts: {
+      category: string;
+      priority: number;
+      maxAgeMs: number;
+      eventAt?: number;
+      supersedes?: string[];
+      stillRelevant?: () => boolean;
+    },
     skipCooldownCheck = false,
   ): void {
     if (!skipCooldownCheck && !this.passesCooldown(opts.category)) return;

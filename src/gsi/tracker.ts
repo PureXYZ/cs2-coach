@@ -112,8 +112,9 @@ const KNIFE_KILL_REWARD = 1_500;
 /**
  * Rounds needed to win given the current scores: 13 in regulation (MR12), then
  * 16, 19, ... through MR3 overtime blocks (each tied block pushes the target +3).
+ * Exported for the LLM prompt's "now on match point" round-end framing.
  */
-function winTarget(ourScore: number, theirScore: number): number {
+export function winTarget(ourScore: number, theirScore: number): number {
   let target = 13;
   while (ourScore >= target || theirScore >= target || (ourScore === target - 1 && theirScore === target - 1)) {
     target += 3;
@@ -538,6 +539,16 @@ export class GsiTracker {
    *  error the rounded context field would introduce. */
   lastOwnKillAtMs(): number | null {
     return this.lastOwnKillAt;
+  }
+
+  /** The player's own round_kills as of the latest payload (null while dead/
+   *  spectating — the player block describes a teammate then). A queued
+   *  "TRIPLE KILL" line checks this right before speaking: if the count moved
+   *  on, the line is stale news and the fresher line is already behind it. */
+  ownRoundKillsNow(): number | null {
+    const p = this.prev;
+    if (!p || !this.isSelf(p)) return null;
+    return p.player?.state?.round_kills ?? null;
   }
 
   private isSelf(payload: GsiPayload): boolean {

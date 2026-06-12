@@ -2,6 +2,8 @@
 // Numbers cross-checked against current (2026) MR12 values — if Valve patches
 // the economy, this is the one file to touch.
 
+import { pick } from "./lines.js";
+
 /** MR12 economy facts the coach reasons with. Keep terse — it's prompt budget. */
 export const ECONOMY_CHEATSHEET = `CS2 ECONOMY (MR12, all values $, verified 2026):
 - Pistol rounds are round 1 and round 13 (side swap): everyone has 800, no carryover. Money cap 16000. Overtime (MR3) resets everyone to 10000 each OT half.
@@ -83,4 +85,157 @@ export function mapBriefing(gsiMapName: string | undefined): string {
   const token = (gsiMapName.split("/").pop() ?? gsiMapName).toLowerCase();
   const brief = MAP_BRIEFINGS[token];
   return brief ? `\n\n${brief}` : "";
+}
+
+/**
+ * Named, callable plays per map and side — the freezetime prompt rotates two of
+ * these in so the strategy talk stays concrete and map-specific instead of
+ * cycling the same generic calls. Each entry is one line a coach could say.
+ */
+const MAP_PLAYBOOKS: Record<string, { T: string[]; CT: string[] }> = {
+  de_mirage: {
+    T: [
+      "Mid take to B split: smoke window, fight top mid, hit B through cat and apps together",
+      "A exec: smoke CT and jungle, molly under palace, ramp and palace hit at once",
+      "B apps flood: stack the nades on apps, double flash over, all five through",
+      "Slow default: two mid, palace lurk, take whatever opens after their util's gone",
+    ],
+    CT: [
+      "Standard 2-1-2 with the window AWP — mid control is the whole map",
+      "Mid push after a won round: flash top mid, pinch their default",
+      "Jungle-to-palace aggression with a flash — catch the palace lurk",
+      "Stack three B off a read, dump util early on apps",
+    ],
+  },
+  de_inferno: {
+    T: [
+      "Banana take into B exec: mollies and flashes up banana, smoke coffins and new box",
+      "Apps and arch split onto A pit, smoke library and arch site",
+      "Five-man apps rush with flashes — cheap and fast before they're set",
+      "Slow default: hold banana, lurk mid, hit late when their util's burned",
+    ],
+    CT: [
+      "Spend util on banana every round, 2-1-2, car-and-sandbags hold",
+      "Aggressive apps push with a flash to deny the free map",
+      "Banana car boost for early info, fall back on contact",
+      "Stack three B off a read, molly banana on the timing",
+    ],
+  },
+  de_nuke: {
+    T: [
+      "Outside take: smoke wall outside, split B through secret and garage",
+      "Fast A: flash hut and squeaky, hit site before rotations",
+      "Vent drop to B after a loud A fake",
+      "Five-man hut rush with flashes — the classic cheap hit",
+    ],
+    CT: [
+      "Two outside is standard — ramp control decides B",
+      "T-roof aggression for early info",
+      "Three-outside overload after a read",
+      "Silo AWP round to punish outside takes",
+    ],
+  },
+  de_ancient: {
+    T: [
+      "Mid and donut control, then A from donut and main together",
+      "B ramp exec: smokes for cave and triple, all five",
+      "Donut stack into A — cheap and fast",
+      "Slow default punishing their early util waste",
+    ],
+    CT: [
+      "Contest donut early, hold B from cave and triple",
+      "Mid smoke buys the round — standard 2-1-2",
+      "Donut push with a flash after a won round",
+      "B cave lurk on their mid take",
+    ],
+  },
+  de_anubis: {
+    T: [
+      "Water and mid control, split A through connector and main",
+      "B exec through palace with smokes for street cross",
+      "E-box hole sneak to B behind a loud mid take",
+      "Double lurk palace and main on a slow round",
+    ],
+    CT: [
+      "Aggressive mid info play, fall back to connector",
+      "Water push with a flash after a won round",
+      "Connector smoke-off to cut the A split",
+      "B street aggression to deny the palace take",
+    ],
+  },
+  de_dust2: {
+    T: [
+      "Long take: flash over, smoke CT cross, all five through",
+      "B tunnels as five: smoke window and door, flash in",
+      "Classic mid-to-B split with the CT-cross smoke",
+      "Cat and long A exec, one tunnels lurk",
+    ],
+    CT: [
+      "AWP holds mid or long — that gun is the round",
+      "Long 2, short 1, B 2 standard; squeeze B retakes from window and tunnels",
+      "Pit aggression on long with a flash",
+      "Mid-to-B pinch after their tunnels commit",
+    ],
+  },
+  de_train: {
+    T: [
+      "Ivy and popdog control first, then A exec with sniper-nest and connector smokes",
+      "B through upper with flashes, all five",
+      "A fake into popdog-to-B wrap",
+      "Ivy lurk while four hit B upper",
+    ],
+    CT: [
+      "Hold ivy and popdog actively — site crossfires win retakes",
+      "Ivy double-peek with a flash",
+      "Upper B aggression for info",
+      "A-site train boosts to break their exec",
+    ],
+  },
+  de_overpass: {
+    T: [
+      "Bathrooms and long A split, smoke bank and truck",
+      "Water and monster take for B with short support",
+      "Connector control, then split both sites late",
+      "Five-man monster flood with flashes",
+    ],
+    CT: [
+      "B fence and heaven boosts for early info",
+      "A holds from bank and truck, retake B from water together",
+      "Bathrooms push with a flash after a won round",
+      "Water lurk to catch the B take from behind",
+    ],
+  },
+  de_vertigo: {
+    T: [
+      "A ramp exec with the double smoke, flash up",
+      "Mid take to B split through window",
+      "Five-man B rush with flashes",
+      "Ramp fake into B stairs",
+    ],
+    CT: [
+      "Double ramp is standard — hold it with util",
+      "Mid window aggression with a flash",
+      "Ramp triple-stack off a read",
+      "B sandbags forward hold to break the rush",
+    ],
+  },
+};
+
+/**
+ * Two rotating named plays for the freezetime prompt (shuffle-bag fairness —
+ * every play gets called before any repeats). Empty when map or side is unknown.
+ */
+export function playbookOptions(gsiMapName: string | undefined, side: string | undefined, n = 2): string[] {
+  if (!gsiMapName || (side !== "T" && side !== "CT")) return [];
+  const token = (gsiMapName.split("/").pop() ?? gsiMapName).toLowerCase();
+  const book = MAP_PLAYBOOKS[token]?.[side];
+  if (!book || book.length === 0) return [];
+  const out: string[] = [];
+  const want = Math.min(n, book.length);
+  // Consecutive shuffle-bag picks never repeat for pools of 2+, so this terminates.
+  while (out.length < want) {
+    const play = pick(`playbook:${token}:${side}`, book);
+    if (!out.includes(play)) out.push(play);
+  }
+  return out;
 }
