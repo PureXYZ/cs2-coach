@@ -128,6 +128,15 @@ export const config = {
     // Spoken name the coach uses for the player ("Nice one, Andy!"). Defaults to Steam name.
     playerNickname: optional("PLAYER_NICKNAME") || undefined,
 
+    // The coach's own PUBLIC address — where CS2 should POST its game state. The
+    // single source of truth baked into the cfg by both `npm run cfg` and the
+    // `/coach setup` Discord command. A full https:// URL (TLS on 443) or
+    // http://host:port is used verbatim; a bare host/IP becomes http://host:GSI_PORT.
+    // Point it at a stable DOMAIN so a server IP change never breaks an installed
+    // cfg. Required for `/coach setup` (the bot can't self-detect its public address
+    // from inside a container). Unset = `npm run cfg` falls back to the LAN IP (dev).
+    publicHost: optional("COACH_PUBLIC_HOST") || undefined,
+
     // --- multi-feed team coaching (friends running the same GSI cfg) ---
     // The PRIMARY feed is the user whose Steam account owns cross-session memory
     // and the Leetify recap. Set it to your SteamID64 so those bind to YOUR
