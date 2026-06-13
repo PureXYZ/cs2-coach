@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import {
   ActionRowBuilder,
+  ActivityType,
   AttachmentBuilder,
   ButtonBuilder,
   ButtonInteraction,
@@ -165,7 +166,6 @@ const commands = [
         ),
     )
     .addSubcommand((sub) => sub.setName("status").setDescription("Show GSI / voice / TTS status"))
-    .addSubcommand((sub) => sub.setName("panel").setDescription("Post a clickable control panel (pin it for one-tap controls)"))
     .addSubcommand((sub) =>
       sub
         .setName("mute")
@@ -187,7 +187,8 @@ const commands = [
             .setDescription("Which song (leave empty to pick from buttons)")
             .addChoices(...Object.entries(SONGS).map(([value, s]) => ({ name: s.name, value }))),
         ),
-    ),
+    )
+    .addSubcommand((sub) => sub.setName("stop-song").setDescription("Stop the song (coaching continues)")),
 ].map((c) => c.toJSON());
 
 export async function startBot(deps: BotDeps): Promise<Client> {
@@ -217,6 +218,8 @@ export async function startBot(deps: BotDeps): Promise<Client> {
     } catch (err) {
       log.error("bot", "Failed to register slash commands", err);
     }
+    // Ambient mute indicator — reflects the restored mute state right away.
+    setMutePresence(ready, deps.quiet.get());
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {
@@ -293,24 +296,6 @@ function statusRow(): ActionRowBuilder<ButtonBuilder> {
   );
 }
 
-/** The two-row control panel: every common action as a button so non-typers can
- *  drive the coach. Setup is deliberately omitted — it carries the secret token
- *  and must stay in a DM/ephemeral reply. */
-function panelRows(): ActionRowBuilder<ButtonBuilder>[] {
-  return [
-    new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId("panel:join").setLabel("Join").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId("panel:leave").setLabel("Leave").setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId("panel:mute").setLabel("Mute / Unmute").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("panel:status").setLabel("Status").setStyle(ButtonStyle.Secondary),
-    ),
-    new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId("panel:song").setLabel("Song").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("panel:stop").setLabel("Stop song").setStyle(ButtonStyle.Secondary),
-    ),
-  ];
-}
-
 /** A "Check if it worked" button for the setup flow — shows status without the
  *  user having to switch back and hunt for /coach status. */
 function checkButtonRow(): ActionRowBuilder<ButtonBuilder> {
@@ -319,11 +304,27 @@ function checkButtonRow(): ActionRowBuilder<ButtonBuilder> {
   );
 }
 
-/** Mute/unmute reply copy, shared by the slash command and the panel button. */
+/** Mute/unmute reply copy for the /coach mute command. */
 function muteReply(on: boolean): string {
   return on
     ? "🔇 Coach is muted — still watching the game and keeping score. `/coach mute` again to unmute."
     : "🎙️ Coach is back on the mic. You asked for this.";
+}
+
+/** Reflect mute state in the bot's Discord presence — an ambient indicator under
+ *  the bot's name in the member list, with NO channel message: 🔇 muted (idle/
+ *  yellow) vs watching your matches (online/green). Set on startup (from the
+ *  restored mute state) and on every /coach mute toggle. Best-effort: setPresence
+ *  is fire-and-forget and a failure must never break the command. */
+function setMutePresence(client: Client, muted: boolean): void {
+  try {
+    client.user?.setPresence({
+      status: muted ? "idle" : "online",
+      activities: [{ type: ActivityType.Watching, name: muted ? "🔇 muted — /coach mute" : "your matches 👀" }],
+    });
+  } catch (err) {
+    log.warn("bot", `Could not set presence: ${err instanceof Error ? err.message : err}`);
+  }
 }
 
 function helpText(): string {
@@ -334,9 +335,7 @@ function helpText(): string {
     "",
     "**Get connected:** `/coach setup` (DMs you the config) · `/coach status` (is it working?)",
     "**In the channel:** `/coach join` (I hop into your voice channel) · `/coach leave` · `/coach mute`",
-    "**Mess around:** `/coach say <text>` · `/coach voice` (pick my voice) · `/coach song`",
-    "",
-    "Hate typing? `/coach panel` posts buttons you can pin and tap instead — that's all most people need.",
+    "**Mess around:** `/coach say <text>` · `/coach voice` (pick my voice) · `/coach song` · `/coach stop-song`",
     "",
     "Once you're connected I read your game on my own — just `/coach join` and play. I'll pipe up when there's something worth saying. Don't hold your breath.",
   ]
@@ -347,7 +346,7 @@ function helpText(): string {
 // ── status ───────────────────────────────────────────────────────────────────
 
 /** The full status readout as a string, so it can be served from /coach status,
- *  the panel button, the Refresh button, and the setup "did it work?" button. */
+ *  the Refresh button, and the setup "did it work?" button. */
 function renderStatus(deps: BotDeps): string {
   const s = deps.status();
   const gsi =
@@ -432,7 +431,7 @@ async function ensureInVoice(interaction: ActionInteraction, deps: BotDeps): Pro
   return { ok: true, joinedName: channel.name };
 }
 
-/** /coach join (and the panel / "Join my channel" buttons). Idempotent and
+/** /coach join (and the "Join my channel" button). Idempotent and
  *  self-healing: a no-op when already live in the caller's channel (skips the
  *  expensive leave()+rehandshake), a clean reconnect when the connection went
  *  stale, and a move when the caller is somewhere else. Owns its own reply. */
@@ -546,16 +545,6 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
       return;
     }
 
-    case "panel": {
-      // Non-ephemeral on purpose: friends pin this and tap the buttons.
-      await interaction.reply({
-        content:
-          "🎛️ **CS2 Coach controls** — tap a button. Pin it so everyone can use it. (If a button stops responding after an update, just run `/coach panel` again.)",
-        components: panelRows(),
-      });
-      return;
-    }
-
     case "song": {
       const key = interaction.options.getString("title") as keyof typeof SONGS | null;
       if (!key) {
@@ -585,12 +574,22 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
       return;
     }
 
+    case "stop-song": {
+      if (deps.voice.stopSong()) {
+        await interaction.reply({ content: "Song's off. Back to work.", flags: MessageFlags.Ephemeral });
+      } else {
+        await interaction.reply({ content: "Nothing's playing.", flags: MessageFlags.Ephemeral });
+      }
+      return;
+    }
+
     case "mute": {
       // Explicit on/off is idempotent (you can guarantee a state without reading a
       // reply first); no arg keeps the original toggle for muscle memory.
       const choice = interaction.options.getString("state");
       const on = choice ? choice === "on" : !deps.quiet.get();
       deps.quiet.set(on);
+      setMutePresence(interaction.client, on); // keep the ambient indicator in sync
       await interaction.reply({ content: muteReply(on), flags: MessageFlags.Ephemeral });
       return;
     }
@@ -673,65 +672,18 @@ async function handleButton(interaction: ButtonInteraction, deps: BotDeps): Prom
     });
     return;
   }
-  if (id.startsWith("panel:")) return handlePanelButton(interaction, deps);
-  // An id we don't route — almost always a button from a message older than the
-  // last redeploy. Acknowledge it so the user gets a hint, not a silent failure.
+  // An id we don't route — usually a button on a message posted before a deploy
+  // that renamed/removed it. Acknowledge it so the user gets a hint, not silence.
   await staleComponentReply(interaction);
 }
 
 /** Acknowledge a button/select whose customId we no longer recognise (typically a
- *  stale control from before a redeploy). Ephemeral only in a guild. */
+ *  stale control from before a deploy that changed it). Ephemeral only in a guild. */
 async function staleComponentReply(interaction: ButtonInteraction | StringSelectMenuInteraction): Promise<void> {
   await interaction.reply({
-    content: "That control's expired — run the command again (or use a fresh `/coach panel`).",
+    content: "That control's expired — run the command again.",
     ...(interaction.inGuild() ? { flags: MessageFlags.Ephemeral } : {}),
   });
-}
-
-async function handlePanelButton(interaction: ButtonInteraction, deps: BotDeps): Promise<void> {
-  const action = interaction.customId.slice("panel:".length);
-  switch (action) {
-    case "join":
-      return joinInvokerChannel(interaction, deps);
-    case "leave":
-      // Leave also wipes the saved channel (no auto-rejoin after a restart), so a
-      // stray tap is worth a confirm — one extra click on a rare destructive action.
-      await interaction.reply({
-        content: "Leave the voice channel? This also turns off auto-rejoin after a restart.",
-        components: [
-          new ActionRowBuilder<ButtonBuilder>().addComponents(
-            new ButtonBuilder().setCustomId("panel:leave:confirm").setLabel("Confirm leave").setStyle(ButtonStyle.Danger),
-          ),
-        ],
-        flags: MessageFlags.Ephemeral,
-      });
-      return;
-    case "leave:confirm":
-      deps.voice.leave();
-      clearVoiceChannel();
-      await interaction.update({ content: "Coach signing off. GG!", components: [] });
-      return;
-    case "mute": {
-      const on = !deps.quiet.get();
-      deps.quiet.set(on);
-      await interaction.reply({ content: muteReply(on), flags: MessageFlags.Ephemeral });
-      return;
-    }
-    case "status":
-      await interaction.reply({ content: renderStatus(deps), components: [statusRow()], flags: MessageFlags.Ephemeral });
-      return;
-    case "song":
-      await interaction.reply({ content: "Pick your poison:", components: songButtons(), flags: MessageFlags.Ephemeral });
-      return;
-    case "stop":
-      await interaction.reply({
-        content: deps.voice.stopSong() ? "Song's off. Back to work." : "Nothing's playing.",
-        flags: MessageFlags.Ephemeral,
-      });
-      return;
-    default:
-      await interaction.reply({ content: "Unknown panel button.", flags: MessageFlags.Ephemeral });
-  }
 }
 
 /** The join confirmation's "Test the voice" button — queues a canned line so a
@@ -771,7 +723,7 @@ async function handleVoiceSelect(interaction: StringSelectMenuInteraction, deps:
   });
 }
 
-/** A click on a /coach song button (or the panel's Song picker). Auto-joins if
+/** A click on a /coach song picker button. Auto-joins if
  *  needed, then swaps the picker message for the outcome. */
 async function handleSongButton(interaction: ButtonInteraction, deps: BotDeps): Promise<void> {
   const song = SONGS[interaction.customId.slice("song:".length) as keyof typeof SONGS];

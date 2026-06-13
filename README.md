@@ -175,14 +175,16 @@ Set `COACH_TEAM_TACTICS=false` to switch the team-economy/drop calls off and kee
 |---|---|
 | `/coach help` | Plain-English "what is this / where do I start" cheat-sheet |
 | `/coach setup` | DMs you the GSI config file plus where-to-drop-it steps — the no-software way for a friend to get connected (needs `COACH_PUBLIC_HOST` set) |
-| `/coach panel` | Posts a clickable control panel (Join / Leave / Mute / Status / Song / Stop) — pin it and tap instead of typing |
 | `/coach join` | Joins the voice channel you're in (a no-op if already there; reconnects if the connection went stale) |
 | `/coach leave` | Leaves voice |
 | `/coach mute [state]` | Mutes/unmutes the coach mid-match (game tracking continues); `state:on`/`off` sets it explicitly, no arg toggles. Persists across restarts |
 | `/coach say <text> [voice]` | Speak arbitrary text (test); auto-joins your channel if needed; optional `voice` overrides the coach's voice for that one line |
 | `/coach voice [name]` | Switch the coach's voice (persists across restarts); leave `name` empty for a clickable picker |
 | `/coach status` | GSI freshness, **feeds connected right now** (confirm a friend's install), voice/queue, mute state, TTS chain, active voice, LLM model, session memory — with a Refresh button |
-| `/coach song [title]` | Plays one of the coach's covers — pick from buttons or pass a title (EZ4ENCE, Xue Hua Piao Piao, Zenzenzense, White Pony); auto-joins if needed; picking while one plays switches songs. Stop it from the **panel** (or `/coach leave`) |
+| `/coach song [title]` | Plays one of the coach's covers — pick from buttons or pass a title (EZ4ENCE, Xue Hua Piao Piao, Zenzenzense, White Pony); auto-joins if needed; picking while one plays switches songs |
+| `/coach stop-song` | Stops the song; coaching lines resume |
+
+Every reply is **ephemeral** (only you see it) — the bot never posts a message the whole server can see. Its mute state also shows as an ambient **presence** under its name: *Watching your matches 👀* when live, *Watching 🔇 muted* (idle/yellow) when muted.
 
 ## Costs
 
