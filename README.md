@@ -173,15 +173,18 @@ Set `COACH_TEAM_TACTICS=false` to switch the team-economy/drop calls off and kee
 
 | Command | What it does |
 |---|---|
+| `/coach help` | Plain-English "what is this / where do I start" cheat-sheet |
 | `/coach setup` | DMs you the GSI config file plus where-to-drop-it steps — the no-software way for a friend to get connected (needs `COACH_PUBLIC_HOST` set) |
-| `/coach join` | Joins the voice channel you're in |
+| `/coach panel` | Posts a clickable control panel (Join / Leave / Mute / Status / Song / Stop) — pin it and tap instead of typing |
+| `/coach join` | Joins the voice channel you're in (a no-op if already there; reconnects if the connection went stale) |
 | `/coach leave` | Leaves voice |
-| `/coach quiet` | Mutes/unmutes the coach mid-match (game tracking continues) |
-| `/coach say <text> [voice]` | Speak arbitrary text (test); optional `voice` overrides the coach's voice for that one line |
-| `/coach voice [name]` | Switch the coach's voice (persists across restarts); leave `name` empty to see the current voice and the options |
-| `/coach status` | GSI freshness, **feeds connected right now** (confirm a friend's install), voice/queue, mute state, TTS chain, active voice, LLM model, session memory |
-| `/coach song [title]` | Plays one of the coach's covers — pick from buttons or pass a title (EZ4ENCE, Xue Hua Piao Piao, Zenzenzense, White Pony); picking while one plays switches songs |
-| `/coach stop` | Stops the song; coaching lines resume |
+| `/coach quiet [state]` | Mutes/unmutes the coach mid-match (game tracking continues); `state:on`/`off` sets it explicitly, no arg toggles. Persists across restarts |
+| `/coach say <text> [voice]` | Speak arbitrary text (test); auto-joins your channel if needed; optional `voice` overrides the coach's voice for that one line |
+| `/coach repeat [voice]` | Re-say your last `/coach say` line — handy for A/B-ing voices without retyping |
+| `/coach voice [name]` | Switch the coach's voice (persists across restarts); leave `name` empty for a clickable picker |
+| `/coach status [share]` | GSI freshness, **feeds connected right now** (confirm a friend's install), voice/queue, mute state, TTS chain, active voice, LLM model, session memory — with a Refresh button; `share:true` posts it for the whole squad |
+| `/coach song [title]` | Plays one of the coach's covers — pick from buttons or pass a title (EZ4ENCE, Xue Hua Piao Piao, Zenzenzense, White Pony); auto-joins if needed; picking while one plays switches songs |
+| `/coach stop-song` | Stops the song; coaching lines resume |
 
 ## Costs
 
