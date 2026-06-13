@@ -1,0 +1,3 @@
+# Keep the npm lockfile normalized to LF so it doesn't show up as modified
+# after npm rewrites it with CRLF line endings on Windows.
+package-lock.json text eol=lf
