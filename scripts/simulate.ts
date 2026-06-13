@@ -1660,12 +1660,13 @@ console.log("\n=== scenario: llm-prompt — visibility verdict + squad-aware fre
   expect(/team\.visibility/i.test(halftime), "halftime prompt defers to team.visibility");
   // B2: the per-teammate jab now needs the engine-rotated ribTarget — without one
   // the clause names the crew but adds no named-teammate beat; with one it features them.
-  expect(!/substantive line at/i.test(halftime), "no ribTarget → no named-teammate beat");
+  // ("just as hard" is unique to the rib note-path, so it marks the named beat.)
+  expect(!/just as hard/i.test(halftime), "no ribTarget → no named-teammate beat");
   const halftimeRibbed = describeMomentForTest({ type: "halftime" }, fullCtx, false, {
     name: "Mouse",
     note: "kept dying early on the entry",
   });
-  expect(/substantive line at Mouse/i.test(halftimeRibbed), "the rotated rib clause features the named teammate by name");
+  expect(/hit Mouse just as hard/i.test(halftimeRibbed), "the rotated rib clause features the named teammate by name");
   expect(halftimeRibbed.includes("kept dying early on the entry"), "the rib clause carries the teammate's debrief note");
   const matchEnd = describeMomentForTest({ type: "matchEnd", won: true, ourScore: 13, theirScore: 9 }, fullCtx, true);
   expect(/PRIMARY player's ALONE|no stats for any teammate/i.test(matchEnd), "matchEnd prompt guards the K/D as the primary's alone");

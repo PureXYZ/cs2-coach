@@ -245,6 +245,14 @@ export function economyLine(ctx: MatchContext, droppedTo?: Set<string>): string 
       "Bank's empty. One lucky pistol kill beats a half-assed force. Play for that, then walk.",
       "Budget round. Spend nothing, annoy them, get out. Real guns come back later.",
       "Plan's simple. One pick, one exit, no hero movie.",
+      "Under eighteen hundred. You buy a gun now, you're just gift-wrapping it for them. Pistol, grab a pick, get out.",
+      "Broke. So play broke. Pistol only, pick if it's free, exit alive — and don't hand them your spare change on the way out.",
+      "Eco. You can't buy skill, so don't try buying a rifle either. Pistol, snag a pick if it falls in your lap, get out.",
+      "This round's a write-off. Same as your aim. Pistols only, steal a pick, then exit before you donate the gun.",
+      "Bank's dry. Buy a pistol and pray your hands work for once. Free pick if it's there, then get the hell out.",
+      "No buy this round, hero. You'd just feed them a rifle like you feed them frags. Pistol, take a free pick, get out clean.",
+      "Look at that wallet. You couldn't buy a flash, let alone a round. Pistol, steal a pick if it falls in your lap, then run.",
+      "Half a buy off that money just gifts them a rifle next round, dumbass. Pistol only. Pick or no pick, you live.",
     ]);
   }
   return pick("ecoAwkward", [
@@ -383,6 +391,14 @@ export function roundLostLine(ourScore: number, theirScore: number): string {
     `Whiffed it, lost it, ${ourScore}-${theirScore}. Reset and actually hold an angle.`,
     `We're ${ourScore}-${theirScore}. Stop lurking solo and dying, play with the team.`,
     `That was a clown round, ${ourScore}-${theirScore}. Quit ego peeking and refrag for once, damn it.`,
+    `${ourScore}-${theirScore}. You found four guys with your face. Reset.`,
+    `${ourScore}-${theirScore}. You whiffed a full mag at one guy. Reset, trade.`,
+    `${ourScore}-${theirScore}. You held that angle like furniture. Swing or save.`,
+    `No trade, no util, just a body. ${ourScore}-${theirScore}. Wake the hell up.`,
+    `${ourScore}-${theirScore}. You peeked first, died first, traded nobody. Textbook throw.`,
+    `That clutch was yours and you choked it. ${ourScore}-${theirScore}. Use your damn util next time.`,
+    `You ego peeked, got dinked, gave them the round. ${ourScore}-${theirScore}. Hold your damn angle.`,
+    `Down ${ourScore}-${theirScore} and still no util thrown? Use your nades, genius.`,
   ]);
 }
 
@@ -437,6 +453,13 @@ export function killLine(roundKills: number, name?: string): string | null {
       `Look at this asshole going off — three kills. Don't overstay and hand it back, ${who}.`,
       `Beautiful, ${who}, a triple. Crosshair placement works. Hold here, don't throw the lead.`,
       `Holy shit, a triple. Now park your ass on cover and don't gift them the refrag, ${who}.`,
+      `${who} got three, congrats you absolute clown. Now refrag with your team and shut up.`,
+      `Look at ${who}, three kills before the inevitable whiff. Hold the angle, don't W-key it.`,
+      `Look at ${who} not whiffing for once, that's three. Hold it, don't dry-peek the fourth.`,
+      `A triple from ${who}? Hell froze over. Play it slow and don't overstay the round.`,
+      `Three down, ${who}. That's the loud part over. Slow down, hold, let them come to you.`,
+      `${who}'s on three and grinning. Trade it next time, don't run it solo and feed it back.`,
+      `Huh. ${who} got a triple. Now sit on the angle and don't W-key into the rest.`,
     ]);
   }
   // Singles and doubles stay silent: play-by-play of routine kills is noise —
@@ -1017,6 +1040,13 @@ export function squadOpeningDeathsLine(name: string): string {
     `${name}, you're getting picked the second the round starts. Wait for a trade or let someone else open.`,
     `Somebody babysit ${name} on entry — they keep going in alone and dying. That's free rounds we're gifting.`,
     `${name} keeps running in and dying first like it's the assigned role. Trade the poor bastard or stop ego-peeking.`,
+    `${name}'s feeding the opening like it's a chore. Trade off them or sit ${name} back this round.`,
+    `${name}'s the warm-up kill every round. Stop peeking first, ${name}, or stack a trade behind them.`,
+    `${name} runs in first and dies first every damn time, no flash, no trade, no brain. Babysit him or ${name}, hold your swing.`,
+    `${name}'s entry is just a donation drive for the enemy. Trade him this round or ${name}, let someone with a pulse open.`,
+    `${name} keeps swinging first like the round's gonna wait for them. It's not. Trade ${name}, or quit ego-peeking the entry.`,
+    `${name} opens every round face-first into a gun and gives it right back. Babysit the trade, or take entry off ${name} completely.`,
+    `${name} sprints in and feeds first every round like it's a side quest. Refrag them, or sit ${name} on the bench till they learn to wait.`,
   ]);
 }
 
