@@ -1,4 +1,4 @@
-import type { GsiPayload, GsiPlayer, GsiWeapon, Team } from "./types.js";
+import type { GsiPayload, GsiPlayer, GsiWeapon, Team, TeamContext } from "./types.js";
 import { MatchMemory, type RoundRecord } from "./memory.js";
 import { config } from "../config.js";
 
@@ -32,12 +32,24 @@ export type CoachEvent =
   | { type: "specialKill"; kind: "knife" | "zeus" | "grenade" | "lowhp"; nade?: "he" | "fire"; hp?: number; kills?: number }
   // Own scoreboard kill counter went DOWN while alive — only a teamkill does that.
   | { type: "teamkill" }
-  // The teammate the dead user is spectating got a kill (the only friend-play GSI shows us).
-  | { type: "teammateKill"; name?: string; roundKills: number; health?: number }
+  // The teammate the dead user is spectating got a kill (the only friend-play GSI
+  // shows us). spectatedSteamid identifies that teammate so the multi-feed
+  // RosterManager can drop this when the same teammate is a wired feed reporting
+  // the kill first-hand (it would otherwise double-count).
+  | { type: "teammateKill"; name?: string; roundKills: number; health?: number; spectatedSteamid?: string }
   // cause is filled in when the dying frame's intensities prove how they went —
   // burning (molotov) or fully flashed (blind) — so the roast can name it.
   | { type: "death"; cause?: "fire" | "blind" }
-  | { type: "mvp" };
+  | { type: "mvp" }
+  // --- roster-derived (multi-feed): emitted by the RosterManager, not the
+  // per-feed tracker, once friends are also POSTing their own GSI. ---
+  // A WIRED teammate (their own feed) racked up 3+ kills this round — named,
+  // live hype, distinct from the grave-spectator teammateKill above.
+  | { type: "teammateMultiKill"; who: { steamid: string; name?: string }; roundKills: number }
+  // Down to one alive among the squad. Only emitted with whole-team certainty
+  // (rosterComplete) — in always-hedge mode the coach can't know un-wired
+  // teammates are dead, so it stays silent.
+  | { type: "lastManStanding"; who: { name?: string }; rosterComplete: boolean };
 
 /** Snapshot of everything we know, used by rules and serialized for the LLM. */
 export interface MatchContext {
@@ -107,6 +119,10 @@ export interface MatchContext {
   notables?: string[];
   /** True while the player-block describes the user (false = dead, spectating a teammate). */
   playerIsSelf: boolean;
+  /** What the coach can see of the squad — only the teammates also running the
+   *  coach. Attached by the RosterManager to the primary's context when 2+ feeds
+   *  are live; undefined for a solo player (single-feed = single-player coach). */
+  team?: TeamContext;
 }
 
 interface PrevSelf {
@@ -204,6 +220,9 @@ export class GsiTracker {
    * player.team stays valid as a fallback when we have nothing better.
    */
   private lastKnownSide: Team | undefined;
+  /** Own Steam name from the last self frame — persists across death so the
+   *  multi-feed roster can still name this player while they're spectating. */
+  private ownNameSeen: string | undefined;
 
   /** Feed one GSI payload; returns the events it implies, in priority order. */
   update(payload: GsiPayload): CoachEvent[] {
@@ -221,6 +240,7 @@ export class GsiTracker {
     } else if (!this.lastKnownSide && payload.player?.team) {
       this.lastKnownSide = payload.player.team; // started while dead: teammate's side = ours
     }
+    if (isSelf && payload.player?.name) this.ownNameSeen = payload.player.name;
     const ourSide = this.lastKnownSide;
 
     // --- match lifecycle ---------------------------------------------------
@@ -284,10 +304,15 @@ export class GsiTracker {
     const roundPhase = round?.phase;
     const roundNum = (map?.round ?? 0) + 1; // map.round is the count of completed rounds
 
-    // Joined mid-round (no freezetime transition seen): adopt the round number
-    // now, while the phase makes map.round trustworthy — memory records and the
-    // LLM snapshot would otherwise file everything under round 0.
-    if (this.liveRound === 0 && mapPhase === "live" && (roundPhase === "live" || roundPhase === "freezetime")) {
+    // Adopt/advance the live round from map.round during live & freezetime. This
+    // covers a mid-round join (no freezetime transition seen) AND a MISSED
+    // freezetime payload (a packet gap spanning the freeze window) that would
+    // otherwise latch liveRound a round behind for the whole next round — which
+    // the multi-feed roster's equal-round vote gate relies on being tight.
+    // Monotonic catch-up only (never backwards), and NOT during 'over': map.round
+    // increments early there, so a round-end snapshot would wrongly claim the next
+    // round (context() prefers liveRound for exactly that reason).
+    if (mapPhase === "live" && (roundPhase === "live" || roundPhase === "freezetime") && roundNum > this.liveRound) {
       this.liveRound = roundNum;
     }
 
@@ -532,6 +557,7 @@ export class GsiTracker {
               name: p.name,
               roundKills: p.state.round_kills,
               health: p.state.health,
+              spectatedSteamid: p.steamid,
             });
             if (p.state.round_kills === 3 && p.name) {
               this.memory.recordNotable(this.liveRound, `${p.name} triple while you watched`);
@@ -692,6 +718,19 @@ export class GsiTracker {
   /** SteamID64 of the local player (from the GSI provider block), once seen. */
   steamId(): string | undefined {
     return this.prev?.provider?.steamid;
+  }
+
+  /** This feed's own Steam name, persisted across death (the player block becomes
+   *  a spectated teammate when dead, so the live name would otherwise vanish).
+   *  Used by the multi-feed RosterManager to name a player even mid-spectate. */
+  ownName(): string | undefined {
+    return this.ownNameSeen;
+  }
+
+  /** This feed's side, surviving death via lastKnownSide (auto-spectate only ever
+   *  targets teammates, so the spectated player's side is still ours). */
+  ownSide(): Team | undefined {
+    return this.lastKnownSide;
   }
 
   isInMatch(): boolean {

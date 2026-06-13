@@ -557,6 +557,73 @@ export function teammateKillLine(name: string | undefined, kills: number, health
   return null;
 }
 
+/**
+ * Live hype when a WIRED teammate (their OWN feed, multi-feed setups) racks up a
+ * big round — distinct from teammateKillLine, which narrates from the grave while
+ * the user spectates. Here the listener is usually still alive watching a friend
+ * cook, so the angle is "a teammate's doing your job" rather than "your death set
+ * it up". Singles/doubles never reach this (aggregated to silence upstream).
+ */
+export function teammateMultiKillLine(name: string | undefined, kills: number): string | null {
+  const who = name ?? "your guy";
+  if (kills >= 5) {
+    return pick("teamAce", [
+      `${who} just aced the round. Absolutely filthy. Clip it.`,
+      `An ace from ${who}. I'm impressed and I hate it.`,
+      `${who} cleared the whole enemy team solo. Disgusting work.`,
+      `Five for ${who}. One-man army shit, and it actually worked.`,
+      `${who} aced it. Frame that one before they deny it.`,
+      `Whole enemy side gone, courtesy of ${who}. Hell of a round.`,
+    ]);
+  }
+  if (kills === 4) {
+    return pick("teamQuad", [
+      `${who}'s on four. Somebody's cooking out there.`,
+      `Four kills for ${who}. Back them up and close it out.`,
+      `${who} with a quad. The ace is right there — help if you can.`,
+      `That's four for ${who}. Trade for them, don't let it go to waste.`,
+      `${who}'s hunting the fifth. Don't leave them swinging alone.`,
+      `Damn, ${who}'s got four. Give them the info and let them work.`,
+    ]);
+  }
+  // 3 is the floor — the aggregate-not-multiply rule mutes anything smaller.
+  return pick("teamTriple", [
+    `${who} with a triple. Nice. Keep it rolling.`,
+    `Triple for ${who}. They're awake, finally.`,
+    `${who}'s got three. Back them up out there.`,
+    `That's a triple from ${who}. Help them close the round.`,
+    `${who} popped three. Don't let it go quiet now.`,
+    `Three for ${who}. So somebody can aim. Good to know.`,
+  ]);
+}
+
+/**
+ * Last-man-standing clutch call (multi-feed, whole-team certainty only — the
+ * roster won't emit the event unless the full squad is wired in, so the line can
+ * commit to "last one alive" instead of hedging). Names the survivor; addresses
+ * them directly when it's the listener's own primary feed.
+ */
+export function lastManStandingLine(name: string | undefined): string {
+  if (!name) {
+    return pick("lastManSelf", [
+      "It's all you now. Last one up. Win it and I'll shut up for a round.",
+      "You're the last one breathing. No backup coming. Make them work for it.",
+      "Everybody's dead but you. Clutch it or don't — just make it ugly for them.",
+      "Last man. Take your time, trade your shots, no hero rush. It's yours to lose.",
+      "You're alone up there. Use the clock, pick the fight, win the damn round.",
+      "Squad's wiped, you're it. Quiet, slow, deadly. Go.",
+    ]);
+  }
+  return pick("lastManMate", [
+    `${name}'s the last one alive. Everybody dead give one callout, then zip it.`,
+    `It's on ${name} now. Last man up. Feed them what you saw and let them cook.`,
+    `${name}'s clutching for all of us. Eyes on, mouths shut.`,
+    `Down to ${name}. Last breath on the team — quick info, then silence.`,
+    `${name} alone now. One clean callout each, then let them work.`,
+    `All on ${name}, last one standing. Make us look good.`,
+  ]);
+}
+
 /** Locally-derived clock callout: ~35 seconds left, no plant yet. */
 export function lateRoundLine(side: string | undefined, hasBomb = false): string {
   // The player is personally carrying the C4 — the generic "someone plant"

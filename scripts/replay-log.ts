@@ -9,6 +9,13 @@
  * (nade kill windows, derived clocks) behave exactly as they did live.
  *
  * Run:  npm run replay -- logs/gsi-2026-06-10T22-01-22.ndjson
+ *
+ * NOTE: this replays through a SINGLE GsiTracker, so it's meaningful for a
+ * single-player capture. A multi-feed log interleaves several friends' payloads
+ * (distinguished by provider.steamid); feeding those through one tracker mixes
+ * players, and the logged `events` are the fused RosterManager output rather than
+ * one tracker's — so expect diffs. Filter a multi-feed log to one provider.steamid
+ * before replaying it here, or lean on `npm run sim`'s roster scenarios instead.
  */
 import fs from "node:fs";
 
