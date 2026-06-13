@@ -38,13 +38,18 @@ export interface BotDeps {
     gsiAgeMs: number | null;
     ttsProviders: string[];
     llmModel: string | null;
-    /** Cross-session memory size, for the status readout. */
     sessionsOnFile: number;
     /** How many CONFIRMED teammate feeds (same match + side) are wired in. */
     wiredFeeds: number;
     /** Every feed POSTing right now (raw presence), newest first — the honest
      *  "is your CS2 talking to the coach?" signal for a friend confirming setup. */
     connectedFeeds: { name: string; ageMs: number }[];
+    /** Effective squad size from COACH_SQUAD_SIZE (undefined => always hedge). */
+    squadSize: number | undefined;
+    /** Ops ITEM 14: whether the configured primary has connected a feed this match. */
+    primaryMode: "present" | "friend-only" | "solo";
+    /** Ops ITEM 9: non-member feeds still connected and why — rendered only when non-empty. */
+    quarantined: { name?: string; reason: string }[];
   };
 }
 
@@ -328,25 +333,35 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
             ? `✅ live (last update ${(s.gsiAgeMs / 1000).toFixed(1)}s ago)`
             : `⚠️ stale (last update ${Math.round(s.gsiAgeMs / 1000)}s ago)`;
       const feeds = s.connectedFeeds;
-      const squad =
+      const feedsLine =
         feeds.length === 0
           ? "no game feeds connected right now — launch CS2 with the cfg installed (`/coach setup`) and you'll show up here"
           : `${feeds.length} connected: ${feeds
               .map((f) => `**${f.name}** (${Math.max(0, Math.round(f.ageMs / 1000))}s ago)`)
-              .join(", ")}${s.wiredFeeds > 1 ? ` — team coaching live (${s.wiredFeeds} on your squad)` : ""}`;
-      await interaction.reply({
-        content: [
-          `**GSI:** ${gsi}`,
-          `**Voice:** ${deps.voice.connected ? "✅ connected" : "❌ not in a channel"} (queue: ${deps.voice.queueLength})`,
-          `**Feeds:** ${squad}`,
-          `**Coach:** ${deps.quiet.get() ? "🔇 muted (`/coach quiet` to unmute)" : "🎙️ speaking"}`,
-          `**Focus:** ${deps.goal.get() ?? "none set"}`,
-          `**TTS:** ${s.ttsProviders.join(" → ")}`,
-          `**LLM:** ${s.llmModel ?? "disabled (rule-based lines only)"}`,
-          `**Memory:** ${s.sessionsOnFile} past match${s.sessionsOnFile === 1 ? "" : "es"} on file`,
-        ].join("\n"),
-        flags: MessageFlags.Ephemeral,
-      });
+              .join(", ")}`;
+      const squadLine = (() => {
+        const base = `${s.wiredFeeds} player feed${s.wiredFeeds === 1 ? "" : "s"} wired in`;
+        const sizeNote = s.squadSize !== undefined ? ` of ${s.squadSize}` : " (always hedging — set COACH_SQUAD_SIZE)";
+        const mode = s.primaryMode === "friend-only"
+          ? " — ⚠️ your configured primary hasn't connected this match (recording/Leetify will skip)"
+          : s.primaryMode === "solo" ? " — no primary configured (adopted the first feed)" : "";
+        return `**Squad:** ${base}${sizeNote}${s.wiredFeeds > 1 ? " (team coaching live)" : ""}${mode}`;
+      })();
+      const statusLines = [
+        `**GSI:** ${gsi}`,
+        `**Voice:** ${deps.voice.connected ? "✅ connected" : "❌ not in a channel"} (queue: ${deps.voice.queueLength})`,
+        `**Feeds:** ${feedsLine}`,
+        squadLine,
+        `**Coach:** ${deps.quiet.get() ? "🔇 muted (\`/coach quiet\` to unmute)" : "🎙️ speaking"}`,
+        `**Focus:** ${deps.goal.get() ?? "none set"}`,
+        `**TTS:** ${s.ttsProviders.join(" → ")}`,
+        `**LLM:** ${s.llmModel ?? "disabled (rule-based lines only)"}`,
+        `**Memory:** ${s.sessionsOnFile} past match${s.sessionsOnFile === 1 ? "" : "es"} on file`,
+      ];
+      if (s.quarantined.length > 0) {
+        statusLines.push(`**Quarantined:** ${s.quarantined.map((q) => `${q.name ?? "unknown feed"} — ${q.reason}`).join("; ")}`);
+      }
+      await interaction.reply({ content: statusLines.join("\n"), flags: MessageFlags.Ephemeral });
       return;
     }
   }

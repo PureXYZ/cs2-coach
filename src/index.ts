@@ -294,6 +294,13 @@ async function main(): Promise<void> {
       sessionsOnFile: sessions.count,
       wiredFeeds: roster.wiredCount(),
       connectedFeeds: roster.connectedFeeds(),
+      squadSize: roster.squadSize(),
+      primaryMode: !config.coach.primarySteam64
+        ? ("solo" as const)
+        : roster.primaryEverSeenThisMatch()
+          ? ("present" as const)
+          : ("friend-only" as const),
+      quarantined: roster.quarantinedFeeds(),
     }),
   });
 

@@ -27,7 +27,7 @@ const { GsiTracker } = await import("../src/gsi/tracker.js");
 const { RosterManager } = await import("../src/gsi/roster.js");
 const { CoachEngine } = await import("../src/coach/engine.js");
 const { config } = await import("../src/config.js");
-const { retakeDecisionLine, economyLine, lateRoundLine, ourTimeoutSpeechLine } = await import("../src/coach/lines.js");
+const { retakeDecisionLine, economyLine, lateRoundLine, lateRoundCarrierNamed, ourTimeoutSpeechLine } = await import("../src/coach/lines.js");
 import os from "node:os";
 import path from "node:path";
 import type { CoachEvent, MatchContext } from "../src/gsi/tracker.js";
@@ -1017,6 +1017,10 @@ console.log("\n=== scenario: multi-feed — demux, global-event dedup, named tea
   const tmk = triple.find((e) => e.type === "teammateMultiKill") as Extract<CoachEvent, { type: "teammateMultiKill" }> | undefined;
   expect(tmk?.roundKills === 3, "a teammate's triple becomes a teammateMultiKill");
   expect(tmk?.who.name === "Mouse", "teammateMultiKill carries the friend's own-feed name");
+  // Events ITEM 7: teammate multikill hype now buffers behind MULTIKILL_FLUSH_MS
+  // (700ms) so two friends popping off merge into one line — flush the window
+  // before asserting it lands (the line is still spoken, just one beat later).
+  await sleep(900);
   expect(out.some((s) => s.category === "teammate" && s.text.includes("Mouse")), "teammate hype spoken by name");
 
   // Both feeds cross the round end; only the authority's reaches the engine.
@@ -1218,6 +1222,248 @@ console.log("\n=== scenario: multi-feed — no false last-man at round start (st
   run("P1 r2 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 1, ctScore: 1 }));
   const r2Live = run("P1 r2 live", payload({ provider: P1, roundPhase: "live", round: 1, ctScore: 1 }));
   expect(!r2Live.some((e) => e.type === "lastManStanding"), "no false last-man at round start while teammates' feeds are behind");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: connection-blip — a behind/unknown member suppresses the whole-team last-man until it catches up ===");
+{
+  // The synchronous harness can't make a still-connected feed go non-fresh (its
+  // lastSeen is bumped to now on every payload and wall-clock never advances), so
+  // ITEM 1's leave-grace/reclaim-confirm windows are unit-reasoned, not driven here.
+  // What IS deterministic — and is the honesty guarantee ITEM 2/13 exist for — is
+  // that a CONFIRMED member whose feed is BEHIND the squad round reads as alive
+  // === undefined (an honest unknown), and the whole-team last-man call stays
+  // suppressed for as long as anyone is unknown, then fires once every member is
+  // accounted for and exactly one survives.
+  const { r, run } = rosterRig(P1);
+  run("P1 warmup", payload({ provider: P1, mapPhase: "warmup" }));
+  run("P1 r1 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 0 }));
+  run("P1 r1 live", payload({ provider: P1, roundPhase: "live", round: 0 }));
+  run("P2 r1 live", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse" }));
+  run("P3 r1 live", payload({ provider: P3, roundPhase: "live", round: 0, name: "Cadian" }));
+  expect(r.context().team?.rosterComplete === true, "full 3-stack wired and caught up → roster-complete");
+
+  // The squad rolls into round 2: P1 advances and P2 dies, but P3's feed is still
+  // a round behind (a brief stall), so the squad-MAX refRound leaves P3's cached
+  // frame reading as an unknown — NOT a confirmed survivor count.
+  run("P1 r2 live", payload({ provider: P1, roundPhase: "live", round: 1, ctScore: 1 }));
+  const stalled = run("P2 dies r2", payload({ provider: P2, roundPhase: "live", round: 1, name: "Mouse", state: { health: 0 }, weapons: {}, ctScore: 1 }));
+  expect(!stalled.some((e) => e.type === "lastManStanding"), "no last-man while a member's feed is still behind the round (alive unknown)");
+  const cadian = r.context().team?.members.find((m) => m.name === "Cadian");
+  expect(cadian !== undefined && cadian.alive === undefined, "the behind member shows alive === undefined (honest unknown, not a false death)");
+
+  // P3's feed catches up to round 2 already dead → now every member is known and
+  // P1 is the lone survivor, so the whole-team last-man finally fires (primary
+  // survivor, addressed in the second person → who.name undefined).
+  const lastMan = run("P3 catches up dead", payload({ provider: P3, roundPhase: "live", round: 1, name: "Cadian", state: { health: 0 }, weapons: {}, ctScore: 1 }));
+  const lm = lastMan.find((e) => e.type === "lastManStanding") as Extract<CoachEvent, { type: "lastManStanding" }> | undefined;
+  expect(lm !== undefined, "last-man fires once the behind member catches up and one survivor remains");
+  expect(lm?.who.name === undefined, "the primary survivor is addressed in the second person (no name)");
+  expect(lm?.rosterComplete === true, "last-man still carries whole-team certainty");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: connection-blip ITEM 13 — authority lagging a faster teammate at a boundary stays an honest unknown ===");
+{
+  const { run } = rosterRig(P1);
+  run("P1 warmup", payload({ provider: P1, mapPhase: "warmup" }));
+  run("P1 r1 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 0 }));
+  run("P1 r1 live", payload({ provider: P1, roundPhase: "live", round: 0 }));
+  run("P2 r1 live", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse" }));
+  run("P3 r1 live", payload({ provider: P3, roundPhase: "live", round: 0, name: "Cadian" }));
+  run("P2 dies r1", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse", state: { health: 0 }, weapons: {} }));
+  run("P3 dies r1", payload({ provider: P3, roundPhase: "live", round: 0, name: "Cadian", state: { health: 0 }, weapons: {} }));
+  // P2's feed crosses into round 2 first; the authority P1 is still posting round-1
+  // frames. The squad-MAX refRound jumps to P2's round, so P1's and P3's cached
+  // round-1 (dead) frames read as unknown — no false 1-alive clutch on the survivors.
+  const ahead = run("P2 r2 live (ahead of authority)", payload({ provider: P2, roundPhase: "live", round: 1, name: "Mouse", ctScore: 1 }));
+  expect(!ahead.some((e) => e.type === "lastManStanding"), "a teammate pulling ahead of the authority casts no false last-man");
+  const behind = run("P1 r1 frame (authority lagging)", payload({ provider: P1, roundPhase: "live", round: 0 }));
+  expect(!behind.some((e) => e.type === "lastManStanding"), "the lagging authority's stale frame is an honest unknown, not a clutch");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: econ — gear + alive per entry, fresh tier, cross-round buy-sync ===");
+{
+  const { r, run } = rosterRig(P1);
+  run("P1 warmup", payload({ provider: P1, mapPhase: "warmup" }));
+  run("P1 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 0, state: { money: 4000, equip_value: 4500 } }));
+  run("P2 freeze", payload({ provider: P2, roundPhase: "freezetime", round: 0, name: "Mouse", state: { money: 800, equip_value: 0 } }));
+  run("P3 freeze", payload({ provider: P3, roundPhase: "freezetime", round: 0, name: "Cadian", state: { money: 800, equip_value: 0 } }));
+  const team = r.context().team;
+  const econ = team?.econ ?? [];
+  const primaryEntry = econ.find((e) => e.isPrimary);
+  expect(primaryEntry?.equipValue === 4500, `primary econ entry carries its own gear (equipValue ${primaryEntry?.equipValue})`);
+  expect(econ.length === 3 && econ.every((e) => e.alive === true), "every econ entry carries alive (all up at freezetime)");
+  // Each feed reports its OWN player (provider === player.steamid → playerIsSelf),
+  // so every feed's own equipValue is read — the non-primary entries carry the gear
+  // they reported (0 here), NOT undefined. The honesty hedge is the tier, below.
+  expect(econ.filter((e) => !e.isPrimary).every((e) => e.equipValue === 0), "non-primary entries carry the gear value they reported (0)");
+  expect(team?.members.every((m) => m.tier === "fresh") === true, "every member is fresh-tier in the synchronous harness (staleMs ≈ 0)");
+
+  // Build a 2-round out-of-sync pattern: Mouse full-buys alone while P1/P3 save.
+  // Post the teammates first and the authority (P1) LAST each freeze, so the ring
+  // snapshots the round's settled buys exactly once (phaseIsFreeze on P1's frame).
+  const syncRig = rosterRig(P1);
+  const sr = syncRig.r;
+  const sRun = syncRig.run;
+  sRun("P1 warmup", payload({ provider: P1, mapPhase: "warmup" }));
+  sRun("P1 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 0 }));
+  sRun("P1 live", payload({ provider: P1, roundPhase: "live", round: 0 }));
+  sRun("P2 live", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse" }));
+  sRun("P3 live", payload({ provider: P3, roundPhase: "live", round: 0, name: "Cadian" }));
+  for (const round of [2, 3]) {
+    sRun(`r${round} P? live`, payload({ provider: P1, roundPhase: "live", round: round - 1, ctScore: 1 }));
+    sRun(`r${round} P2 live`, payload({ provider: P2, roundPhase: "live", round: round - 1, name: "Mouse", ctScore: 1 }));
+    sRun(`r${round} P3 live`, payload({ provider: P3, roundPhase: "live", round: round - 1, name: "Cadian", ctScore: 1 }));
+    sRun(`r${round} P2 freeze (full)`, payload({ provider: P2, roundPhase: "freezetime", round, name: "Mouse", state: { money: 5000 }, ctScore: 1 }));
+    sRun(`r${round} P3 freeze (save)`, payload({ provider: P3, roundPhase: "freezetime", round, name: "Cadian", state: { money: 1000 }, ctScore: 1 }));
+    sRun(`r${round} P1 freeze (save)`, payload({ provider: P1, roundPhase: "freezetime", round, state: { money: 1000 }, ctScore: 1 }));
+  }
+  const synced = sr.context().team;
+  expect(synced?.rosterComplete === true, "full squad wired for the buy-sync read");
+  expect(typeof synced?.buySyncNote === "string" && synced.buySyncNote.includes("Mouse"), `buy-sync read names the lone out-of-sync buyer ("${synced?.buySyncNote}")`);
+
+  // 2-of-3 wired → no whole-team license → no buy-sync read at all.
+  const partial = rosterRig(P1);
+  partial.run("P1 warmup", payload({ provider: P1, mapPhase: "warmup" }));
+  partial.run("P1 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 0, state: { money: 5000 } }));
+  partial.run("P2 freeze", payload({ provider: P2, roundPhase: "freezetime", round: 0, name: "Mouse", state: { money: 1000 } }));
+  expect(partial.r.context().team?.buySyncNote === undefined, "no buy-sync read while the roster is only partial (no whole-team license)");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: events ITEM 8 — numbers-aware CT retake when the squad is fully wired ===");
+{
+  // The branch reads only rosterComplete + aliveWired + gear off MatchContext, so
+  // the team literal can skip members[]. TeamContext now REQUIRES visibility (and
+  // members[].tier), so the literal is cast `as any` to satisfy the type offline.
+  const teamCtx = (alive: number, complete = true) =>
+    ({ playerIsSelf: true, health: 100, armor: 100, equipValue: 4000, ourSide: "CT",
+       team: { wiredCount: 3, rosterComplete: complete, squadSize: 3, members: [], aliveWired: alive, visibility: "x" } }) as any;
+  // The line is a shuffle-bag pick, so exhaust the 2-alive pool across several calls:
+  // EVERY variant must make the two-man call, and the SET must hedge the enemy.
+  const two: string[] = [];
+  for (let i = 0; i < 6; i++) two.push(retakeDecisionLine(teamCtx(2)));
+  expect(two.every((l) => /two|2/i.test(l)), "every 2-alive line makes a two-man call");
+  expect(two.some((l) => /dunno|can't see|don't know|their numbers|overcommit/i.test(l)), "the 2-alive pool hedges the unseen enemy");
+  const one: string[] = [];
+  for (let i = 0; i < 6; i++) one.push(retakeDecisionLine(teamCtx(1)));
+  expect(one.every((l) => !/all five|5-man|five-man|\bfive\b/i.test(l)), "a 1-alive numbers call never orders a 5-man retake");
+  // Partial roster (no whole-team count) falls through to the gear pools.
+  const partial: string[] = [];
+  for (let i = 0; i < 8; i++) partial.push(retakeDecisionLine(teamCtx(2, false)));
+  expect(
+    partial.every((l) => !/of us|full squad up|Three-plus|the bodies/.test(l)),
+    "a partial roster falls through to the gear pools, not a numbers call",
+  );
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: events ITEM 4 — late-round nudge names the wired C4 carrier ===");
+{
+  const named = lateRoundCarrierNamed("Mouse");
+  expect(named.includes("Mouse") && /bomb|c4|plant|site|carry/i.test(named), `carrier nudge names the teammate and talks bomb ("${named}")`);
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: events ITEM 7 — simultaneous teammate multikills merge; same-feed dedupes; freezetime clears ===");
+{
+  // Two friends popping off in the same beat buffer and flush ONE merged line after
+  // MULTIKILL_FLUSH_MS (700ms) — await sleep(900) clears the window. The engine reads
+  // the top-level tracker for ctx, but the buffer/flush never touch it for content.
+  const out: SpeakRequest[] = [];
+  const e = new CoachEngine((req) => out.push(req), null, { getCtx: () => tracker.context() });
+  e.handle([{ type: "teammateMultiKill", who: { steamid: P2, name: "Mouse" }, roundKills: 3 }], tracker.context());
+  e.handle([{ type: "teammateMultiKill", who: { steamid: P3, name: "Cadian" }, roundKills: 4 }], tracker.context());
+  expect(out.length === 0, "no line speaks inside the merge window");
+  await sleep(900);
+  const merged = out.filter((s) => s.category === "teammate");
+  expect(merged.length === 1, "the two multikills merge into exactly ONE teammate line");
+  expect(merged[0]?.text.includes("Mouse") && merged[0]?.text.includes("Cadian"), "the merged line names BOTH friends");
+
+  // Same steamid going triple → quad raises the buffered entry to one quad line.
+  const out2: SpeakRequest[] = [];
+  const e2 = new CoachEngine((req) => out2.push(req), null, { getCtx: () => tracker.context() });
+  e2.handle([{ type: "teammateMultiKill", who: { steamid: P2, name: "Mouse" }, roundKills: 3 }], tracker.context());
+  e2.handle([{ type: "teammateMultiKill", who: { steamid: P2, name: "Mouse" }, roundKills: 4 }], tracker.context());
+  await sleep(900);
+  const dedup = out2.filter((s) => s.category === "teammate");
+  expect(dedup.length === 1 && /four|4|quad|fifth/i.test(dedup[0].text), "a triple→quad on one feed dedupes to a single quad-level line");
+
+  // A freezetime between the multikill and the flush clears the buffer (new round,
+  // last round's pending hype is dead) — no teammate line survives the boundary.
+  const out3: SpeakRequest[] = [];
+  const e3 = new CoachEngine((req) => out3.push(req), null, { getCtx: () => tracker.context() });
+  e3.handle([{ type: "teammateMultiKill", who: { steamid: P2, name: "Mouse" }, roundKills: 3 }], tracker.context());
+  e3.handle([{ type: "freezetime", round: 5 }], { ...tracker.context(), playerIsSelf: true, money: 4000 });
+  await sleep(900);
+  expect(!out3.some((s) => s.category === "teammate"), "a freezetime before the flush clears the pending multikill hype");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: llm-prompt — visibility verdict + squad-aware freezetime/halftime/matchEnd prompts ===");
+{
+  const { describeMomentForTest } = await import("../src/coach/llm.js");
+  // 2 of a 3-stack wired → the verdict is an explicit hedge, names the gap, and
+  // never licenses whole-team facts.
+  const { r, run } = rosterRig(P1);
+  run("P1 warmup", payload({ provider: P1, mapPhase: "warmup" }));
+  run("P1 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 4, ctScore: 2, tScore: 2 }));
+  run("P2 freeze", payload({ provider: P2, roundPhase: "freezetime", round: 4, name: "Mouse", ctScore: 2, tScore: 2 }));
+  const partialVis = r.context().team?.visibility ?? "";
+  expect(/hedge/i.test(partialVis), `partial verdict tells the coach to hedge ("${partialVis.slice(0, 60)}...")`);
+  expect(partialVis.includes("3"), "partial verdict names the full squad size");
+  expect(!/whole-team facts/i.test(partialVis), "partial verdict never licenses whole-team facts");
+
+  // The third feed completes the stack → the verdict flips to whole-team licence.
+  run("P3 freeze", payload({ provider: P3, roundPhase: "freezetime", round: 4, name: "Cadian", ctScore: 2, tScore: 2 }));
+  const fullCtx = r.context();
+  expect(fullCtx.team?.rosterComplete === true, "all three wired → roster-complete");
+  expect(/whole-team facts/i.test(fullCtx.team?.visibility ?? ""), "the full-stack verdict licenses whole-team facts");
+
+  const freeze = describeMomentForTest({ type: "freezetime", round: 5 }, fullCtx);
+  expect(/coordinated execute/i.test(freeze), "full-stack freezetime prompt invites a coordinated execute");
+  expect(/SUGGESTED setup|can't see where/i.test(freeze), "the execute is a suggestion, not an asserted position");
+  expect(freeze.includes("Mouse") && freeze.includes("Cadian"), "the execute hands jobs to the named crew");
+  const halftime = describeMomentForTest({ type: "halftime" }, fullCtx);
+  expect(/wired crew/i.test(halftime), "halftime prompt names the wired crew");
+  expect(/team\.visibility/i.test(halftime), "halftime prompt defers to team.visibility");
+  expect(/ONE lighter jab/i.test(halftime), "halftime prompt allows the rotated one-jab");
+  const matchEnd = describeMomentForTest({ type: "matchEnd", won: true, ourScore: 13, theirScore: 9 }, fullCtx, true);
+  expect(/PRIMARY player's ALONE|no stats for any teammate/i.test(matchEnd), "matchEnd prompt guards the K/D as the primary's alone");
+
+  // Second rig: only 2 of 3 wired → the coordinated execute is withheld, but the
+  // dead-air break clause is econ-independent and still names the players we can see.
+  const half = rosterRig(P1);
+  half.run("P1 warmup", payload({ provider: P1, mapPhase: "warmup" }));
+  half.run("P1 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 4, ctScore: 2, tScore: 2 }));
+  half.run("P2 freeze", payload({ provider: P2, roundPhase: "freezetime", round: 4, name: "Mouse", ctScore: 2, tScore: 2 }));
+  const partialCtx = half.r.context();
+  const freezePartial = describeMomentForTest({ type: "freezetime", round: 5 }, partialCtx);
+  expect(!/coordinated execute/i.test(freezePartial), "a partial roster gets no coordinated-execute invite");
+  const halftimePartial = describeMomentForTest({ type: "halftime" }, partialCtx);
+  expect(/wired crew|players you can see/i.test(halftimePartial), "the halftime break clause still names the wired crew (econ-independent)");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: ops — quarantine surfacing + configured squad size + primary presence ===");
+{
+  const ENEMY = "76561198000000011";
+  const { r, run } = rosterRig(P1);
+  run("P1 warmup", payload({ provider: P1, mapPhase: "warmup", team: "CT" }));
+  run("P1 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 0, team: "CT" }));
+  run("P1 live", payload({ provider: P1, roundPhase: "live", round: 0, team: "CT" }));
+  run("P2 live", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse", team: "CT" }));
+  run("P2 live 2", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse", team: "CT" }));
+  run("ENEMY live", payload({ provider: ENEMY, roundPhase: "live", round: 0, name: "Traitor", team: "T" }));
+  run("ENEMY live 2", payload({ provider: ENEMY, roundPhase: "live", round: 0, name: "Traitor", team: "T" }));
+  expect(r.primaryEverSeenThisMatch() === true, "the configured primary connected a feed this match");
+  const quarantined = r.quarantinedFeeds();
+  expect(quarantined.some((q) => q.name === "Traitor" && q.reason === "opposite-side-vote"), "the enemy-side feed is surfaced as quarantined (opposite-side vote)");
+  expect(!quarantined.some((q) => q.name === "Mouse"), "the confirmed teammate is NOT quarantined");
+  expect(r.squadSize() === 3, "squad size reads the configured COACH_SQUAD_SIZE");
+  expect(r.context().team?.rosterComplete === false, "2 confirmed of a 3-stack → not roster-complete");
 }
 
 // ---------------------------------------------------------------------------

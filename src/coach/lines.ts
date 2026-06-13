@@ -598,6 +598,32 @@ export function teammateMultiKillLine(name: string | undefined, kills: number): 
 }
 
 /**
+ * TWO wired teammates went off in the same beat — one merged hype line instead of
+ * two stepping on each other in the shared 'teammate' channel. Caps at TWO names;
+ * 3+ collapses to a crowd line; 1 falls back to the single-name hype (defensive).
+ */
+export function teammateMultiKillDuo(names: string[]): string | null {
+  const real = names.filter((n): n is string => !!n);
+  if (real.length >= 3 || real.length === 0) {
+    return pick("teamDuoSquad", [
+      "The squad's popping off out there. Trade for whoever's swinging and close it.",
+      "Whole crew's cooking right now. Feed the info, let them work.",
+      "Everybody's hitting their shots for once. Don't let it go quiet — back the plays.",
+      "The squad's on a heater. Keep the trades coming and shut the round down.",
+    ]);
+  }
+  if (real.length === 1) return teammateMultiKillLine(real[0], 3);
+  const [a, b] = real;
+  return pick("teamDuo", [
+    `${a} AND ${b} both going off. Hell of a round. Help close it out.`,
+    `Double trouble — ${a} and ${b} are both cooking. Trade for them.`,
+    `${a} and ${b} are popping off together. Don't let either of them swing alone.`,
+    `Both ${a} and ${b} on a tear. Feed the info and let it ride.`,
+    `${a} and ${b} carrying at the same damn time. Back them up.`,
+  ]);
+}
+
+/**
  * Last-man-standing clutch call (multi-feed, whole-team certainty only — the
  * roster won't emit the event unless the full squad is wired in, so the line can
  * commit to "last one alive" instead of hedging). Names the survivor; addresses
@@ -663,6 +689,22 @@ export function lateRoundLine(side: string | undefined, hasBomb = false): string
   return pick("lateRoundNeutral", [
     "Thirty seconds, no plant. Somebody's about to panic. Don't be them.",
     "Clock's getting loud, no bomb down. Someone make a damn decision.",
+  ]);
+}
+
+/**
+ * Late-round T nudge naming the WIRED teammate personally carrying the C4 — used
+ * when the primary is dead/spectating (so lateRoundLine's second-person carrier pool
+ * would aim 'go plant' at a corpse). Quieter, third-person: one callout to the squad.
+ */
+export function lateRoundCarrierNamed(name: string): string {
+  return pick("lateRoundCarrierNamed", [
+    `${name}'s got the bomb and thirty-five seconds. Somebody get them onto a site.`,
+    `Clock's bleeding and ${name}'s still holding the C4. Plant it, find them a way in.`,
+    `${name} is the plan — they've got the bomb. Half a minute. Get it down.`,
+    `Thirty-five left, ${name}'s carrying. Quit defaulting, walk the bomb in.`,
+    `Bomb's on ${name} and the clock doesn't care. Pick a site, escort them.`,
+    `${name}'s the delivery guy and the package is late. Any site. Get them there.`,
   ]);
 }
 
@@ -848,6 +890,32 @@ export function retakeDecisionLine(ctx: MatchContext): string {
       "We're on match point. Don't throw the kit on a dumb retake. Five-man clean, go. If not, save and close it next round.",
       "Freeroll round, basically. A loss costs nothing. Take it back only if it's clean, otherwise bank the gun.",
       "Match point, so relax. Can't tell your numbers from here. If it's clean, retake. If not, save it and we win the next.",
+    ]);
+  }
+  // Events ITEM 8: whole squad wired (rosterComplete) — we know OUR alive count, so
+  // make a numbers call instead of the gear-only hedge, but still hedge the enemy
+  // (no kill feed). Falls through to the gear pools when team is absent/partial.
+  const team = ctx.team;
+  if (team?.rosterComplete && typeof team.aliveWired === "number") {
+    const alive = team.aliveWired;
+    if (alive <= 1) {
+      return pick("retakeNumbers1", [
+        "Last of us alive. Don't dry-swing it — use the kit if you've got it, play the clock, take one fight at a time.",
+        "You're the only one up. No hero retake. Bait a peek, trade if you can, otherwise save the gun.",
+        "One of us left. Numbers are bad. Play for the kit or the clock, not a 1-v-whatever.",
+      ]);
+    }
+    if (alive === 2) {
+      return pick("retakeNumbers2", [
+        "Two of us up. Hit it together, same chok, trade everything. If they swing first, back off and save.",
+        "Just the two of us. No solo entries — one flashes, one swings, refrag clean. Bail if it's not there.",
+        "Two-man retake. Pair up tight, take the same fight. Dunno their numbers, so don't overcommit.",
+      ]);
+    }
+    return pick("retakeNumbers3", [
+      "Numbers are good, full squad up. Hit it as a group, every entry gets a trade. Drown the site.",
+      "Three-plus of us alive. Stack a choke, swing together, refrag everything. Take it back as a unit.",
+      "We've got the bodies. Coordinate the hit, trade hard. Can't see them, but the numbers are ours.",
     ]);
   }
   const thinGear = (ctx.armor ?? 0) === 0 || (ctx.equipValue ?? 0) < 1500 || (ctx.health ?? 100) < 40;
