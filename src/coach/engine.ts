@@ -1,7 +1,7 @@
 import { log } from "../log.js";
 import { config } from "../config.js";
 import type { CoachEvent, MatchContext } from "../gsi/tracker.js";
-import type { LlmCoach, LlmTier } from "./llm.js";
+import type { LlmCoach, LlmTier, LineOpts } from "./llm.js";
 import * as lines from "./lines.js";
 
 export interface SpeakRequest {
@@ -53,6 +53,8 @@ const COOLDOWNS_MS: Record<string, number> = {
   // The canned timeout call (LLM-less setups) — once it's been said, the next
   // few freezetimes of the same losing streak don't need it repeated.
   timeout: 300_000,
+  // The speech/jab when a tactical timeout actually starts (max two per match).
+  timeoutTalk: 20_000,
 };
 
 /** Clock callouts bail when GSI went quiet (game crash, disconnect, menu).
@@ -78,11 +80,14 @@ export interface EngineDeps {
   ownRoundKills?: () => number | null;
   /** Unabridged round history, swapped in for the storytelling moments (halftime, match end). */
   fullHistory?: () => string[];
+  /** Own final K/A/D/MVPs — the matchEnd context loses them when the player
+   *  died in the last round (the gameover player block is a spectated teammate). */
+  finalStats?: () => { kills: number; assists: number; deaths: number; mvps: number } | undefined;
   /** Cross-session trend lines from the session store — smart-tier prompts only. */
   recentForm?: () => string[] | undefined;
   /** True while /coach quiet has the coach muted — skips both lines and LLM spend. */
   isQuiet?: () => boolean;
-  /** Fired once per matchEnd, quiet or not: session recording + the text debrief. */
+  /** Fired once per matchEnd, quiet or not: session recording + the Leetify recap. */
   onMatchEnd?: (event: Extract<CoachEvent, { type: "matchEnd" }>, ctx: MatchContext) => void;
 }
 
@@ -283,12 +288,36 @@ export class CoachEngine {
         // The spoken wrap-up snapshots its context (and recentForm) FIRST —
         // the hook below records this match into the session store, and the
         // wrap-up must not see the match it's announcing as "past form".
-        this.tacticalMoment(event, ctx, () => lines.matchEndLine(event.won, event.ourScore, event.theirScore), "match", 30_000, "smart");
-        // Quiet or not: the session store and the text debrief still want the match.
+        // Long form: post-game has nothing to talk over, so the wrap-up takes
+        // 50-90 words at effort=high instead of one capped line.
+        this.tacticalMoment(
+          event,
+          ctx,
+          () => lines.matchEndLine(event.won, event.ourScore, event.theirScore),
+          "match",
+          30_000,
+          "smart",
+          1,
+          undefined,
+          { longForm: true },
+        );
+        // Quiet or not: the session store and the Leetify recap still want the match.
         try {
           this.deps.onMatchEnd?.(event, ctx);
         } catch (err) {
           log.error("coach", "onMatchEnd hook failed", err);
+        }
+        break;
+
+      case "timeout":
+        // 30 seconds of dead air. Ours: the regroup speech (long form).
+        // Theirs: one dry jab. Side unknown: stay quiet.
+        if (event.ours === true) {
+          this.tacticalMoment(event, ctx, () => lines.ourTimeoutSpeechLine(), "timeoutTalk", 25_000, "smart", 2, undefined, {
+            longForm: true,
+          });
+        } else if (event.ours === false) {
+          this.say(() => lines.theirTimeoutLine(), { category: "timeoutTalk", priority: 2, maxAgeMs: 20_000 });
         }
         break;
 
@@ -387,6 +416,8 @@ export class CoachEngine {
     priority = 1,
     /** Re-checked right before speaking — the game may have resolved the moment mid-flight. */
     stillRelevant?: () => boolean,
+    /** longForm: dead-air moments (wrap-up, our timeout) get more words + effort=high. */
+    llmOpts?: LineOpts,
   ): void {
     // Muted: skip the line AND the LLM spend (the game tracking carries on).
     if (this.deps.isQuiet?.()) return;
@@ -420,7 +451,18 @@ export class CoachEngine {
         if (full && full.length > (snapshot.history?.length ?? 0)) snapshot.history = full;
       }
     }
-    void this.llm.line(snapshot, event, tier).then((text) => {
+    if (event.type === "matchEnd") {
+      // The gameover player block is a spectated teammate whenever the player
+      // died in the final round — restore the K/D for the wrap-up speech.
+      const finalStats = this.deps.finalStats?.();
+      if (finalStats) {
+        snapshot.kills ??= finalStats.kills;
+        snapshot.assists ??= finalStats.assists;
+        snapshot.deaths ??= finalStats.deaths;
+        snapshot.mvps ??= finalStats.mvps;
+      }
+    }
+    void this.llm.line(snapshot, event, tier, llmOpts).then((text) => {
       if (stillRelevant && !stillRelevant()) return;
       const final = text ?? fallback();
       if (!final) return;

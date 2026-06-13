@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { log } from "../log.js";
 import { winTarget, type MatchContext, type CoachEvent } from "../gsi/tracker.js";
 import { ECONOMY_CHEATSHEET, DECISION_PRINCIPLES, mapBriefing, playbookOptions } from "./knowledge.js";
-import { pick } from "./lines.js";
+import { pick, mapDisplayName } from "./lines.js";
 
 /**
  * "smart" = slow moments (freezetime, halftime, match end) on the big model.
@@ -10,6 +10,13 @@ import { pick } from "./lines.js";
  * line landing 3 seconds earlier beats a marginally smarter one.
  */
 export type LlmTier = "smart" | "fast";
+
+export interface LineOpts {
+  /** Dead-air moments (match wrap-up, our tactical timeout): nothing competes
+   *  for the speaker, so the line gets more words and effort=high — quality
+   *  over latency where latency is free. */
+  longForm?: boolean;
+}
 
 const SYSTEM_CORE = `You are "Coach" — a dry, sarcastic, perpetually unimpressed Counter-Strike 2 coach sitting in a Discord voice channel with a player and their friends during a Premier/Competitive match. The player ASKED for a negative, sarcastic coach — it's a consensual roast between friends. Each request gives you a JSON snapshot of the game state plus a description of the moment; you reply with ONE spoken coaching line.
 
@@ -50,16 +57,6 @@ ${ECONOMY_CHEATSHEET}
 
 ${DECISION_PRINCIPLES}`;
 
-const DEBRIEF_SYSTEM = `You are "Coach" — a dry, sarcastic, perpetually unimpressed CS2 coach. All match you've been talking in the team's Discord voice channel; the match just ended and now you're WRITING the post-match debrief posted to their text channel. The player asked for a negative, sarcastic coach — it's a consensual roast between friends.
-
-Write ONE paragraph, 60-100 words. Same voice you speak in: short sentences, contractions, CS slang, a swear where it earns its place (shit/damn/hell/fuck — never slurs). Roast the gameplay, never anyone's identity; grudging respect where something genuinely deserves it.
-
-Rules:
-- Every claim must come from the data given (scorecard, rounds, highlights, recent form). Never invent kills, rounds or events.
-- Cover: the result, the one thing that actually decided the match, the player's own showing, and END with exactly one concrete thing to fix next session.
-- BANNED: literary or written-English phrasing ("expectations set at sea level", "the projections did not see that coming"). If you wouldn't say it out loud on comms, don't write it.
-- Plain text only — no markdown headers, no bullet lists, no emoji, no sign-off.`;
-
 export class LlmCoach {
   private client: Anthropic;
   private model: string;
@@ -96,9 +93,10 @@ export class LlmCoach {
    * One short coaching line for the given moment, or null on timeout/error
    * (callers fall back to the rule engine's canned lines).
    */
-  async line(context: MatchContext, event: CoachEvent, tier: LlmTier = "smart"): Promise<string | null> {
+  async line(context: MatchContext, event: CoachEvent, tier: LlmTier = "smart", opts?: LineOpts): Promise<string | null> {
     const model = tier === "fast" ? this.fastModel : this.model;
     const timeout = tier === "fast" ? this.fastTimeoutMs : this.timeoutMs;
+    const longForm = opts?.longForm ?? false;
 
     // Static core + the active map's notes. The cache marker is currently inert
     // (the prompt sits under the 4096-token minimum cacheable prefix for these
@@ -113,7 +111,7 @@ export class LlmCoach {
 
     const userContent = [
       `Game state snapshot: ${JSON.stringify(context)}`,
-      `Moment: ${describeMoment(event, context)}`,
+      `Moment: ${describeMoment(event, context, longForm)}`,
       event.type === "freezetime" && this.recentPlans.length
         ? `Plans you already called this match, oldest first — rotate sites and styles instead of repeating them, UNLESS the last call is visibly printing rounds (then keep it and say you're going back to the well): ${JSON.stringify(this.recentPlans)}`
         : "",
@@ -129,10 +127,15 @@ export class LlmCoach {
       const response = await this.client.messages.create(
         {
           model,
-          max_tokens: this.maxTokens,
+          // Long-form speeches need room; a one-liner keeps the tight cap so a
+          // runaway reply gets caught by the max_tokens check below.
+          max_tokens: longForm ? Math.max(this.maxTokens, 500) : this.maxTokens,
           // Opus defaults to effort "high"; "low" shaves ~20% off latency with no
-          // visible quality drop on one-liners. Smart tier only — Haiku rejects it.
-          ...(tier === "smart" && this.effort ? { output_config: { effort: this.effort } } : {}),
+          // visible quality drop on one-liners. Smart tier only — Haiku rejects
+          // it. Long-form moments flip back to "high": latency is free there.
+          ...(tier === "smart" && this.effort
+            ? { output_config: { effort: longForm ? "high" : this.effort } }
+            : {}),
           system,
           messages: [{ role: "user", content: userContent }],
         },
@@ -167,47 +170,55 @@ export class LlmCoach {
   }
 
   /**
-   * Post-match written debrief for the Discord text channel — same coach, but
-   * writing a short paragraph instead of speaking a line. Latency is irrelevant
-   * after the match, so this always runs on the smart model with a generous
-   * timeout. Returns null on error; the scorecard embed then ships without it.
+   * Spoken Leetify recap — delivered in voice BETWEEN games once their demo
+   * parse lands. Per their guidelines the numbers are read exactly as the API
+   * provides them (omitting a stat is fine, altering a value is not) and the
+   * source is credited by name. Returns null on error; the caller falls back
+   * to a canned wrapper around the same stats sentence.
    */
-  async debrief(input: {
-    scorecard: string;
-    history: string[];
-    notables: string[];
-    recentForm?: string[];
+  async leetifyLine(input: {
+    map?: string;
+    won?: boolean;
+    ourScore: number;
+    theirScore: number;
+    statsSentence: string;
   }): Promise<string | null> {
+    const where = input.map ? ` on ${mapDisplayName(input.map)}` : "";
+    const result = input.won === undefined ? "" : input.won ? " (won)" : " (lost)";
     const userContent = [
-      `Final scorecard:\n${input.scorecard}`,
-      input.history.length ? `Round by round:\n${input.history.join("\n")}` : "",
-      input.notables.length ? `Highlights: ${JSON.stringify(input.notables)}` : "",
-      input.recentForm?.length ? `Recent form from past sessions: ${JSON.stringify(input.recentForm)}` : "",
+      `Leetify finished analyzing the demo of the match that ended a while ago${where}, final score ${input.ourScore}-${input.theirScore}${result}. The players are BETWEEN games right now — this is downtime talk, not a mid-round call.`,
+      `Leetify's numbers for the player: ${input.statsSentence}.`,
+      `Speak ONE recap, 25-50 words (the usual cap doesn't apply): credit Leetify by name, read the headline numbers EXACTLY as given (you may leave stats out, never change a value), and land one dry verdict. Say "minus" for negative numbers — no symbols, it goes straight to text-to-speech.`,
+      this.recentLines.length
+        ? `Your recent lines, oldest first (do NOT reuse their phrasing, openers or joke constructions): ${JSON.stringify(this.recentLines)}`
+        : "",
     ]
       .filter(Boolean)
-      .join("\n\n");
+      .join("\n");
 
     const startedAt = Date.now();
     try {
       const response = await this.client.messages.create(
         {
           model: this.model,
-          max_tokens: 400,
-          ...(this.effort ? { output_config: { effort: this.effort } } : {}),
-          system: DEBRIEF_SYSTEM,
+          max_tokens: 300,
+          ...(this.effort ? { output_config: { effort: "high" } } : {}),
+          system: [{ type: "text", text: SYSTEM_CORE, cache_control: { type: "ephemeral" } }],
           messages: [{ role: "user", content: userContent }],
         },
         { timeout: 20_000, maxRetries: 1 },
       );
-      log.info("llm", `${this.model} wrote the debrief in ${Date.now() - startedAt}ms`);
+      log.info("llm", `${this.model} wrote the Leetify recap in ${Date.now() - startedAt}ms`);
       const text = response.content
         .filter((block): block is Anthropic.TextBlock => block.type === "text")
         .map((block) => block.text)
         .join(" ")
         .trim();
-      return text || null;
+      if (!text) return null;
+      this.recordSpoken(text);
+      return text;
     } catch (err) {
-      log.warn("llm", `Debrief generation failed (${err instanceof Error ? err.message : err}) — posting the scorecard without it`);
+      log.warn("llm", `Leetify recap failed (${err instanceof Error ? err.message : err}) — using the canned wrapper`);
       return null;
     }
   }
@@ -271,7 +282,7 @@ function methodStory(method: string, won: boolean): string {
   return method;
 }
 
-function describeMoment(event: CoachEvent, ctx: MatchContext): string {
+function describeMoment(event: CoachEvent, ctx: MatchContext, longForm = false): string {
   switch (event.type) {
     case "matchStart": {
       const form = ctx.recentForm?.length
@@ -343,21 +354,32 @@ function describeMoment(event: CoachEvent, ctx: MatchContext): string {
     }
     case "teamkill":
       return `The player just TEAM-KILLED a teammate. One deadpan roast or mock-apology on their behalf — sarcastic, not genuinely hostile.`;
+    case "timeout":
+      if (event.ours) {
+        return `OUR team just called a tactical timeout — a 30-second pause, the one mid-match moment with room for an actual SPEECH. Take 35-60 words, three to five sentences (the one-line cap does NOT apply): why the rounds are bleeding (read the history and streak), ONE concrete fix for the very next round, the buy plan if money matters, and a dry steadying close. Snide is fine, rah-rah is not — this should make a tilted team breathe.`;
+      }
+      return `THEY called a tactical timeout. One short dry line: the pause is theirs — they're rattled or regrouping — and our side stays warm and sharp through it.`;
     case "halftime":
       return `Halftime break. Give a short, dry halftime talk grounded in the actual half: the score, pistol result, streaks, anything notable from history. Set the mindset for the side switch (economy resets, new roles) — sarcasm welcome, the actual reset facts mandatory.`;
     case "matchPoint":
       return event.forUs
         ? "Match point in our favor — closing mindset, no hero plays. Deadpan, not a pep rally."
         : "Opponent match point — must-win round, no saving, one round at a time. Dry, not doom.";
-    case "matchEnd":
+    case "matchEnd": {
+      // Long form: the post-match has nothing to talk over, so the wrap-up is
+      // a proper debrief speech instead of one capped line.
+      const speech = longForm
+        ? ` This is the post-match wrap-up and nothing comes after it — take 50-90 words, three to six sentences (the one-line cap does NOT apply): the result, the thing that actually decided the match (use the full history), the player's own numbers from the snapshot, and ONE concrete thing to fix before the next queue. Spoken register the whole way — it's still you talking, just longer.`
+        : "";
       // won is undefined when the app (re)connected too late to know our side —
       // never let the ternary read that as a loss and roast a winning team.
       if (event.won === undefined) {
-        return `The match just ended ${event.ourScore}-${event.theirScore}, but you don't know which score is ours. One dry, outcome-neutral sign-off — do NOT claim a win or a loss.`;
+        return `The match just ended ${event.ourScore}-${event.theirScore}, but you don't know which score is ours. A dry, outcome-neutral sign-off — do NOT claim a win or a loss.${speech}`;
       }
       return event.won
-        ? `The match was just WON ${event.ourScore}-${event.theirScore}. One sarcastic victory lap — grudging respect, call back the best moment from notables/history if there is one.`
-        : `The match was just lost ${event.ourScore}-${event.theirScore}. One dry sign-off — a real observation from history beats empty comfort. Roast the result, not the people; end on the queue-again note.`;
+        ? `The match was just WON ${event.ourScore}-${event.theirScore}. A sarcastic victory lap — grudging respect, call back the best moment from notables/history if there is one.${speech}`
+        : `The match was just lost ${event.ourScore}-${event.theirScore}. A dry sign-off — a real observation from history beats empty comfort. Roast the result, not the people; end on the queue-again note.${speech}`;
+    }
     default:
       return `Event: ${event.type}. React appropriately in one short, dry line.`;
   }

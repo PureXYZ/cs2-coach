@@ -3,18 +3,14 @@ import path from "node:path";
 import {
   ChatInputCommandInteraction,
   Client,
-  EmbedBuilder,
   Events,
   GatewayIntentBits,
   GuildMember,
   MessageFlags,
   SlashCommandBuilder,
-  type Message,
 } from "discord.js";
 import { log } from "../log.js";
 import type { VoiceCoach } from "./voice.js";
-import type { DebriefData } from "../coach/debrief.js";
-import type { LeetifyMatchStats } from "../leetify.js";
 import { clearVoiceChannel, saveVoiceChannel } from "./voice-state.js";
 
 export interface BotDeps {
@@ -210,72 +206,5 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
       });
       return;
     }
-  }
-}
-
-/**
- * Post the match-debrief embed. Returns the message (for the Leetify follow-up
- * reply) or null when the channel is missing or unpostable — a debrief that
- * can't post must never take the coach down.
- */
-export async function postDebrief(client: Client, channelId: string, data: DebriefData): Promise<Message | null> {
-  try {
-    const channel = await client.channels.fetch(channelId);
-    if (!channel?.isTextBased() || !("send" in channel)) {
-      log.warn("bot", `Debrief channel ${channelId} is not a postable text channel`);
-      return null;
-    }
-    const embed = new EmbedBuilder()
-      .setTitle(data.title)
-      .setColor(data.won === undefined ? 0x95a5a6 : data.won ? 0x2ecc71 : 0xe74c3c)
-      .setTimestamp(new Date());
-    if (data.coachNotes) embed.setDescription(data.coachNotes);
-    if (data.playerLine) embed.addFields({ name: "You", value: data.playerLine, inline: true });
-    if (data.pistolsLine) embed.addFields({ name: "Pistols", value: data.pistolsLine, inline: true });
-    if (data.buysLine) embed.addFields({ name: "Buys", value: data.buysLine, inline: true });
-    if (data.highlights.length) {
-      embed.addFields({
-        name: "Highlights",
-        value: data.highlights.map((h) => `• ${h}`).join("\n").slice(0, 1024),
-      });
-    }
-    return await channel.send({ embeds: [embed] });
-  } catch (err) {
-    log.warn("bot", `Could not post the debrief: ${err instanceof Error ? err.message : err}`);
-    return null;
-  }
-}
-
-/**
- * Reply to the debrief once Leetify's demo parse lands. Their guidelines:
- * metrics shown exactly as the API provides them, attribution required, and
- * nothing stored — this posts and forgets.
- */
-export async function postLeetifyFollowup(message: Message, stats: LeetifyMatchStats): Promise<void> {
-  // != null on purpose: the API uses JSON null for unscored fields, and
-  // "K/D **null**" in the embed would be the bug.
-  const parts = [
-    stats.kdRatio != null
-      ? `K/D **${stats.kdRatio}**${stats.totalKills != null && stats.totalDeaths != null ? ` (${stats.totalKills}/${stats.totalDeaths})` : ""}`
-      : undefined,
-    stats.adr != null ? `ADR **${stats.adr}**` : undefined,
-    stats.hsKills != null ? `**${stats.hsKills}** HS kills` : undefined,
-    stats.accuracyHead != null ? `HS accuracy **${stats.accuracyHead}%**` : undefined,
-    stats.tradeKills != null ? `**${stats.tradeKills}** trade kills` : undefined,
-    stats.leetifyRating != null
-      ? `Leetify rating **${stats.leetifyRating >= 0 ? "+" : ""}${stats.leetifyRating}**`
-      : undefined,
-    stats.reactionTimeMs != null ? `TTD **${stats.reactionTimeMs}ms**` : undefined,
-    stats.preaim != null ? `preaim **${stats.preaim}°**` : undefined,
-  ].filter(Boolean);
-  if (parts.length === 0) return;
-  try {
-    const embed = new EmbedBuilder()
-      .setColor(0xf1c40f)
-      .setTitle("The Leetify numbers are in")
-      .setDescription(`${parts.join(" · ")}\n\n[Data Provided by Leetify](https://leetify.com/)`);
-    await message.reply({ embeds: [embed] });
-  } catch (err) {
-    log.warn("bot", `Could not post the Leetify follow-up: ${err instanceof Error ? err.message : err}`);
   }
 }

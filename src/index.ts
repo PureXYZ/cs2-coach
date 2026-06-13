@@ -1,5 +1,5 @@
 import os from "node:os";
-import { Events, type Client } from "discord.js";
+import { Events } from "discord.js";
 import { config } from "./config.js";
 import { log } from "./log.js";
 import { startGsiServer } from "./gsi/server.js";
@@ -8,11 +8,12 @@ import { GsiTracker, type CoachEvent, type MatchContext } from "./gsi/tracker.js
 import { CoachEngine } from "./coach/engine.js";
 import { LlmCoach } from "./coach/llm.js";
 import { SessionStore } from "./coach/session-store.js";
-import { buildDebriefData, buildMatchRecord, scorecardText } from "./coach/debrief.js";
-import { LeetifyClient, pollForLeetifyStats } from "./leetify.js";
+import { buildMatchRecord } from "./coach/debrief.js";
+import { leetifyRecapLine } from "./coach/lines.js";
+import { LeetifyClient, pollForLeetifyStats, spokenStatsSentence } from "./leetify.js";
 import { TtsChain } from "./tts/index.js";
 import { VoiceCoach } from "./discord/voice.js";
-import { postDebrief, postLeetifyFollowup, startBot } from "./discord/bot.js";
+import { startBot } from "./discord/bot.js";
 import { clearVoiceChannel, loadVoiceChannel } from "./discord/voice-state.js";
 
 async function main(): Promise<void> {
@@ -67,47 +68,46 @@ async function main(): Promise<void> {
     return { ...ctx, playerName: config.coach.playerNickname ?? ctx.playerName };
   };
 
-  // Assigned after startBot below; matchEnd can only fire once the bot is up.
-  let client: Client | undefined;
-
-  // Session recording + the text debrief + the Leetify follow-up. Runs on its
-  // own (the voice wrap-up line goes out in parallel); latency doesn't matter.
+  // Session recording + the spoken Leetify recap. Runs on its own (the voice
+  // wrap-up speech goes out via the engine in parallel); latency is free here.
   const handleMatchEnd = async (event: Extract<CoachEvent, { type: "matchEnd" }>, ctx: MatchContext) => {
     // Captured at the gameover frame — the Leetify lookup matches finished_at
     // against this instant (±10 min) to identify the right game.
     const endedAt = Date.now();
-    const report = tracker.matchReport();
-    // Snapshot the PAST-sessions form before recording this match into the store.
-    const pastForm = sessions.recentForm(ctx.map);
-    const record = buildMatchRecord(event, ctx, report);
+    const record = buildMatchRecord(event, ctx, tracker.matchReport());
     sessions.record(record);
 
-    if (!config.debrief.enabled || !client) return;
-    const channelId = config.debrief.channelId ?? loadVoiceChannel()?.channelId;
-    if (!channelId) {
-      log.info("debrief", "No channel to post the debrief to — set COACH_DEBRIEF_CHANNEL_ID or use /coach join once");
+    const steam64 = tracker.steamId();
+    if (!config.leetify.enabled || !steam64) return;
+    const stats = await pollForLeetifyStats(new LeetifyClient(config.leetify.apiKey), steam64, endedAt, ctx.map);
+    if (!stats) return;
+
+    // NEVER talk over play: the numbers land 5-15+ minutes after the match,
+    // which can be mid-way through the next one — hold the recap until a
+    // quiet moment (between games, warmup, or the game closed), or drop it.
+    const deadline = Date.now() + 60 * 60_000;
+    while (!tracker.quietMomentForSpeech() && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 30_000));
+    }
+    if (!tracker.quietMomentForSpeech()) {
+      log.info("leetify", "No quiet moment found within the hour — keeping the recap to ourselves");
       return;
     }
+    if (quiet.on || !voice.connected) return;
 
-    const data = buildDebriefData(record);
-    if (llm) {
-      data.coachNotes =
-        (await llm.debrief({
-          scorecard: scorecardText(data),
-          history: tracker.fullHistory(),
-          notables: report.notables,
-          recentForm: pastForm,
-        })) ?? undefined;
-    }
-    const message = await postDebrief(client, channelId, data);
-
-    // Leetify parses the demo server-side — poll until the match appears
-    // (usually 5-15 min), then reply to the debrief with their numbers.
-    const steam64 = tracker.steamId();
-    if (message && config.leetify.enabled && steam64) {
-      const stats = await pollForLeetifyStats(new LeetifyClient(config.leetify.apiKey), steam64, endedAt, ctx.map);
-      if (stats) await postLeetifyFollowup(message, stats);
-    }
+    const statsSentence = spokenStatsSentence(stats);
+    if (!statsSentence) return;
+    const text =
+      (llm
+        ? await llm.leetifyLine({
+            map: ctx.map,
+            won: event.won,
+            ourScore: event.ourScore,
+            theirScore: event.theirScore,
+            statsSentence,
+          })
+        : null) ?? leetifyRecapLine(ctx.map, statsSentence);
+    voice.say({ text, priority: 1, maxAgeMs: 90_000, category: "leetify", eventAt: Date.now() });
   };
 
   const engine = new CoachEngine((req) => voice.say(req), llm, {
@@ -117,9 +117,10 @@ async function main(): Promise<void> {
     ownRoundKills: () => tracker.ownRoundKillsNow(),
     fullHistory: () => tracker.fullHistory(),
     recentForm: () => sessions.recentForm(tracker.context().map),
+    finalStats: () => tracker.matchReport().stats,
     isQuiet: () => quiet.on,
     onMatchEnd: (event, ctx) => {
-      handleMatchEnd(event, ctx).catch((err) => log.error("debrief", "Post-match handling failed", err));
+      handleMatchEnd(event, ctx).catch((err) => log.error("coach", "Post-match handling failed", err));
     },
   });
 
@@ -140,7 +141,7 @@ async function main(): Promise<void> {
     },
   });
 
-  client = await startBot({
+  const client = await startBot({
     token: config.discord.token,
     guildId: config.discord.guildId,
     voice,

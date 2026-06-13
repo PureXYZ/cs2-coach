@@ -819,9 +819,9 @@ console.log("\n=== scenario: session store — record, trends, reload ===");
 }
 
 // ---------------------------------------------------------------------------
-console.log("\n=== scenario: match end → session record + debrief data ===");
+console.log("\n=== scenario: match end → session record ===");
 {
-  const { buildMatchRecord, buildDebriefData, scorecardText } = await import("../src/coach/debrief.js");
+  const { buildMatchRecord } = await import("../src/coach/debrief.js");
   feed("gameover", payload({ mapPhase: "gameover", ctScore: 13, tScore: 7, kills: 7, mvps: 1 }));
   expect(has("matchEnd"), "matchEnd detected at gameover");
   const endEvent = seen.find((e) => e.type === "matchEnd") as Extract<CoachEvent, { type: "matchEnd" }>;
@@ -830,10 +830,82 @@ console.log("\n=== scenario: match end → session record + debrief data ===");
   expect(rec.pistols?.first === "won", "record remembers the pistol-round result");
   expect((rec.notables ?? []).some((n) => n.includes("knife")), "record keeps the knife-kill notable");
   expect((rec.buys?.full ?? 0) + (rec.buys?.force ?? 0) + (rec.buys?.eco ?? 0) > 0, "record counts the buys");
-  const data = buildDebriefData(rec);
-  expect(data.title.includes("Mirage") && data.title.includes("13-7"), `debrief title reads right ("${data.title}")`);
-  expect(data.playerLine !== undefined && data.playerLine.startsWith("7/"), `player line built ("${data.playerLine}")`);
-  expect(scorecardText(data).includes("Pistol rounds"), "scorecard text includes the pistol line");
+  expect(rec.kills === 7 && rec.mvps === 1, `record carries the K/D (${rec.kills} kills, ${rec.mvps} MVPs)`);
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: tactical timeout → speech for ours, jab for theirs ===");
+{
+  const out: SpeakRequest[] = [];
+  const t = new GsiTracker();
+  const e = new CoachEngine((req) => out.push(req), null, { getCtx: () => t.context() });
+  const run = (p: GsiPayload) => { const ev = t.update(p); if (ev.length) e.handle(ev, t.context()); };
+  run(payload({ mapPhase: "warmup" }));
+  run(payload({ roundPhase: "live", round: 3 }));
+  run(payload({ roundPhase: "freezetime", round: 3 }));
+  const evOurs = t.update(payload({ mapPhase: "timeout_ct", roundPhase: "freezetime", round: 3 }));
+  expect(evOurs.some((ev) => ev.type === "timeout" && ev.ours === true), "our timeout detected (we are CT, timeout_ct)");
+  e.handle(evOurs, t.context());
+  const speech = out.find((s) => s.category === "timeoutTalk");
+  expect(speech !== undefined, "timeout speech spoken");
+  expect((speech?.text.split(/\s+/).length ?? 0) >= 18, `the speech is an actual speech (${speech?.text.split(/\s+/).length} words)`);
+
+  run(payload({ mapPhase: "live", roundPhase: "freezetime", round: 3 })); // resume
+  const evTheirs = t.update(payload({ mapPhase: "timeout_t", roundPhase: "freezetime", round: 3 }));
+  expect(evTheirs.some((ev) => ev.type === "timeout" && ev.ours === false), "their timeout detected (we are CT, timeout_t)");
+  const out2: SpeakRequest[] = [];
+  const e2 = new CoachEngine((req) => out2.push(req), null, { getCtx: () => t.context() });
+  e2.handle(evTheirs, t.context());
+  const jab = out2.find((s) => s.category === "timeoutTalk");
+  expect(jab !== undefined && jab.text.split(/\s+/).length <= 16, `their timeout gets a short jab ("${jab?.text.slice(0, 60)}")`);
+
+  const cold = new GsiTracker();
+  const coldEvents = cold.update(payload({ mapPhase: "timeout_ct", roundPhase: "freezetime", round: 3 }));
+  expect(!coldEvents.some((ev) => ev.type === "timeout"), "cold start mid-timeout stays quiet (half the pause is gone)");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: long form requested exactly at the dead-air moments ===");
+{
+  const calls: { type: string; longForm?: boolean; kills?: number }[] = [];
+  const fakeLlm = {
+    line: (c: MatchContext, ev: CoachEvent, _tier: string, opts?: { longForm?: boolean }) => {
+      calls.push({ type: ev.type, longForm: opts?.longForm, kills: c.kills });
+      return Promise.resolve(null);
+    },
+    recordSpoken: () => {},
+  } as unknown as LlmCoach;
+  const e = new CoachEngine(() => {}, fakeLlm, {
+    getCtx: () => tracker.context(),
+    finalStats: () => ({ kills: 21, assists: 3, deaths: 17, mvps: 2 }),
+  });
+  e.handle([{ type: "matchEnd", won: true, ourScore: 13, theirScore: 9 }], { ...tracker.context(), kills: undefined, playerIsSelf: false });
+  expect(calls[0]?.type === "matchEnd" && calls[0]?.longForm === true, "match wrap-up requests the long form");
+  expect(calls[0]?.kills === 21, "wrap-up snapshot restores the K/D from the last own frame");
+  e.handle([{ type: "timeout", ours: true }], tracker.context());
+  expect(calls[1]?.type === "timeout" && calls[1]?.longForm === true, "our timeout speech requests the long form");
+  e.handle([{ type: "halftime" }], tracker.context());
+  expect(calls[2]?.type === "halftime" && calls[2]?.longForm !== true, "halftime stays normal length");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: the Leetify recap waits for a quiet moment ===");
+{
+  const { spokenStatsSentence } = await import("../src/leetify.js");
+  const { leetifyRecapLine } = await import("../src/coach/lines.js");
+  const t = new GsiTracker();
+  expect(t.quietMomentForSpeech() === true, "no GSI yet → quiet moment (game isn't running)");
+  t.update(payload({ mapPhase: "warmup" }));
+  t.update(payload({ roundPhase: "live", round: 0 }));
+  expect(t.quietMomentForSpeech() === false, "live match → NOT a quiet moment");
+  t.update(payload({ mapPhase: "gameover", ctScore: 13, tScore: 5 }));
+  expect(t.quietMomentForSpeech() === true, "after gameover → quiet moment again");
+
+  const sentence = spokenStatsSentence({ totalKills: 13, totalDeaths: 19, adr: 67.09, hsKills: 9, leetifyRating: -0.04, reactionTimeMs: 469 });
+  expect(sentence === "13 kills to 19 deaths, ADR 67.09, 9 headshot kills, Leetify rating minus 0.04, time to damage 469 milliseconds", `stats sentence reads for TTS ("${sentence}")`);
+  expect(spokenStatsSentence({}) === null, "no usable stats → no sentence");
+  const recap = leetifyRecapLine("de_mirage", sentence!);
+  expect(recap.includes("Mirage") && recap.includes("ADR 67.09") && /leetify/i.test(recap), `canned recap credits Leetify and reads the numbers ("${recap.slice(0, 70)}...")`);
 }
 
 // ---------------------------------------------------------------------------

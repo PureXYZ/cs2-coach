@@ -25,7 +25,7 @@ interface RecentMatch {
   accuracy_head?: number | null;
 }
 
-/** /v2/matches/{id} stats[] entry (trimmed to what the debrief shows). */
+/** /v2/matches/{id} stats[] entry (trimmed to what the spoken recap uses). */
 interface PlayerStats {
   steam64_id?: string;
   kd_ratio?: number | null;
@@ -135,6 +135,27 @@ export class LeetifyClient {
     if (!res.ok) throw new Error(`Leetify HTTP ${res.status}`);
     return res.json();
   }
+}
+
+/**
+ * The numbers as one comma-separated SPOKEN sentence — values verbatim per
+ * Leetify's guidelines (omitting a stat is allowed, altering one is not),
+ * signs and units as words so TTS reads them right. Null when nothing usable.
+ */
+export function spokenStatsSentence(stats: LeetifyMatchStats): string | null {
+  const parts: string[] = [];
+  if (stats.totalKills != null && stats.totalDeaths != null) {
+    parts.push(`${stats.totalKills} kills to ${stats.totalDeaths} deaths`);
+  } else if (stats.kdRatio != null) {
+    parts.push(`K/D ${stats.kdRatio}`);
+  }
+  if (stats.adr != null) parts.push(`ADR ${stats.adr}`);
+  if (stats.hsKills != null) parts.push(`${stats.hsKills} headshot kills`);
+  if (stats.leetifyRating != null) {
+    parts.push(`Leetify rating ${stats.leetifyRating < 0 ? "minus" : "plus"} ${Math.abs(stats.leetifyRating)}`);
+  }
+  if (stats.reactionTimeMs != null) parts.push(`time to damage ${stats.reactionTimeMs} milliseconds`);
+  return parts.length ? parts.join(", ") : null;
 }
 
 const FIRST_WAIT_MS = 3 * 60_000;

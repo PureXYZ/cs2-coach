@@ -110,17 +110,11 @@ export const config = {
     playerNickname: optional("PLAYER_NICKNAME") || undefined,
   },
 
-  debrief: {
-    // Post a scorecard embed + Opus-written debrief paragraph after each match.
-    enabled: optional("COACH_DEBRIEF", "true") !== "false",
-    // Where to post it. Default: the chat of the voice channel the coach was in.
-    channelId: optional("COACH_DEBRIEF_CHANNEL_ID") || undefined,
-  },
-
   leetify: {
-    // After the debrief, poll Leetify (they parse the demo server-side) and
-    // reply with ADR/K-D/rating once the match shows up. Needs the player to
-    // have a Leetify account; works keyless at stricter rate limits.
+    // After the match, poll Leetify (they parse the demo server-side) and
+    // SPEAK the headline numbers in voice once they land — only between
+    // games, never mid-match. Needs the player to have a Leetify account;
+    // works keyless at stricter rate limits.
     enabled: optional("LEETIFY_ENABLED", "true") !== "false",
     apiKey: optional("LEETIFY_API_KEY") || undefined,
   },

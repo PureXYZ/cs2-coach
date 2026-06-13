@@ -18,6 +18,10 @@ export type CoachEvent =
   // batch — the round-end line then covers it instead of a separate MVP line.
   | { type: "roundEnd"; won: boolean | undefined; method: string; ourScore: number; theirScore: number; mvp?: boolean }
   | { type: "halftime" }
+  // A tactical timeout started — 30 seconds of dead air, the one mid-match
+  // moment with room for an actual speech. ours is undefined when the side
+  // is unknown (the engine stays silent then).
+  | { type: "timeout"; ours?: boolean }
   | { type: "matchPoint"; forUs: boolean }
   | { type: "matchEnd"; won: boolean | undefined; ourScore: number; theirScore: number }
   | { type: "kill"; roundKills: number; headshot: boolean }
@@ -231,9 +235,18 @@ export class GsiTracker {
       events.push({ type: "halftime" });
     }
 
+    // Tactical timeout started. prev-guarded: a cold start mid-timeout must
+    // not deliver a speech into a half-finished pause.
+    const inTimeout = mapPhase === "timeout_ct" || mapPhase === "timeout_t";
+    const wasTimeout = prevMapPhase === "timeout_ct" || prevMapPhase === "timeout_t";
+    if (prev && inTimeout && !wasTimeout) {
+      const ours = ourSide ? (mapPhase === "timeout_ct") === (ourSide === "CT") : undefined;
+      events.push({ type: "timeout", ours });
+    }
+
     // prev must exist: a process restart during the post-match scoreboard would
     // otherwise re-fire matchEnd for a match this process never saw — and now
-    // persist a junk session record and post a duplicate debrief.
+    // persist a junk session record and re-run the wrap-up speech.
     if (prev && mapPhase === "gameover" && prevMapPhase !== "gameover") {
       const { ourScore, theirScore } = this.scores(payload, ourSide);
       events.push({
@@ -615,7 +628,7 @@ export class GsiTracker {
 
   /**
    * Unabridged per-round history for the storytelling moments (halftime, match
-   * end, the written debrief) — context() keeps the default 8-round window so
+   * end, the wrap-up speech) — context() keeps the default 8-round window so
    * mid-round prompts stay lean.
    */
   fullHistory(): string[] {
@@ -648,6 +661,14 @@ export class GsiTracker {
 
   isInMatch(): boolean {
     return this.inMatch;
+  }
+
+  /** True when a delayed line (the Leetify recap) can speak without talking
+   *  over play: no live match, or GSI silent for 2+ minutes (game closed). */
+  quietMomentForSpeech(): boolean {
+    const age = this.lastUpdateAgeMs();
+    if (age === null || age > 120_000) return true;
+    return !this.inMatch;
   }
 
   /** ms since the last GSI payload, or null before the first one — timer callbacks
