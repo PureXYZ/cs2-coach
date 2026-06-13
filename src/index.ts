@@ -9,48 +9,14 @@ import { RosterManager } from "./gsi/roster.js";
 import { CoachEngine } from "./coach/engine.js";
 import { LlmCoach } from "./coach/llm.js";
 import { SessionStore } from "./coach/session-store.js";
-import type { SessionMatchRecord } from "./coach/session-store.js";
-import { GoalStore } from "./coach/goal-store.js";
 import { DecisionLog } from "./coach/decision-log.js";
 import { buildMatchRecord } from "./coach/debrief.js";
-import { leetifyRecapLine, mapDisplayName } from "./coach/lines.js";
+import { leetifyRecapLine } from "./coach/lines.js";
 import { LeetifyClient, pollForLeetifyStats, spokenStatsSentence } from "./leetify.js";
 import { TtsChain } from "./tts/index.js";
 import { VoiceCoach } from "./discord/voice.js";
 import { startBot } from "./discord/bot.js";
 import { clearVoiceChannel, loadVoiceChannel } from "./discord/voice-state.js";
-
-/**
- * One snide spoken sentence recapping the last finished match — what /coach
- * lastmatch reads back. Built straight from the recorded session data (never
- * Leetify, which we don't store), so it works offline. Null when nothing's on
- * file. Result + score + map, with a K/D or thrown-pistol jab when we have it.
- */
-function buildLastMatchSummary(rec?: SessionMatchRecord): string | null {
-  if (!rec) return null;
-  const map = rec.map ? ` on ${mapDisplayName(rec.map)}` : "";
-  const score = `${rec.ourScore}-${rec.theirScore}`;
-  const head =
-    rec.won === undefined
-      ? `Last one was ${score}${map} — couldn't even tell who won.`
-      : rec.won
-        ? `Last match you won ${score}${map}. Don't let it go to your head.`
-        : `Last match you lost ${score}${map}. Shocking, I know.`;
-
-  // One jab, worst material first: a thrown pistol round beats raw K/D for sting.
-  const pistolLost =
-    rec.pistols && (rec.pistols.first === "lost" || rec.pistols.second === "lost");
-  let jab = "";
-  if (pistolLost) {
-    jab = " And you fumbled a pistol round, naturally.";
-  } else if (rec.kills !== undefined && rec.deaths !== undefined) {
-    jab =
-      rec.deaths > 0 && rec.kills < rec.deaths
-        ? ` You went ${rec.kills} and ${rec.deaths} — bodies, mostly yours.`
-        : ` You went ${rec.kills} and ${rec.deaths}.`;
-  }
-  return head + jab;
-}
 
 async function main(): Promise<void> {
   // The coach often shares the PC with CS2 — make sure it never wins a CPU
@@ -71,9 +37,6 @@ async function main(): Promise<void> {
   log.toFile();
   log.info("main", "CS2 Coach starting up");
 
-  // The one session focus the player set via /coach goal — persisted to state/
-  // so it survives restarts, read back into the prompt at the right moments.
-  const goalStore = new GoalStore();
   // Optional offline record of every decided line (COACH_LOG_DECISIONS) — what
   // the coach saw and chose to say, for after-the-fact study. Off by default.
   const decisionLog = config.coach.logDecisions ? new DecisionLog() : null;
@@ -232,9 +195,6 @@ async function main(): Promise<void> {
     recentForm: () => sessions.recentForm(roster.context().map),
     finalStats: () => roster.matchReport().stats,
     isQuiet: () => quiet.on,
-    // The session focus the player set with /coach goal — read at the moments
-    // where the engine snapshots context, not every frame.
-    currentGoal: () => goalStore.get(),
     // Every decided line (LLM or fallback) lands in the decision log when it's
     // enabled; left undefined otherwise so the engine skips the call entirely.
     onDecision: decisionLog ? (rec) => decisionLog.write(rec) : undefined,
@@ -277,13 +237,6 @@ async function main(): Promise<void> {
         log.info("main", on ? "Coach muted via /coach quiet" : "Coach unmuted");
       },
     },
-    // The /coach goal (and /focus) focus the player set — persisted across restarts.
-    goal: {
-      get: () => goalStore.get(),
-      set: (g) => goalStore.set(g),
-    },
-    // /coach lastmatch — one snide spoken sentence built from the recorded history.
-    lastMatchSummary: () => buildLastMatchSummary(sessions.lastMatch()),
     // /coach setup builds the friend's cfg from these — the same public address
     // and token `npm run cfg` uses, so the file is identical either way.
     cfg: { publicHost: config.coach.publicHost, token: config.gsi.token, port: config.gsi.port },

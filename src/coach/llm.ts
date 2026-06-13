@@ -364,14 +364,6 @@ function habitsNote(ctx: MatchContext): string {
     : "";
 }
 
-/** The focus the player asked to be held to this session — work it in when
- *  relevant, never force it into every line. Empty when no goal is set. */
-function goalNote(ctx: MatchContext): string {
-  return ctx.goal
-    ? ` The player asked you to hold them to ONE focus this session: "${ctx.goal}". Work it in when this moment is relevant to it — do not force it into every line.`
-    : "";
-}
-
 /** True translation of GSI's win-condition token, relative to OUR side. */
 function methodStory(method: string, won: boolean): string {
   if (method.includes("bomb")) return won ? "your bomb detonated" : "their bomb detonated on you";
@@ -409,9 +401,9 @@ function describeMoment(event: CoachEvent, ctx: MatchContext, longForm = false):
       // The usual case: round-1 freezetime arrives in the same GSI frame and
       // its event is suppressed — this one line is greeting AND pistol call.
       if (ctx.roundPhase === "freezetime" && ctx.roundKind === "pistol") {
-        return `A new match is starting on ${ctx.map ?? event.map} and the ROUND 1 PISTOL freezetime is already running. This ONE line is both the greeting and the pistol call: one concrete plan (where to go, armor vs util vs upgraded pistol, together as five). Don't let the greeting eat the call.${form}${goalNote(ctx)}`;
+        return `A new match is starting on ${ctx.map ?? event.map} and the ROUND 1 PISTOL freezetime is already running. This ONE line is both the greeting and the pistol call: one concrete plan (where to go, armor vs util vs upgraded pistol, together as five). Don't let the greeting eat the call.${form}`;
       }
-      return `A new match is starting on ${ctx.map ?? event.map}. One greeting line in character: expectations appropriately low, plus ONE concrete focus point for the match (pistols, trading, util — pick from history if it shows a habit).${form}${goalNote(ctx)}`;
+      return `A new match is starting on ${ctx.map ?? event.map}. One greeting line in character: expectations appropriately low, plus ONE concrete focus point for the match (pistols, trading, util — pick from history if it shows a habit).${form}`;
     }
     case "freezetime": {
       // One-shot engine flag (cooldown-gated) — without it this directive
@@ -474,7 +466,7 @@ function describeMoment(event: CoachEvent, ctx: MatchContext, longForm = false):
         : "";
       // Cross-round buy-sync read for a coordinating squad, when buildTeam flagged one.
       const buySync = ctx.team?.buySyncNote ? ` ${ctx.team.buySyncNote} If it fits, call it out and tell them to sync the next buy.` : "";
-      return `Freezetime / buy period, round ${event.round}. Give ONE buy call matched to the money and loss bonus, plus ONE concrete tactical idea for this map and side. Coaching angle for the tactical idea this round (ground it in the snapshot; ignore it only if the economy dictates otherwise): ${angle}.${playbook}${teamBuy}${enemyEcon}${loadout}${squadExecute}${buySync}${habitsNote(ctx)}${goalNote(ctx)}${mustSpend}${mp}${structure}${timeout} If the round history shows a pattern — lost streak, won pistols, repeated bomb-site losses — use it.`;
+      return `Freezetime / buy period, round ${event.round}. Give ONE buy call matched to the money and loss bonus, plus ONE concrete tactical idea for this map and side. Coaching angle for the tactical idea this round (ground it in the snapshot; ignore it only if the economy dictates otherwise): ${angle}.${playbook}${teamBuy}${enemyEcon}${loadout}${squadExecute}${buySync}${habitsNote(ctx)}${mustSpend}${mp}${structure}${timeout} If the round history shows a pattern — lost streak, won pistols, repeated bomb-site losses — use it.`;
     }
     case "bombPlanted":
       if (event.ourSide === "CT") {
@@ -529,7 +521,7 @@ function describeMoment(event: CoachEvent, ctx: MatchContext, longForm = false):
     case "halftime": {
       const squad = squadBreakClause(ctx);
       const buySync = ctx.team?.buySyncNote ? ` ${ctx.team.buySyncNote} A halftime note to sync the buys going into the new side is fair game.` : "";
-      return `Halftime break. Give a short, dry halftime talk grounded in the actual half: the score, pistol result, streaks, anything notable from history. Set the mindset for the side switch (economy resets, new roles) — sarcasm welcome, the actual reset facts mandatory.${squad}${buySync}${habitsNote(ctx)}${goalNote(ctx)}`;
+      return `Halftime break. Give a short, dry halftime talk grounded in the actual half: the score, pistol result, streaks, anything notable from history. Set the mindset for the side switch (economy resets, new roles) — sarcasm welcome, the actual reset facts mandatory.${squad}${buySync}${habitsNote(ctx)}`;
     }
     case "matchPoint":
       return event.forUs
@@ -550,7 +542,7 @@ function describeMoment(event: CoachEvent, ctx: MatchContext, longForm = false):
         : "";
       // The wrap-up is exactly where the match's own-data patterns and the session
       // focus earn their keep — a debrief is the right place to name them.
-      const extras = `${habitsNote(ctx)}${goalNote(ctx)}`;
+      const extras = `${habitsNote(ctx)}`;
       // won is undefined when the app (re)connected too late to know our side —
       // never let the ternary read that as a loss and roast a winning team.
       if (event.won === undefined) {

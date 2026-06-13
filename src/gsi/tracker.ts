@@ -90,9 +90,6 @@ export interface MatchContext {
   /** Own loadout when alive: the primary gun + ammo + carried nades, so the LLM
    *  can make AWP-specific / dry-gun / use-your-util calls. Self+alive only. */
   loadout?: { primary?: string; primaryType?: string; clip?: number; reserve?: number; nades?: string[] };
-  /** The focus the player asked to be held to this session. DECLARED here but
-   *  populated by the engine snapshot at the right moments, NOT by context(). */
-  goal?: string;
   /** Cross-session trend lines from past matches — attached by the engine at
    *  the storytelling moments only (match start, halftime, match end). */
   recentForm?: string[];

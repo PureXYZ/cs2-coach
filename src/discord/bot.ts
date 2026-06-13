@@ -26,10 +26,6 @@ export interface BotDeps {
   voice: VoiceCoach;
   /** /coach quiet's flag — owned by index.ts so the engine shares it. */
   quiet: { get: () => boolean; set: (on: boolean) => void };
-  /** Session focus the player set with /coach goal — held to them this session. */
-  goal: { get: () => string | undefined; set: (g: string | undefined) => void };
-  /** One snide spoken sentence summing up the last finished match, or null when none on file. */
-  lastMatchSummary: () => string | null;
   /** Inputs for /coach setup — builds the GSI cfg handed to a friend. A falsy
    *  publicHost disables the command (the container can't self-detect its public
    *  address; emitting a Docker-bridge IP would be confidently wrong). */
@@ -134,24 +130,7 @@ const commands = [
             .addChoices(...Object.entries(SONGS).map(([value, s]) => ({ name: s.name, value }))),
         ),
     )
-    .addSubcommand((sub) => sub.setName("stop").setDescription("Stop the song (coaching continues)"))
-    .addSubcommand((sub) =>
-      sub
-        .setName("goal")
-        .setDescription("Set a focus to hold you to this session (leave empty to clear)")
-        .addStringOption((opt) =>
-          opt.setName("text").setDescription("What to work on this session (e.g. stop over-peeking)").setRequired(false),
-        ),
-    )
-    .addSubcommand((sub) =>
-      sub
-        .setName("focus")
-        .setDescription("Set a focus to hold you to this session (leave empty to clear)")
-        .addStringOption((opt) =>
-          opt.setName("text").setDescription("What to work on this session (e.g. stop over-peeking)").setRequired(false),
-        ),
-    )
-    .addSubcommand((sub) => sub.setName("lastmatch").setDescription("Recap of your last finished match")),
+    .addSubcommand((sub) => sub.setName("stop").setDescription("Stop the song (coaching continues)")),
 ].map((c) => c.toJSON());
 
 export async function startBot(deps: BotDeps): Promise<Client> {
@@ -294,36 +273,6 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
       return;
     }
 
-    // goal and focus are synonyms — set (or clear, when empty) the session focus.
-    case "goal":
-    case "focus": {
-      const text = interaction.options.getString("text")?.trim() || undefined;
-      deps.goal.set(text);
-      await interaction.reply({
-        content: text
-          ? `🎯 Locked in: **${text}**. I'll be on your case about it this session.`
-          : "Focus cleared. Back to roasting whatever you screw up next.",
-        flags: MessageFlags.Ephemeral,
-      });
-      return;
-    }
-
-    case "lastmatch": {
-      const summary = deps.lastMatchSummary();
-      if (!summary) {
-        await interaction.reply({ content: "No matches on file yet.", flags: MessageFlags.Ephemeral });
-        return;
-      }
-      // Say it out loud when I'm on the mic; otherwise just hand back the text.
-      if (deps.voice.connected) {
-        deps.voice.say({ text: summary, priority: 5, maxAgeMs: 30_000, category: "manual", eventAt: Date.now() });
-        await interaction.reply({ content: "Pulling up your last match. Brace yourself.", flags: MessageFlags.Ephemeral });
-      } else {
-        await interaction.reply({ content: summary, flags: MessageFlags.Ephemeral });
-      }
-      return;
-    }
-
     case "status": {
       const s = deps.status();
       const gsi =
@@ -353,7 +302,6 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
         `**Feeds:** ${feedsLine}`,
         squadLine,
         `**Coach:** ${deps.quiet.get() ? "🔇 muted (\`/coach quiet\` to unmute)" : "🎙️ speaking"}`,
-        `**Focus:** ${deps.goal.get() ?? "none set"}`,
         `**TTS:** ${s.ttsProviders.join(" → ")}`,
         `**LLM:** ${s.llmModel ?? "disabled (rule-based lines only)"}`,
         `**Memory:** ${s.sessionsOnFile} past match${s.sessionsOnFile === 1 ? "" : "es"} on file`,

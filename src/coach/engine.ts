@@ -105,9 +105,6 @@ export interface EngineDeps {
   isQuiet?: () => boolean;
   /** Fired once per matchEnd, quiet or not: session recording + the Leetify recap. */
   onMatchEnd?: (event: Extract<CoachEvent, { type: "matchEnd" }>, ctx: MatchContext) => void;
-  /** The focus the player set via /coach goal — read at the moments where it's
-   *  worth holding them to it (snapshot injection, not every frame). */
-  currentGoal?: () => string | undefined;
   /** Fired for every decided line (LLM or fallback) — feeds the optional
    *  decision log for offline review. redact keeps Leetify text out of the log. */
   onDecision?: (rec: {
@@ -559,9 +556,6 @@ export class CoachEngine {
     // Snapshot the context now; the game moves on while Claude thinks. Staleness
     // is anchored to eventAt, so a slow response gets dropped instead of spoken late.
     const snapshot = { ...ctx };
-    // The session focus the player asked to be held to — injected only at the
-    // moments worth invoking it; the LLM reads it and works it in when relevant.
-    snapshot.goal = this.deps.currentGoal?.() || undefined;
     // The storytelling moments get the expensive extras: cross-session form
     // for callbacks (NOT every freezetime — past-session roast material in
     // every buy call invites callback chatter at routine moments), and the
