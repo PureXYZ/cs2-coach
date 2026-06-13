@@ -379,7 +379,7 @@ export class CoachEngine {
               case "zeus":
                 return lines.zeusKillLine();
               case "grenade":
-                return lines.nadeKillLine(event.nade ?? "he");
+                return lines.nadeKillLine(event.nade ?? "he", event.kills ?? 1);
               case "lowhp":
                 return lines.lowHpKillLine(event.hp ?? 10);
             }
@@ -408,7 +408,14 @@ export class CoachEngine {
         // Dying to the bomb blast or exit fire after the round is decided:
         // every death variant coaches an ongoing round, which has just ended.
         if (ctx.roundPhase === "over") break;
-        this.say(() => lines.deathLine(), { category: "death", priority: 0, maxAgeMs: 6_000 });
+        // A burned/blind death is a named, roast-worthy way to go (a live session
+        // burned to death and the coach said nothing) — those speak reliably;
+        // a generic death stays mostly silent so deaths aren't narrated.
+        this.say(() => lines.deathLine(event.cause), {
+          category: "death",
+          priority: event.cause ? 1 : 0,
+          maxAgeMs: 6_000,
+        });
         break;
 
       case "mvp":
@@ -499,6 +506,11 @@ export class CoachEngine {
       this.lateRoundTimer = null;
       if (!this.payloadFresh()) return; // GSI went quiet — don't talk into a dead game
       const ctx = this.getCtx();
+      // Dead/spectating: a "hold your angles" clock nudge is advice a corpse
+      // can't take (a live session heard one ~minute after dying). Also covers
+      // the death-cam window where GSI still reports the dead self (playerIsSelf
+      // true, health 0) before the auto-spectate switch. Stay quiet.
+      if (!ctx.playerIsSelf || (ctx.health ?? 0) <= 0) return;
       if (ctx.roundPhase !== "live" || ctx.bomb) return; // round resolved or bomb already down
       // Carrying the C4 with no plant this late is always worth the words;
       // the generic nudge keeps its random skip so it isn't every-round nagging.
@@ -516,6 +528,9 @@ export class CoachEngine {
       this.bombTimer = null;
       if (!this.payloadFresh()) return; // GSI went quiet — the frozen ctx would lie
       const ctx = this.getCtx();
+      // Dead/spectating (incl. the death-cam window: self, health 0) — "bail" or
+      // "hold the bomb" is meaningless to a corpse.
+      if (!ctx.playerIsSelf || (ctx.health ?? 0) <= 0) return;
       if (ctx.bomb !== "planted" || ctx.roundPhase !== "live") return; // defused/exploded/over already
       // A recent kill means the player is mid-fight: give them the clock, not a
       // "back off and live" order they're actively (and rightly) disobeying.
