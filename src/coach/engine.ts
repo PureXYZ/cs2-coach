@@ -70,6 +70,10 @@ const COOLDOWNS_MS: Record<string, number> = {
  *  The cfg heartbeat is 10s and real 11s gaps were captured — 12s left no margin. */
 const PAYLOAD_FRESH_MS = 15_000;
 
+/** Events ITEM 7: gather simultaneous wired-teammate multikills before speaking ONE
+ *  merged line. Well under the teammate maxAgeMs (6000) so the flushed line is never stale. */
+const MULTIKILL_FLUSH_MS = 700;
+
 /**
  * Turns tracker events into spoken lines. Twitch events (kills, bomb hype, clock
  * callouts) come from the instant rule table; decision moments go to Claude when
@@ -104,6 +108,11 @@ export class CoachEngine {
   private lastSpokenAt = new Map<string, number>();
   private lateRoundTimer: NodeJS.Timeout | null = null;
   private bombTimer: NodeJS.Timeout | null = null;
+  /** Events ITEM 7: buffer simultaneous wired-teammate multikills (steamid -> best
+   *  this round) and flush ONE line after a short window, so two friends popping off
+   *  in the same beat merge instead of stepping on each other. */
+  private multiKillBuf = new Map<string, { kills: number; name?: string }>();
+  private multiKillTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly speak: Speak,
@@ -409,15 +418,9 @@ export class CoachEngine {
         break;
 
       case "teammateMultiKill":
-        // A WIRED teammate (their own feed) racked up 3+ this round — named, live
-        // hype, distinct from the grave-spectator line above. Shares the
-        // 'teammate' bucket so it can never out-shout the primary's coaching;
-        // quad/ace bypass the cooldown, and a newer multikill evicts a queued one.
-        this.say(
-          () => lines.teammateMultiKillLine(event.who.name, event.roundKills),
-          { category: "teammate", priority: 1, maxAgeMs: 6_000, supersedes: ["teammate"] },
-          event.roundKills >= 4,
-        );
+        // Events ITEM 7: buffer + (re)arm a short timer; two friends popping off in the
+        // same beat merge into ONE line. De-dupe by steamid (triple->quad raises the entry).
+        this.bufferTeammateMultiKill(event.who.steamid, event.who.name, event.roundKills);
         break;
 
       case "lastManStanding":
@@ -448,6 +451,33 @@ export class CoachEngine {
         this.say(() => lines.mvpLine(ctx.playerName), { category: "mvp", priority: 2, maxAgeMs: 8_000 });
         break;
     }
+  }
+
+  /** Events ITEM 7: record a wired teammate's multikill (highest per steamid) and arm the flush timer. */
+  private bufferTeammateMultiKill(steamid: string, name: string | undefined, kills: number): void {
+    if (this.deps.isQuiet?.()) return;
+    const prev = this.multiKillBuf.get(steamid);
+    this.multiKillBuf.set(steamid, { kills: Math.max(kills, prev?.kills ?? 0), name: name ?? prev?.name });
+    if (this.multiKillTimer) clearTimeout(this.multiKillTimer);
+    this.multiKillTimer = setTimeout(() => this.flushTeammateMultiKills(), MULTIKILL_FLUSH_MS);
+  }
+
+  /** Events ITEM 7: speak the buffered multikills as ONE line. */
+  private flushTeammateMultiKills(): void {
+    this.multiKillTimer = null;
+    const entries = [...this.multiKillBuf.values()];
+    this.multiKillBuf.clear();
+    if (entries.length === 0) return;
+    const skipCooldown = entries.some((e) => e.kills >= 4);
+    if (entries.length === 1) {
+      const only = entries[0];
+      this.say(() => lines.teammateMultiKillLine(only.name, only.kills),
+        { category: "teammate", priority: 1, maxAgeMs: 6_000, supersedes: ["teammate"] }, skipCooldown);
+      return;
+    }
+    const names = entries.map((e) => e.name).filter((n): n is string => !!n);
+    this.say(() => lines.teammateMultiKillDuo(names),
+      { category: "teammate", priority: 1, maxAgeMs: 6_000, supersedes: ["teammate"] }, skipCooldown);
   }
 
   /**
@@ -536,7 +566,16 @@ export class CoachEngine {
       // can't take (a live session heard one ~minute after dying). Also covers
       // the death-cam window where GSI still reports the dead self (playerIsSelf
       // true, health 0) before the auto-spectate switch. Stay quiet.
-      if (!ctx.playerIsSelf || (ctx.health ?? 0) <= 0) return;
+      // Primary dead/spectating: the second-person clock nudge below is advice a corpse
+      // can't take. BUT if a WIRED teammate is carrying the C4 with no plant this late,
+      // that's the single highest-value late call — name them for the squad (no random skip).
+      if (!ctx.playerIsSelf || (ctx.health ?? 0) <= 0) {
+        if (ctx.roundPhase === "live" && !ctx.bomb && ctx.ourSide === "T" && ctx.team?.bombCarrierName) {
+          const carrier = ctx.team.bombCarrierName;
+          this.say(() => lines.lateRoundCarrierNamed(carrier), { category: "clock", priority: 2, maxAgeMs: 8_000 });
+        }
+        return;
+      }
       if (ctx.roundPhase !== "live" || ctx.bomb) return; // round resolved or bomb already down
       // Carrying the C4 with no plant this late is always worth the words;
       // the generic nudge keeps its random skip so it isn't every-round nagging.
@@ -578,6 +617,10 @@ export class CoachEngine {
   private cancelTimers(): void {
     this.cancelLateRoundTimer();
     this.cancelBombTimer();
+    // Events ITEM 7: a new round/freeze means last round's pending multikill hype is dead.
+    if (this.multiKillTimer) clearTimeout(this.multiKillTimer);
+    this.multiKillTimer = null;
+    this.multiKillBuf.clear();
   }
 
   private payloadFresh(): boolean {

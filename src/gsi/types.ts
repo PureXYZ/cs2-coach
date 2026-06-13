@@ -136,6 +136,14 @@ export interface TeamMember {
   alive?: boolean;
   /** Own money this feed last reported while alive (the buy-time read for drop calls). */
   money?: number;
+  /**
+   * Freshness tier of THIS feed's present-tense reads. "fresh" (staleMs <=
+   * feedStaleMs/2) — money/alive are current enough to act on; "lagging" — still
+   * connected (within feedStaleMs) but its money is a "last I saw" read, never the
+   * basis for a live drop call. A confirmed death (alive===false) stays trustworthy
+   * regardless — it doesn't un-happen with age.
+   */
+  tier: "fresh" | "lagging";
   /** ms since this feed's last payload — the freshness the honesty gates key on. */
   staleMs: number;
 }
@@ -168,9 +176,25 @@ export interface TeamContext {
   /** Which wired teammate is personally carrying the C4 right now (always safe). */
   bombCarrierName?: string;
   /**
-   * Buy-money across wired, fresh, alive feeds for the freezetime call — names +
-   * amounts so the coach can sync the buy or name a drop. Present only when team
-   * tactics are enabled; covers only the wired subset.
+   * Buy-money across wired feeds for the freezetime call — names + amounts plus
+   * gear and alive, so the coach can tell a kitted $5k from a force-buy $5k and
+   * never name a drop to a dead teammate. equipValue is present only for the
+   * primary's own feed (the only feed whose own gear we read); alive mirrors the
+   * member's. Present only when team tactics are enabled; covers only the wired subset.
    */
-  econ?: { name?: string; money: number; isPrimary: boolean }[];
+  econ?: { name?: string; money: number; isPrimary: boolean; equipValue?: number; alive?: boolean }[];
+  /**
+   * Cross-round buy-sync read for a coordinating squad — e.g. "Andy full-bought
+   * while Mouse and Cadian saved". Present only when rosterComplete; the
+   * freezetime/halftime line may fold it in. No cooldown of its own.
+   */
+  buySyncNote?: string;
+  /**
+   * A one-line honesty verdict the LLM is told to FOLLOW LITERALLY: how much of
+   * the squad is actually wired and therefore how freely whole-team facts may be
+   * stated. Derived in buildTeam from wiredCount/rosterComplete/squadSize. REQUIRED
+   * (always set when a team block exists; buildTeam returns undefined for a solo
+   * player). The single string the SYSTEM_CORE honesty rule keys on.
+   */
+  visibility: string;
 }
