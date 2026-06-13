@@ -107,7 +107,7 @@ While running, every raw GSI payload (plus the events derived from it) is append
 | `/coach quiet` | Mutes/unmutes the coach mid-match (game tracking continues) |
 | `/coach say <text>` | Speak arbitrary text (test) |
 | `/coach status` | GSI freshness, voice/queue, mute state, TTS chain, LLM model, session memory |
-| `/coach song` | Plays EZ4ENCE (the coach's cover) in the voice channel |
+| `/coach song [title]` | Plays one of the coach's covers in the voice channel — pick from buttons, or pass a title directly (EZ4ENCE, Xue Hua Piao Piao, Zenzenzense, White Pony); picking while one plays switches songs |
 | `/coach stop` | Stops the song; coaching lines resume |
 
 ## Costs
