@@ -1,6 +1,10 @@
 import { Readable } from "node:stream";
 import { StreamType } from "@discordjs/voice";
+import { idleGuarded } from "./idle.js";
 import type { TtsProvider, TtsResult } from "./types.js";
+
+/** Mid-stream stall watchdog window — the per-fetch abort now guards only TTFB. */
+const STREAM_IDLE_MS = 5_000;
 
 /**
  * ElevenLabs Flash v2.5 over the streaming REST endpoint with native 48 kHz
@@ -31,25 +35,41 @@ export class ElevenLabsTts implements TtsProvider {
     const url = new URL(`https://api.elevenlabs.io/v1/text-to-speech/${this.voiceId}/stream`);
     url.searchParams.set("output_format", "opus_48000_64");
 
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "xi-api-key": this.apiKey!,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        text,
-        model_id: this.modelId,
-        voice_settings: {
-          stability: this.voiceSettings.stability,
-          similarity_boost: this.voiceSettings.similarityBoost,
-          style: this.voiceSettings.style,
-          speed: this.voiceSettings.speed,
+    // The timeout must guard only time-to-first-byte. The response body is an
+    // audio stream consumed lazily DURING playback, so a fixed AbortSignal on the
+    // whole fetch would tear the connection down mid-stream and cut a long line
+    // off mid-sentence (~8s in, per the captured logs). Abort only until the
+    // headers arrive — a genuinely stalled request (no headers) still fails fast
+    // and falls through to the next provider; once streaming starts it runs as
+    // long as the audio needs. Tradeoff: a rarer headers-then-no-audio stall no
+    // longer fails over to the next provider — it's caught downstream by the
+    // idleGuarded watchdog / the voice queue's synth deadline, which drop the
+    // line and advance the queue rather than retrying on Deepgram/Edge.
+    const controller = new AbortController();
+    const ttfbTimer = setTimeout(() => controller.abort(), 10_000);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "xi-api-key": this.apiKey!,
+          "Content-Type": "application/json",
         },
-      }),
-      // A stalled request must fail fast so the chain falls through to the next provider.
-      signal: AbortSignal.timeout(10_000),
-    });
+        body: JSON.stringify({
+          text,
+          model_id: this.modelId,
+          voice_settings: {
+            stability: this.voiceSettings.stability,
+            similarity_boost: this.voiceSettings.similarityBoost,
+            style: this.voiceSettings.style,
+            speed: this.voiceSettings.speed,
+          },
+        }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(ttfbTimer);
+    }
 
     if (!res.ok || !res.body) {
       const detail = await res.text().catch(() => "");
@@ -57,7 +77,10 @@ export class ElevenLabsTts implements TtsProvider {
     }
 
     return {
-      stream: Readable.fromWeb(res.body as import("node:stream/web").ReadableStream),
+      stream: idleGuarded(
+        Readable.fromWeb(res.body as import("node:stream/web").ReadableStream),
+        STREAM_IDLE_MS,
+      ),
       inputType: StreamType.OggOpus,
     };
   }

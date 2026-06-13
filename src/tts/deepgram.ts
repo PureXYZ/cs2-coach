@@ -1,6 +1,10 @@
 import { Readable } from "node:stream";
 import { StreamType } from "@discordjs/voice";
+import { idleGuarded } from "./idle.js";
 import type { TtsProvider, TtsResult } from "./types.js";
+
+/** Mid-stream stall watchdog window — the per-fetch abort now guards only TTFB. */
+const STREAM_IDLE_MS = 5_000;
 
 /**
  * Deepgram Aura-2 over REST. encoding=opus returns an Ogg/Opus stream at a fixed
@@ -28,16 +32,29 @@ export class DeepgramTts implements TtsProvider {
     // Without this, Deepgram encodes Opus at a barely-intelligible 12 kbps default.
     url.searchParams.set("bit_rate", String(this.bitrate));
 
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Token ${this.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ text }),
-      // A stalled request must fail fast so the chain falls through to the next provider.
-      signal: AbortSignal.timeout(10_000),
-    });
+    // Guard only time-to-first-byte: the body is an audio stream consumed during
+    // playback, so a fixed AbortSignal on the whole fetch would cut a long line
+    // off mid-sentence. Abort only until the headers land — a stalled request
+    // (no headers) still fails fast to the next provider; streaming then runs as
+    // long as the audio needs. Tradeoff: a headers-then-no-audio stall no longer
+    // fails over — it's caught downstream by idleGuarded / the synth deadline,
+    // which drop the line and advance rather than retrying the next provider.
+    const controller = new AbortController();
+    const ttfbTimer = setTimeout(() => controller.abort(), 10_000);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Token ${this.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ text }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(ttfbTimer);
+    }
 
     if (!res.ok || !res.body) {
       const detail = await res.text().catch(() => "");
@@ -45,7 +62,10 @@ export class DeepgramTts implements TtsProvider {
     }
 
     return {
-      stream: Readable.fromWeb(res.body as import("node:stream/web").ReadableStream),
+      stream: idleGuarded(
+        Readable.fromWeb(res.body as import("node:stream/web").ReadableStream),
+        STREAM_IDLE_MS,
+      ),
       inputType: StreamType.OggOpus,
     };
   }

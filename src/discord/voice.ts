@@ -281,8 +281,19 @@ export class VoiceCoach {
       .then((result) => {
         this.synthesizing = false;
         this.inFlight = null;
-        // Late stream errors must never become uncaught exceptions.
-        result.stream.on("error", (err) => log.warn("voice", `TTS stream error: ${err.message}`));
+        // Late stream errors must never become uncaught exceptions. And if the
+        // erroring stream is the one staged in the prefetch slot (idle-guard
+        // teardown or a genuine network drop while it waited behind a playing
+        // line), drop it — otherwise pump() would later build an audio resource
+        // on a destroyed stream and the line would vanish with no Idle/error
+        // diagnostic tying it back to here.
+        result.stream.on("error", (err) => {
+          log.warn("voice", `TTS stream error: ${err.message}`);
+          if (this.prefetched?.result.stream === result.stream) {
+            log.info("voice", `Dropped errored prefetched line: "${preview(next)}"`);
+            this.discardPrefetch();
+          }
+        });
         if (session !== this.session || !this.connection) {
           result.stream.destroy(); // session ended/changed while synthesizing — discard, don't replay
           // Re-arm regardless: a fresh session's lines may already be queued
