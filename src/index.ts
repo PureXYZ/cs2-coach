@@ -85,12 +85,12 @@ async function main(): Promise<void> {
   const sessions = new SessionStore();
   log.info("main", `Session memory: ${sessions.count} past match(es) on file`);
 
-  // /coach quiet's shared flag: the engine checks it (skipping lines AND LLM
+  // /coach mute's shared flag: the engine checks it (skipping lines AND LLM
   // spend); the bot toggles it and flushes anything already queued or speaking.
   // Restored from disk so a redeploy doesn't silently un-mute (the saved voice
   // channel is already restored below — mute resetting was the odd one out).
   const quiet = { on: loadQuiet() };
-  if (quiet.on) log.info("main", "Coach starting muted (restored /coach quiet state)");
+  if (quiet.on) log.info("main", "Coach starting muted (restored /coach mute state)");
 
   // Apply the preferred spoken name for the (primary) player to a context.
   const withNickname = (ctx: MatchContext): MatchContext => ({
@@ -297,7 +297,7 @@ async function main(): Promise<void> {
         // Muting mid-sentence should actually shut the coach up, not just
         // stop the NEXT line — flush the queue and cut the current one off.
         if (on) voice.clearCoachLines();
-        log.info("main", on ? "Coach muted via /coach quiet" : "Coach unmuted");
+        log.info("main", on ? "Coach muted via /coach mute" : "Coach unmuted");
       },
     },
     // /coach setup builds the friend's cfg from these — the same public address

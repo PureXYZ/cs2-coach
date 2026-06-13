@@ -7,7 +7,7 @@ import { clearJsonState, loadJsonState, saveJsonState } from "../json-state.js";
  */
 const STATE_FILE = process.env.VOICE_STATE_FILE ?? "state/voice.json";
 
-/** Mute (`/coach quiet`) lives in its own file so a redeploy doesn't silently
+/** Mute (`/coach mute`) lives in its own file so a redeploy doesn't silently
  *  un-mute the coach — the saved voice channel is already restored on restart, so
  *  mute being the one thing that resets was an inconsistency. */
 const QUIET_FILE = process.env.QUIET_STATE_FILE ?? "state/quiet.json";

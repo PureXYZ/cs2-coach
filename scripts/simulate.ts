@@ -765,7 +765,7 @@ console.log("\n=== scenario: tactical timeout must not wipe match memory or re-a
 }
 
 // ---------------------------------------------------------------------------
-console.log("\n=== scenario: /coach quiet gates lines and LLM spend ===");
+console.log("\n=== scenario: /coach mute gates lines and LLM spend ===");
 {
   const out: SpeakRequest[] = [];
   let muted = true;

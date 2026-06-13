@@ -28,7 +28,7 @@ export interface BotDeps {
   token: string;
   guildId?: string;
   voice: VoiceCoach;
-  /** /coach quiet's flag — owned by index.ts so the engine shares it. */
+  /** /coach mute's flag — owned by index.ts so the engine shares it. */
   quiet: { get: () => boolean; set: (on: boolean) => void };
   /** Inputs for /coach setup — builds the GSI cfg handed to a friend. A falsy
    *  publicHost disables the command (the container can't self-detect its public
@@ -168,7 +168,7 @@ const commands = [
     .addSubcommand((sub) => sub.setName("panel").setDescription("Post a clickable control panel (pin it for one-tap controls)"))
     .addSubcommand((sub) =>
       sub
-        .setName("quiet")
+        .setName("mute")
         .setDescription("Mute/unmute the coach (game tracking continues)")
         .addStringOption((opt) =>
           opt
@@ -265,7 +265,7 @@ export async function startBot(deps: BotDeps): Promise<Client> {
  *  the coach will speak (join, say, test) — silence is otherwise a mystery when
  *  mute is on. Empty when not muted. */
 function muteHint(deps: BotDeps): string {
-  return deps.quiet.get() ? " — heads up, I'm currently 🔇 muted (`/coach quiet` to unmute)." : "";
+  return deps.quiet.get() ? " — heads up, I'm currently 🔇 muted (`/coach mute` to unmute)." : "";
 }
 
 /** A lone "Join my channel" button — attached to a not-in-a-VC message so the
@@ -301,7 +301,7 @@ function panelRows(): ActionRowBuilder<ButtonBuilder>[] {
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId("panel:join").setLabel("Join").setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId("panel:leave").setLabel("Leave").setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId("panel:quiet").setLabel("Mute / Unmute").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("panel:mute").setLabel("Mute / Unmute").setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("panel:status").setLabel("Status").setStyle(ButtonStyle.Secondary),
     ),
     new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -320,9 +320,9 @@ function checkButtonRow(): ActionRowBuilder<ButtonBuilder> {
 }
 
 /** Mute/unmute reply copy, shared by the slash command and the panel button. */
-function quietReply(on: boolean): string {
+function muteReply(on: boolean): string {
   return on
-    ? "🔇 Coach is muted — still watching the game and keeping score. `/coach quiet` again to unmute."
+    ? "🔇 Coach is muted — still watching the game and keeping score. `/coach mute` again to unmute."
     : "🎙️ Coach is back on the mic. You asked for this.";
 }
 
@@ -333,7 +333,7 @@ function helpText(): string {
     "First time? `/coach setup` → drop the file in your CS2 cfg folder → restart CS2 → `/coach status` to confirm you show up under **Feeds**.",
     "",
     "**Get connected:** `/coach setup` (DMs you the config) · `/coach status` (is it working?)",
-    "**In the channel:** `/coach join` (I hop into your voice channel) · `/coach leave` · `/coach quiet` (mute/unmute)",
+    "**In the channel:** `/coach join` (I hop into your voice channel) · `/coach leave` · `/coach mute`",
     "**Mess around:** `/coach say <text>` · `/coach voice` (pick my voice) · `/coach song`",
     "",
     "Hate typing? `/coach panel` posts buttons you can pin and tap instead — that's all most people need.",
@@ -382,7 +382,7 @@ function renderStatus(deps: BotDeps): string {
     `**Voice:** ${deps.voice.connected ? "✅ connected" : "❌ not in a channel"} (queue: ${deps.voice.queueLength})`,
     `**Feeds:** ${feedsLine}`,
     squadLine,
-    `**Coach:** ${deps.quiet.get() ? "🔇 muted (\`/coach quiet\` to unmute)" : "🎙️ speaking"}`,
+    `**Coach:** ${deps.quiet.get() ? "🔇 muted (\`/coach mute\` to unmute)" : "🎙️ speaking"}`,
     `**TTS:** ${s.ttsProviders.join(" → ")}`,
     // Show the active voice only when switching is actually set up (more than
     // one voice configured and the switchable-voice provider is in the chain).
@@ -585,13 +585,13 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
       return;
     }
 
-    case "quiet": {
+    case "mute": {
       // Explicit on/off is idempotent (you can guarantee a state without reading a
       // reply first); no arg keeps the original toggle for muscle memory.
       const choice = interaction.options.getString("state");
       const on = choice ? choice === "on" : !deps.quiet.get();
       deps.quiet.set(on);
-      await interaction.reply({ content: quietReply(on), flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: muteReply(on), flags: MessageFlags.Ephemeral });
       return;
     }
   }
@@ -711,10 +711,10 @@ async function handlePanelButton(interaction: ButtonInteraction, deps: BotDeps):
       clearVoiceChannel();
       await interaction.update({ content: "Coach signing off. GG!", components: [] });
       return;
-    case "quiet": {
+    case "mute": {
       const on = !deps.quiet.get();
       deps.quiet.set(on);
-      await interaction.reply({ content: quietReply(on), flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: muteReply(on), flags: MessageFlags.Ephemeral });
       return;
     }
     case "status":
