@@ -23,7 +23,7 @@ export interface LineOpts {
   timeoutMs?: number;
 }
 
-const SYSTEM_CORE = `You are "Coach" — a dry, sarcastic, perpetually unimpressed Counter-Strike 2 coach sitting in a Discord voice channel with a player and their friends during a Premier/Competitive match. The player ASKED for a negative, sarcastic coach — it's a consensual roast between friends. Each request gives you a JSON snapshot of the game state plus a description of the moment; you reply with ONE spoken coaching line.
+const SYSTEM_CORE = `You are "Coach" — a dry, sarcastic, perpetually unimpressed Counter-Strike 2 coach sitting in a Discord voice channel with the wired crew — the player AND any friends also running the coach — during a Premier/Competitive match. The player ASKED for a negative, sarcastic coach — it's a consensual roast between friends. Each request gives you a JSON snapshot of the game state plus a description of the moment; you reply with ONE spoken coaching line.
 
 VOICE:
 - You sound like a real coach TALKING on voice comms, not a writer writing. Short sentences. Contractions. Simple everyday words. Sentence fragments are fine. Say it like: "Bomb's down, forty seconds. Group up, go in together. No solo hero shit."
@@ -59,6 +59,8 @@ HOW TO SPEAK:
 
 THE SQUAD (who you can see):
 - The player's friends are in the voice channel. You only know the names the snapshot gives you (the "team" block, plus any "spectating" name) — never invent or guess a name. Roasting the player is the main job; teammates get lighter teasing.
+- WHO YOU COACH: when a "team" block is present you coach the WHOLE WIRED CREW, not one player with witnesses — address them by name and let the loudest mistake win the jab, whoever made it. The player stays your default anchor and the one you roast hardest (their session history and Leetify recap are theirs), but wired friends are co-subjects, not bystanders. With NO team block, "you" is the one player.
+- Coaching the crew is NOT narrating every friend's round: it's still ONE line — AGGREGATE or ROTATE. A different teammate is a fresh angle for the NEXT moment, never a second line crammed into this one. Defer to team.visibility and whatever the moment's own instructions say about who to name.
 - The "team" block appears only when 2+ friends run the coach. It lists ONLY the teammates whose own game you can see — "team.wiredCount" of the squad. You have NO information about any teammate NOT in team.members: not their gear, not their money, not whether they're alive. Treat them as unknown and never speak about them.
 - HONESTY — the most important rule here: NEVER assert a WHOLE-TEAM fact ("everyone's alive", "you're the last one alive", "the team's all broke", "we're split") UNLESS "team.rosterComplete" is true. Otherwise speak only about the players you can see, BY NAME, and hedge the rest: "the three of you I can see are on eco", "last of our guys I can see — dunno about the other two". team.rosterComplete true means the whole squad is wired in and you MAY state those facts with confidence.
 - "team.visibility" is a one-line VERDICT on exactly how much of the squad you can honestly speak for. FOLLOW IT LITERALLY — it overrides any instinct to round "the two I can see" up to "the team". It is the plain-English form of the rosterComplete rule above; when the two ever seem to conflict, obey team.visibility.
@@ -197,13 +199,17 @@ export class LlmCoach {
     ourScore: number;
     theirScore: number;
     statsSentence: string;
+    squadSentence?: string;
   }): Promise<string | null> {
     const where = input.map ? ` on ${mapDisplayName(input.map)}` : "";
     const result = input.won === undefined ? "" : input.won ? " (won)" : " (lost)";
     const userContent = [
       `Leetify finished analyzing the demo of the match that ended a while ago${where}, final score ${input.ourScore}-${input.theirScore}${result}. The players are BETWEEN games right now — this is downtime talk, not a mid-round call.`,
       `Leetify's numbers for the player: ${input.statsSentence}.`,
-      `Speak ONE recap, 25-50 words (the usual cap doesn't apply): credit Leetify by name, read the headline numbers EXACTLY as given (you may leave stats out, never change a value), and land one dry verdict. Say "minus" for negative numbers — no symbols, it goes straight to text-to-speech.`,
+      input.squadSentence
+        ? `The wired crew ran the SAME match — read these teammate numbers EXACTLY as given, and NEVER recompute a difference into a new number: ${input.squadSentence}. Work the whole crew into the recap, but tease the friends lighter than the player.`
+        : "",
+      `Speak ONE recap, ${input.squadSentence ? "30-60" : "25-50"} words (the usual cap doesn't apply): credit Leetify by name, read the headline numbers EXACTLY as given (you may leave stats out, never change a value), and land one dry verdict. Say "minus" for negative numbers — no symbols, it goes straight to text-to-speech.`,
       this.recentLines.length
         ? `Your recent lines, oldest first (do NOT reuse their phrasing, openers or joke constructions): ${JSON.stringify(this.recentLines)}`
         : "",
@@ -241,6 +247,7 @@ export class LlmCoach {
       // canned wrapper one fallback away satisfies both by construction.
       const allowed = new Set([
         ...(input.statsSentence.match(/\d+(?:\.\d+)?/g) ?? []),
+        ...(input.squadSentence?.match(/\d+(?:\.\d+)?/g) ?? []),
         String(input.ourScore),
         String(input.theirScore),
       ]);

@@ -551,9 +551,11 @@ export class RosterManager {
     }
 
     // Econ ITEM 17: snapshot this freezetime's buys (once per round) and derive the
-    // cross-round buy-sync read. Only under rosterComplete (the whole-team license).
+    // cross-round buy-sync read. It's an observation about the VISIBLE wired buyers
+    // (deriveBuySync names "the wired crew", never the team), so it needs only 2+
+    // fresh visible buyers — NOT the whole-team rosterComplete license.
     let buySyncNote: string | undefined;
-    if (rosterComplete && refRound !== undefined && econ && econ.length >= 2) {
+    if (refRound !== undefined && econ && econ.length >= 2) {
       const phaseIsFreeze = this.authorityFeed()?.tracker.context().roundPhase === "freezetime";
       if (phaseIsFreeze && this.econRing.at(-1)?.round !== refRound) {
         this.econRing.push({ round: refRound, buys: econ.map((e) => ({ name: e.name, klass: buyClass(e.money) })) });
@@ -796,6 +798,31 @@ export class RosterManager {
    *  configured primary hasn't connected a feed yet — Leetify is then skipped. */
   steamId(): string | undefined {
     return this.primaryFeed()?.tracker.steamId();
+  }
+
+  /** The confirmed wired crew this match (primary first), as {steam64, name,
+   *  isPrimary} — for the once-per-match squad Leetify recap and any other
+   *  post-match squad surface that needs the friends' Steam IDs (TeamMember
+   *  deliberately carries none). Sourced from the per-match high-water
+   *  confirmedEver set, so a friend who closed CS2 right at gameover is still
+   *  counted. Empty when no primary feed exists (mirrors steamId() => undefined,
+   *  so the recap is skipped). MUST be read SYNCHRONOUSLY at matchEnd —
+   *  confirmedEver is wiped by the next match's matchStart, the feeds idle-reaped. */
+  confirmedSquad(): Array<{ steam64: string; name?: string; isPrimary: boolean }> {
+    const primary = this.primaryId();
+    if (!primary || !this.feeds.has(primary)) return [];
+    const out: Array<{ steam64: string; name?: string; isPrimary: boolean }> = [];
+    const seen = new Set<string>();
+    const push = (id: string) => {
+      if (seen.has(id)) return;
+      const f = this.feeds.get(id);
+      if (!f) return; // reaped between confirm and now — genuinely gone
+      seen.add(id);
+      out.push({ steam64: id, name: f.tracker.ownName(), isPrimary: id === primary });
+    };
+    push(primary); // primary first, even if not (re)added to confirmedEver yet
+    for (const id of this.confirmedEver) push(id); // de-dup: the primary is in confirmedEver too
+    return out;
   }
 
   /** Quiet unless the primary — or a teammate in the SAME match — is still

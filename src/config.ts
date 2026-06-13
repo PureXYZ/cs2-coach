@@ -161,6 +161,13 @@ export const config = {
     // works keyless at stricter rate limits.
     enabled: optional("LEETIFY_ENABLED", "true") !== "false",
     apiKey: optional("LEETIFY_API_KEY") || undefined,
+    // Squad recap mode, used only when friends are wired AND team tactics are on:
+    // "leaders" (default) names just whoever topped each stat plus the player's
+    // own line — it never singles out a friend's WORST number; "full" reads a
+    // short line for every wired friend; "off" keeps the recap to the player alone.
+    squadRecap: (["leaders", "full", "off"].includes(optional("LEETIFY_SQUAD_RECAP", "leaders"))
+      ? optional("LEETIFY_SQUAD_RECAP", "leaders")
+      : "leaders") as "leaders" | "full" | "off",
   },
 
   // CS2 Premier/Competitive timing constants (MR12 era). GSI sends no clock to players,

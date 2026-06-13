@@ -1322,12 +1322,29 @@ console.log("\n=== scenario: econ — gear + alive per entry, fresh tier, cross-
   expect(synced?.rosterComplete === true, "full squad wired for the buy-sync read");
   expect(typeof synced?.buySyncNote === "string" && synced.buySyncNote.includes("Mouse"), `buy-sync read names the lone out-of-sync buyer ("${synced?.buySyncNote}")`);
 
-  // 2-of-3 wired → no whole-team license → no buy-sync read at all.
-  const partial = rosterRig(P1);
-  partial.run("P1 warmup", payload({ provider: P1, mapPhase: "warmup" }));
-  partial.run("P1 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 0, state: { money: 5000 } }));
-  partial.run("P2 freeze", payload({ provider: P2, roundPhase: "freezetime", round: 0, name: "Mouse", state: { money: 1000 } }));
-  expect(partial.r.context().team?.buySyncNote === undefined, "no buy-sync read while the roster is only partial (no whole-team license)");
+  // 2-of-3 wired is no longer mute: buy-sync is an observation about the VISIBLE
+  // wired buyers (it names "the wired crew", never the team), so a recurring
+  // out-of-sync pattern between the two wired players surfaces WITHOUT the
+  // whole-team rosterComplete license. Same teammate-first ordering so P1
+  // (authority) settles the snapshot once per freeze.
+  const partialRig = rosterRig(P1);
+  const pr = partialRig.r;
+  const pRun = partialRig.run;
+  pRun("P1 warmup", payload({ provider: P1, mapPhase: "warmup" }));
+  pRun("P1 live", payload({ provider: P1, roundPhase: "live", round: 0 }));
+  pRun("P2 live", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse" }));
+  for (const round of [2, 3]) {
+    pRun(`r${round} P1 live`, payload({ provider: P1, roundPhase: "live", round: round - 1, ctScore: 1 }));
+    pRun(`r${round} P2 live`, payload({ provider: P2, roundPhase: "live", round: round - 1, name: "Mouse", ctScore: 1 }));
+    pRun(`r${round} P2 freeze (full)`, payload({ provider: P2, roundPhase: "freezetime", round, name: "Mouse", state: { money: 5000 }, ctScore: 1 }));
+    pRun(`r${round} P1 freeze (save)`, payload({ provider: P1, roundPhase: "freezetime", round, state: { money: 1000 }, ctScore: 1 }));
+  }
+  const partial = pr.context().team;
+  expect(partial?.rosterComplete === false, "2 of a 3-stack is still NOT roster-complete (no whole-team license)");
+  expect(
+    typeof partial?.buySyncNote === "string" && partial.buySyncNote.includes("Mouse"),
+    `buy-sync now fires on the visible wired pair, naming the out-of-sync buyer ("${partial?.buySyncNote}")`,
+  );
 }
 
 // ---------------------------------------------------------------------------

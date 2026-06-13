@@ -11,7 +11,13 @@ import { LlmCoach } from "./coach/llm.js";
 import { SessionStore } from "./coach/session-store.js";
 import { buildMatchRecord } from "./coach/debrief.js";
 import { leetifyRecapLine } from "./coach/lines.js";
-import { LeetifyClient, pollForLeetifyStats, spokenStatsSentence } from "./leetify.js";
+import {
+  LeetifyClient,
+  pollForLeetifyStats,
+  pollForSquadLeetifyStats,
+  spokenStatsSentence,
+  spokenSquadSentence,
+} from "./leetify.js";
 import { TtsChain } from "./tts/index.js";
 import { VoiceCoach } from "./discord/voice.js";
 import { startBot } from "./discord/bot.js";
@@ -118,8 +124,20 @@ async function main(): Promise<void> {
 
     const steam64 = roster.steamId();
     if (!config.leetify.enabled || !steam64) return;
-    const stats = await pollForLeetifyStats(new LeetifyClient(config.leetify.apiKey), steam64, endedAt, ctx.map);
-    if (!stats) return;
+
+    // Squad recap: when friends are wired and team tactics are on, keep the
+    // per-match rows Leetify already returns for the whole crew. The squad MUST
+    // be snapshotted SYNCHRONOUSLY here — confirmedEver is wiped by the next
+    // match's start and feeds idle out during the minutes-long poll below.
+    const squad = roster.confirmedSquad();
+    const wantSquad =
+      config.leetify.squadRecap !== "off" && config.coach.teamTactics && squad.some((m) => !m.isPrimary);
+    const client = new LeetifyClient(config.leetify.apiKey);
+    const squadStats = wantSquad ? await pollForSquadLeetifyStats(client, squad, endedAt, ctx.map) : null;
+    // Solo path is the default; a squad match-find failing means the primary's
+    // match never appeared, so don't re-poll the solo lookup for another hour.
+    const soloStats = wantSquad ? null : await pollForLeetifyStats(client, steam64, endedAt, ctx.map);
+    if (!squadStats && !soloStats) return;
 
     // NEVER talk over play: the numbers land 5-15+ minutes after the match,
     // which can be mid-way through the next one. Hold for a quiet moment
@@ -140,8 +158,12 @@ async function main(): Promise<void> {
       return;
     }
 
+    const stats = squadStats ? squadStats.me : soloStats!;
     const statsSentence = spokenStatsSentence(stats);
     if (!statsSentence) return;
+    const squadSentence = squadStats
+      ? spokenSquadSentence(squadStats, config.leetify.squadRecap === "full" ? "full" : "leaders") ?? undefined
+      : undefined;
     const text =
       (llm
         ? await llm.leetifyLine({
@@ -150,8 +172,9 @@ async function main(): Promise<void> {
             ourScore: event.ourScore,
             theirScore: event.theirScore,
             statsSentence,
+            squadSentence,
           })
-        : null) ?? leetifyRecapLine(ctx.map, statsSentence);
+        : null) ?? leetifyRecapLine(ctx.map, statsSentence, squadSentence);
     // The LLM call can take 20+ seconds — the next match may have gone live.
     if (!(await hold())) {
       log.info("leetify", "Quiet moment passed while writing the recap — dropping it");

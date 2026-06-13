@@ -829,14 +829,19 @@ export function theirTimeoutLine(): string {
 
 /**
  * Wrapper for the spoken Leetify recap — the canned fallback when the LLM is
- * off. The {stats} slot takes a comma-separated numbers sentence verbatim.
+ * off. The {stats} slot takes a comma-separated numbers sentence verbatim; an
+ * optional squad sentence (the crew comparison) is appended verbatim too.
  */
-export function leetifyRecapLine(map: string | undefined, statsSentence: string): string {
+export function leetifyRecapLine(
+  map: string | undefined,
+  statsSentence: string,
+  squadSentence?: string,
+): string {
   const where = map ? mapDisplayName(map) : "that last one";
   // Result-agnostic on purpose: the wrapper doesn't know if the numbers are
   // good or bad, so no loss-coded verdicts and no claims about what the
   // player's been doing while Leetify chewed on the demo.
-  return pick("leetifyRecap", [
+  const base = pick("leetifyRecap", [
     "Match report time — Leetify scored {map} for us. {stats}. Now everybody give me a damn lap.",
     "Leetify finished chewing through the {map} demo. {stats}. Brave little website.",
     "Verdict's in from Leetify on {map}. {stats}. Numbers don't give a shit about feelings.",
@@ -846,6 +851,7 @@ export function leetifyRecapLine(map: string | undefined, statsSentence: string)
   ])
     .replace("{map}", where)
     .replace("{stats}", statsSentence);
+  return squadSentence ? `${base} And the crew: ${squadSentence}.` : base;
 }
 
 /**
