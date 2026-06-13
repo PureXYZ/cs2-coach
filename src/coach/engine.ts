@@ -130,7 +130,7 @@ export interface EngineDeps {
   finalStats?: () => { kills: number; assists: number; deaths: number; mvps: number } | undefined;
   /** Cross-session trend lines from the session store — smart-tier prompts only. */
   recentForm?: () => string[] | undefined;
-  /** True while /coach quiet has the coach muted — skips both lines and LLM spend. */
+  /** True while /coach mute has the coach muted — skips both lines and LLM spend. */
   isQuiet?: () => boolean;
   /** Fired once per matchEnd, quiet or not: session recording + the Leetify recap. */
   onMatchEnd?: (event: Extract<CoachEvent, { type: "matchEnd" }>, ctx: MatchContext) => void;

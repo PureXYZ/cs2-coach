@@ -76,6 +76,14 @@ export class VoiceCoach {
     return this.connection?.state.status === VoiceConnectionStatus.Ready;
   }
 
+  /** The channel we're joined to (or half-joined to — set even before Ready), or
+   *  null when there's no connection at all. Lets /coach join tell "already here"
+   *  apart from "in a different channel" / "connection went stale", so it can skip
+   *  the expensive leave()+rehandshake when it would be a no-op. */
+  get connectedChannelId(): string | null {
+    return this.connection?.joinConfig.channelId ?? null;
+  }
+
   get queueLength(): number {
     return this.queue.length;
   }
@@ -103,8 +111,8 @@ export class VoiceCoach {
 
   /**
    * Drop every queued, prefetched and in-flight coach line and cut off the one
-   * currently speaking — /coach quiet's "shut up NOW". A playing song survives
-   * (silencing that is /coach stop's job).
+   * currently speaking — /coach mute's "shut up NOW". A playing song survives
+   * (silencing that is /coach stop-song's job).
    */
   clearCoachLines(): void {
     this.clearQueue();
