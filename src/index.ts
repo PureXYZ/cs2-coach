@@ -20,6 +20,7 @@ import {
   spokenSquadSentence,
 } from "./leetify.js";
 import { TtsChain } from "./tts/index.js";
+import { currentVoice, voices } from "./tts/voices.js";
 import { VoiceCoach } from "./discord/voice.js";
 import { startBot } from "./discord/bot.js";
 import { clearVoiceChannel, loadVoiceChannel } from "./discord/voice-state.js";
@@ -48,6 +49,12 @@ async function main(): Promise<void> {
   const decisionLog = config.coach.logDecisions ? new DecisionLog() : null;
 
   const tts = new TtsChain();
+  // Resolve + log the active ElevenLabs voice once at startup (this also fires
+  // any ELEVENLABS_VOICE_ID deprecation notice). Only meaningful when ElevenLabs
+  // is actually in the chain — voice switching is its feature alone.
+  if (tts.activeNames.includes("elevenlabs")) {
+    log.info("main", `ElevenLabs voice: ${currentVoice().label} (${voices().length} selectable via /coach voice)`);
+  }
   const voice = new VoiceCoach(tts);
 
   const llm = config.llm.enabled
@@ -266,6 +273,7 @@ async function main(): Promise<void> {
     // /coach setup builds the friend's cfg from these — the same public address
     // and token `npm run cfg` uses, so the file is identical either way.
     cfg: { publicHost: config.coach.publicHost, token: config.gsi.token, port: config.gsi.port },
+    ttsProviders: () => tts.activeNames,
     status: () => ({
       gsiAgeMs: gsi.lastPayloadAgeMs(),
       ttsProviders: tts.activeNames,

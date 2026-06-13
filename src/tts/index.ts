@@ -3,9 +3,9 @@ import { log } from "../log.js";
 import { DeepgramTts } from "./deepgram.js";
 import { EdgeTts } from "./edge.js";
 import { ElevenLabsTts } from "./elevenlabs.js";
-import type { TtsProvider, TtsResult } from "./types.js";
+import type { SynthOptions, TtsProvider, TtsResult } from "./types.js";
 
-export type { TtsProvider, TtsResult } from "./types.js";
+export type { SynthOptions, TtsProvider, TtsResult } from "./types.js";
 
 function buildProvider(name: TtsProviderName): TtsProvider | null {
   switch (name) {
@@ -18,7 +18,6 @@ function buildProvider(name: TtsProviderName): TtsProvider | null {
     case "elevenlabs":
       return new ElevenLabsTts(
         config.tts.elevenlabs.apiKey,
-        config.tts.elevenlabs.voiceId,
         config.tts.elevenlabs.modelId,
         {
           stability: config.tts.elevenlabs.stability,
@@ -55,12 +54,12 @@ export class TtsChain {
     return this.providers.map((p) => p.name);
   }
 
-  async synth(text: string): Promise<TtsResult> {
+  async synth(text: string, opts?: SynthOptions): Promise<TtsResult> {
     let lastErr: unknown;
     for (const provider of this.providers) {
       const startedAt = Date.now();
       try {
-        const result = await provider.synth(text);
+        const result = await provider.synth(text, opts);
         // Providers resolve once audio starts streaming, so this is time-to-first-audio.
         log.info("tts", `${provider.name} started streaming in ${Date.now() - startedAt}ms`);
         return result;
