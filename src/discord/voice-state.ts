@@ -7,11 +7,6 @@ import { clearJsonState, loadJsonState, saveJsonState } from "../json-state.js";
  */
 const STATE_FILE = process.env.VOICE_STATE_FILE ?? "state/voice.json";
 
-/** Mute (`/coach mute`) lives in its own file so a redeploy doesn't silently
- *  un-mute the coach — the saved voice channel is already restored on restart, so
- *  mute being the one thing that resets was an inconsistency. */
-const QUIET_FILE = process.env.QUIET_STATE_FILE ?? "state/quiet.json";
-
 export interface SavedVoiceChannel {
   guildId: string;
   channelId: string;
@@ -33,19 +28,4 @@ export function loadVoiceChannel(): SavedVoiceChannel | null {
     }
     return null;
   });
-}
-
-export function saveQuiet(on: boolean): void {
-  saveJsonState(QUIET_FILE, "quiet", { on });
-}
-
-/** Restored mute state; defaults to false (speaking) when nothing's saved or the
- *  file is unreadable — i.e. exactly today's behaviour for a fresh install. */
-export function loadQuiet(): boolean {
-  return (
-    loadJsonState(QUIET_FILE, "quiet", (raw) => {
-      const parsed = raw as { on?: unknown };
-      return typeof parsed?.on === "boolean" ? parsed.on : null;
-    }) ?? false
-  );
 }

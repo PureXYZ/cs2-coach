@@ -217,7 +217,8 @@ export async function startBot(deps: BotDeps): Promise<Client> {
     } catch (err) {
       log.error("bot", "Failed to register slash commands", err);
     }
-    // Ambient mute indicator — reflects the restored mute state right away.
+    // Ambient mute indicator — the coach always boots speaking (mute is
+    // session-scoped, not persisted), so this lands on the live presence.
     setMutePresence(ready, deps.quiet.get());
   });
 
@@ -312,8 +313,8 @@ function muteReply(on: boolean): string {
 
 /** Reflect mute state in the bot's Discord presence — an ambient indicator under
  *  the bot's name in the member list, with NO channel message: 🔇 muted (idle/
- *  yellow) vs watching your matches (online/green). Set on startup (from the
- *  restored mute state) and on every /coach mute toggle. Best-effort: setPresence
+ *  yellow) vs watching your matches (online/green). Set on startup, on every
+ *  /coach mute toggle, and on the join/leave reset below. Best-effort: setPresence
  *  is fire-and-forget and a failure must never break the command. */
 function setMutePresence(client: Client, muted: boolean): void {
   try {
@@ -324,6 +325,15 @@ function setMutePresence(client: Client, muted: boolean): void {
   } catch (err) {
     log.warn("bot", `Could not set presence: ${err instanceof Error ? err.message : err}`);
   }
+}
+
+/** Mute is scoped to a voice session: joining or leaving a channel clears it back
+ *  to speaking (and syncs the presence), so a /coach mute you forgot about can't
+ *  follow you into the next session. No-op when already unmuted. */
+function resetMuteOnVoiceChange(client: Client, deps: BotDeps): void {
+  if (!deps.quiet.get()) return;
+  deps.quiet.set(false);
+  setMutePresence(client, false);
 }
 
 // ── status ───────────────────────────────────────────────────────────────────
@@ -409,6 +419,7 @@ async function ensureInVoice(interaction: ActionInteraction, deps: BotDeps): Pro
   const channel = member instanceof GuildMember ? member.voice.channel : null;
   if (!channel) return { ok: false };
   await deps.voice.join(channel);
+  resetMuteOnVoiceChange(interaction.client, deps); // a fresh join always starts speaking
   // Remembered across restarts — a redeploy rejoins this channel automatically.
   saveVoiceChannel({ guildId: channel.guild.id, channelId: channel.id });
   return { ok: true, joinedName: channel.name };
@@ -437,6 +448,7 @@ async function joinInvokerChannel(interaction: ActionInteraction, deps: BotDeps)
   }
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   await deps.voice.join(channel);
+  resetMuteOnVoiceChange(interaction.client, deps); // a fresh join/move always starts speaking
   saveVoiceChannel({ guildId: channel.guild.id, channelId: channel.id });
   const msg =
     priorChannelId === channel.id
@@ -463,6 +475,7 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
 
     case "leave": {
       deps.voice.leave();
+      resetMuteOnVoiceChange(interaction.client, deps); // don't carry a forgotten mute into the next session
       clearVoiceChannel(); // deliberate leave — don't rejoin after the next restart
       await interaction.reply({ content: "Coach signing off. GG!", flags: MessageFlags.Ephemeral });
       return;
