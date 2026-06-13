@@ -26,6 +26,13 @@ interface QueuedLine extends SpeakRequest {
 /** Hard ceiling on one TTS synthesis, so a hung provider can never stall the queue. */
 const SYNTH_DEADLINE_MS = 12_000;
 
+/** Log-safe view of a line's text — redacted lines (Leetify data, which must
+ *  never be persisted, and the logs go to disk) show their length only. */
+function preview(line: QueuedLine, max = 40): string {
+  if (line.redactText) return `<${line.text.length} chars, redacted>`;
+  return line.text.length > max ? `${line.text.slice(0, max)}...` : line.text;
+}
+
 /**
  * One persistent voice connection + one AudioPlayer (joining costs a full
  * handshake plus a DAVE/MLS group join, so never rejoin per line). Lines go
@@ -82,6 +89,20 @@ export class VoiceCoach {
     this.songPlaying = true;
     log.info("voice", `Playing song file: ${filePath}`);
     this.player.play(createAudioResource(stream, { inputType: StreamType.OggOpus }));
+  }
+
+  /**
+   * Drop every queued, prefetched and in-flight coach line and cut off the one
+   * currently speaking — /coach quiet's "shut up NOW". A playing song survives
+   * (silencing that is /coach stop's job).
+   */
+  clearCoachLines(): void {
+    this.queue = [];
+    this.discardPrefetch();
+    // A line mid-synthesis already left the queue — flag it so the post-synth
+    // checkpoint discards the audio instead of speaking it.
+    if (this.inFlight) this.inFlight.superseded = true;
+    if (!this.songPlaying) this.player.stop(true);
   }
 
   /** Stop a playing song. Returns false when no song is active. */
@@ -163,18 +184,18 @@ export class VoiceCoach {
       const obsolete = new Set(req.supersedes);
       this.queue = this.queue.filter((line) => {
         if (!obsolete.has(line.category)) return true;
-        log.info("voice", `Superseded queued [${line.category}]: "${line.text.slice(0, 40)}..."`);
+        log.info("voice", `Superseded queued [${line.category}]: "${preview(line)}"`);
         return false;
       });
       if (this.prefetched && obsolete.has(this.prefetched.line.category)) {
-        log.info("voice", `Superseded prefetched [${this.prefetched.line.category}]: "${this.prefetched.line.text.slice(0, 40)}..."`);
+        log.info("voice", `Superseded prefetched [${this.prefetched.line.category}]: "${preview(this.prefetched.line)}"`);
         this.discardPrefetch();
       }
       // A line mid-synthesis left the queue already — mark it so the post-synth
       // checkpoint drops it (otherwise a triple line synthesizing when the quad
       // arrives would still play, back-to-back with the quad line).
       if (this.inFlight && obsolete.has(this.inFlight.category)) {
-        log.info("voice", `Superseded in-flight [${this.inFlight.category}]: "${this.inFlight.text.slice(0, 40)}..."`);
+        log.info("voice", `Superseded in-flight [${this.inFlight.category}]: "${preview(this.inFlight)}"`);
         this.inFlight.superseded = true;
       }
     }
@@ -183,7 +204,7 @@ export class VoiceCoach {
     this.queue.sort((a, b) => b.priority - a.priority || a.enqueuedAt - b.enqueuedAt);
     if (this.queue.length > 4) {
       const dropped = this.queue.pop();
-      if (dropped) log.info("voice", `Queue full — dropped: "${dropped.text.slice(0, 40)}..."`);
+      if (dropped) log.info("voice", `Queue full — dropped: "${preview(dropped)}"`);
     }
     // Deferred so a same-tick batch of lines is fully queued before the first one
     // grabs the idle player — order is then decided by the priority sort above,
@@ -215,13 +236,13 @@ export class VoiceCoach {
     const now = Date.now();
     this.queue = this.queue.filter((line) => {
       const reason = this.lineDead(line, now);
-      if (reason) log.info("voice", `Dropped ${reason} line: "${line.text.slice(0, 40)}..."`);
+      if (reason) log.info("voice", `Dropped ${reason} line: "${preview(line)}"`);
       return !reason;
     });
     if (this.prefetched) {
       const reason = this.lineDead(this.prefetched.line, now);
       if (reason) {
-        log.info("voice", `Dropped ${reason} prefetched line: "${this.prefetched.line.text.slice(0, 40)}..."`);
+        log.info("voice", `Dropped ${reason} prefetched line: "${preview(this.prefetched.line)}"`);
         this.discardPrefetch();
       }
     }
@@ -273,7 +294,7 @@ export class VoiceCoach {
         // passed even though its audio is already paid for.
         const reason = this.lineDead(next, Date.now());
         if (reason) {
-          log.info("voice", `Dropped ${reason} line after synth: "${next.text.slice(0, 40)}..."`);
+          log.info("voice", `Dropped ${reason} line after synth: "${preview(next)}"`);
           result.stream.destroy();
           this.pump();
           return;
@@ -289,13 +310,13 @@ export class VoiceCoach {
       .catch((err) => {
         this.synthesizing = false;
         this.inFlight = null;
-        log.error("voice", `TTS failed for line "${next.text.slice(0, 40)}..."`, err);
+        log.error("voice", `TTS failed for line "${preview(next)}"`, err);
         this.pump();
       });
   }
 
   private playLine(line: QueuedLine, result: TtsResult): void {
-    log.info("voice", `Speaking [${line.category}] ${Date.now() - line.eventAt}ms after event: ${line.text}`);
+    log.info("voice", `Speaking [${line.category}] ${Date.now() - line.eventAt}ms after event: ${preview(line, 1_000)}`);
     this.player.play(createAudioResource(result.stream, { inputType: result.inputType }));
     // Start synthesizing the next queued line while this one talks.
     queueMicrotask(() => this.pump());

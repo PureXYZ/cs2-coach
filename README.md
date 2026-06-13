@@ -23,9 +23,9 @@ GSI is Valve's official, VAC-safe telemetry feed — but during your own match i
 | Your kills this round, K/D/A, MVPs | Teammate/enemy health, money, weapons |
 | Round phase (freezetime/live/over), bomb planted/defused/exploded | The **kill feed** (who killed whom) |
 | Team scores, loss-bonus streaks, per-round win history | Round clock / bomb countdown (derived locally instead) |
-| Map, mode, halftime, match point, game over | Grenades, bomb carrier/position |
+| Map, mode, halftime, match point, game over | Grenade trajectories, the bomb's position (your own carried C4 *is* visible in your inventory) |
 
-So the coach does: **economy calls** (buy/save/force from your money + loss bonus), **mid-round decisions** (bomb down on CT → a Claude-made retake-or-save call weighing your gear, kit, HP, the score and whether you're visibly mid-clutch — it never calls "save" while you're winning a fight, on match point, or into a money reset), **clock callouts** (derived locally: "35 seconds, get a plan", "ten on the bomb"), **special-kill reactions** (knife, Zeus, grenade/molotov kills and your own teamkills — detected from your active weapon, inventory diffs and the scoreboard counter; routine 1–2 kill frags stay silent on purpose), **spectator narration** (while you're dead, GSI shows the teammate you're watching — the coach narrates their kills by name), **match memory** (a round-by-round story — buys, results, pistols, streaks, highlights — fed into every Claude prompt so advice references what actually happened), **per-map strategy** (freezetime calls from a built-in map playbook, rotated through different angles — sites, pace, utility, anti-reads — so it doesn't repeat itself), **multikill/match-point reactions**, and **mental coaching** (round losses, halftime talks). The persona is a dry, sarcastic, permanently unimpressed coach — by design. It cannot call enemy positions or alive counts — nothing can while you're playing; Valve simply doesn't expose that data (see [docs/RESEARCH.md](docs/RESEARCH.md) for the full breakdown).
+So the coach does: **economy calls** (buy/save/force from your money + loss bonus), **enemy-economy reads** (the one enemy signal GSI does send — their consecutive losses — drives anti-eco warnings and "they can rebuy now" calls), **mid-round decisions** (bomb down on CT → a Claude-made retake-or-save call weighing your gear, kit, HP, the score and whether you're visibly mid-clutch — it never calls "save" while you're winning a fight, on match point, or into a money reset), **clock callouts** (derived locally: "35 seconds, get a plan", "ten on the bomb" — and when *you* are the one carrying the C4 with no plant, the nudge says so), **timeout calls** (four straight losses with a tactical timeout in the bank gets called out), **special-kill reactions** (knife, Zeus, grenade/molotov kills and your own teamkills — detected from your active weapon, inventory diffs and the scoreboard counter; routine 1–2 kill frags stay silent on purpose), **spectator narration** (while you're dead, GSI shows the teammate you're watching — the coach narrates their kills by name), **death forensics** (died flashed, burned out in your own molly, died holding unthrown nades, repeated opening-second deaths — all remembered and used against you), **match memory** (a round-by-round story — buys, results, pistols, streaks, highlights — fed into every Claude prompt so advice references what actually happened), **session memory** (matches persist to disk, so the coach comes into tonight knowing your recent results, pistol-round record, map record and recurring bad habits — and calls back to them), **per-map strategy** (freezetime calls from a built-in map playbook, rotated through different angles — sites, pace, utility, anti-reads — so it doesn't repeat itself), **multikill/match-point reactions**, **timeout speeches** (your tactical timeout gets a proper regroup speech filling the pause; theirs gets a jab), **mental coaching** (round losses, halftime talks), and a **post-match wrap-up speech** (after the match the coach takes the floor for 50–90 spoken words — what decided it, your numbers, one thing to fix; once [Leetify](https://leetify.com/) finishes parsing the demo — typically 5–15 minutes — the coach also reads their headline numbers out in voice, waiting for a moment when you're *not* mid-game; needs a Leetify account, data spoken live and never stored). The slow moments (wrap-up, timeout speech) run at full reasoning effort; the mid-round lines stay tuned for speed. The persona is a dry, sarcastic, permanently unimpressed coach — by design. It cannot call enemy positions or alive counts — nothing can while you're playing; Valve simply doesn't expose that data (see [docs/RESEARCH.md](docs/RESEARCH.md) for the full breakdown).
 
 Bomb-plant note: Valve intentionally delays the plant signal to players by a randomized ~1–2 s (anti-abuse), so plant reactions are slightly late by design.
 
@@ -104,8 +104,9 @@ While running, every raw GSI payload (plus the events derived from it) is append
 |---|---|
 | `/coach join` | Joins the voice channel you're in |
 | `/coach leave` | Leaves voice |
+| `/coach quiet` | Mutes/unmutes the coach mid-match (game tracking continues) |
 | `/coach say <text>` | Speak arbitrary text (test) |
-| `/coach status` | GSI freshness, voice/queue, TTS chain, LLM model |
+| `/coach status` | GSI freshness, voice/queue, mute state, TTS chain, LLM model, session memory |
 | `/coach song [title]` | Plays one of the coach's covers in the voice channel — pick from buttons, or pass a title directly (EZ4ENCE, Xue Hua Piao Piao, Zenzenzense, White Pony); picking while one plays switches songs |
 | `/coach stop` | Stops the song; coaching lines resume |
 
@@ -117,6 +118,7 @@ While running, every raw GSI payload (plus the events derived from it) is append
 | GSI | Free (built into CS2) |
 | Deepgram TTS | ~$6.75/mo at heavy usage — **$200 signup credit ≈ 2+ years free** |
 | Claude (Opus smart tier + Haiku mid-round) | ~$4–10/mo at 20 matches/mo (all-Haiku: ~$1/mo) |
+| Leetify post-match stats | Free (their public API; the player needs a Leetify account) |
 | Hosting (VPS) | ~$5/mo ($0 if you run it locally instead) |
 
 ## Is this allowed? (VAC)
@@ -132,12 +134,19 @@ src/
   gsi/server.ts       HTTP listener for CS2's POSTs (responds 200 instantly)
   gsi/tracker.ts      payload diffing → events (kills, special kills, teamkills,
                       bomb, rounds, spectated-teammate plays, derived clocks)
-  gsi/memory.ts       round-by-round match memory (buys, results, highlights)
+  gsi/memory.ts       round-by-round match memory (buys, results, highlights,
+                      death forensics)
   coach/engine.ts     priorities/cooldowns/timers; routes moments to rules or Claude
   coach/lines.ts      instant rule-based line library
   coach/llm.ts        Claude coach: smart tier (freezetime/halftime/match talk)
                       + fast tier (retake calls, round reactions, teamkill roasts)
+                      + long-form speeches (wrap-up, timeout talk, Leetify recap)
   coach/knowledge.ts  economy cheat sheet + per-map strategy playbook for prompts
+  coach/session-store.ts  cross-session match history (state/sessions.json) →
+                      "recent form" lines for the prompts
+  coach/debrief.ts    builds the per-match session record at match end
+  leetify.ts          Leetify public-API client (post-match stats, spoken live,
+                      never stored)
   tts/                deepgram | elevenlabs | edge, with fallback chain
   discord/bot.ts      slash commands
   discord/voice.ts    voice connection + prioritized speech queue

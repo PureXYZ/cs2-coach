@@ -21,10 +21,14 @@ export interface BotDeps {
   token: string;
   guildId?: string;
   voice: VoiceCoach;
+  /** /coach quiet's flag — owned by index.ts so the engine shares it. */
+  quiet: { get: () => boolean; set: (on: boolean) => void };
   status: () => {
     gsiAgeMs: number | null;
     ttsProviders: string[];
     llmModel: string | null;
+    /** Cross-session memory size, for the status readout. */
+    sessionsOnFile: number;
   };
 }
 
@@ -94,6 +98,7 @@ const commands = [
         .addStringOption((opt) => opt.setName("text").setDescription("What to say").setRequired(true)),
     )
     .addSubcommand((sub) => sub.setName("status").setDescription("Show GSI / voice / TTS status"))
+    .addSubcommand((sub) => sub.setName("quiet").setDescription("Mute/unmute the coach (game tracking continues)"))
     .addSubcommand((sub) =>
       sub
         .setName("song")
@@ -231,6 +236,18 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
       return;
     }
 
+    case "quiet": {
+      const on = !deps.quiet.get();
+      deps.quiet.set(on);
+      await interaction.reply({
+        content: on
+          ? "🔇 Coach is muted — still watching the game and keeping score. `/coach quiet` again to unmute."
+          : "🎙️ Coach is back on the mic. You asked for this.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
     case "status": {
       const s = deps.status();
       const gsi =
@@ -243,8 +260,10 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
         content: [
           `**GSI:** ${gsi}`,
           `**Voice:** ${deps.voice.connected ? "✅ connected" : "❌ not in a channel"} (queue: ${deps.voice.queueLength})`,
+          `**Coach:** ${deps.quiet.get() ? "🔇 muted (`/coach quiet` to unmute)" : "🎙️ speaking"}`,
           `**TTS:** ${s.ttsProviders.join(" → ")}`,
           `**LLM:** ${s.llmModel ?? "disabled (rule-based lines only)"}`,
+          `**Memory:** ${s.sessionsOnFile} past match${s.sessionsOnFile === 1 ? "" : "es"} on file`,
         ].join("\n"),
         flags: MessageFlags.Ephemeral,
       });

@@ -110,6 +110,15 @@ export const config = {
     playerNickname: optional("PLAYER_NICKNAME") || undefined,
   },
 
+  leetify: {
+    // After the match, poll Leetify (they parse the demo server-side) and
+    // SPEAK the headline numbers in voice once they land — only between
+    // games, never mid-match. Needs the player to have a Leetify account;
+    // works keyless at stricter rate limits.
+    enabled: optional("LEETIFY_ENABLED", "true") !== "false",
+    apiKey: optional("LEETIFY_API_KEY") || undefined,
+  },
+
   // CS2 Premier/Competitive timing constants (MR12 era). GSI sends no clock to players,
   // so these drive locally derived timers. Not officially documented by Valve — adjust
   // here if Valve changes them. Note: Premier freezetime is 20s (competitive MM is 15);

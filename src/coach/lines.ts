@@ -66,7 +66,7 @@ const MAP_NAMES: Record<string, string> = {
 };
 
 /** GSI gives raw tokens like "de_dust2"; TTS would read that as "de underscore dust two". */
-function mapDisplayName(raw: string): string {
+export function mapDisplayName(raw: string): string {
   // Workshop maps arrive as "workshop/3070284539/de_cache" — keep only the map token.
   const token = raw.split("/").pop() ?? raw;
   const known = MAP_NAMES[token.toLowerCase()];
@@ -504,7 +504,21 @@ export function teammateKillLine(name: string | undefined, kills: number, health
 }
 
 /** Locally-derived clock callout: ~35 seconds left, no plant yet. */
-export function lateRoundLine(side: string | undefined): string {
+export function lateRoundLine(side: string | undefined, hasBomb = false): string {
+  // The player is personally carrying the C4 — the generic "someone plant"
+  // nudge lands very differently when the someone is them.
+  if (side === "T" && hasBomb) {
+    return pick("lateRoundCarrier", [
+      "That's a bomb on your back, not a camera. Thirty-five seconds. Go plant.",
+      "Walking the bomb around like a dog. Thirty seconds. It needs a site, now.",
+      "A or B, your pick, but pick one. You're carrying. Thirty-ish seconds.",
+      "It's you, the bomb, and thirty seconds. One of you better fucking commit.",
+      "Holy shit, you still have the bomb. Half a minute. Get it down somewhere.",
+      "The bomb doesn't plant from your pocket. Find a site, walk it in.",
+      "You've got the C4. That makes you the plan. Clock's at thirty-five. Plant.",
+      "Quit scouting. You're the delivery guy and the package is late. Any site. Go.",
+    ]);
+  }
   if (side === "T") {
     return pick("lateRoundT", [
       "Thirty-five seconds, no plant. Pick a site and hit it. Now.",
@@ -567,6 +581,89 @@ export function bombTenLine(side: string | undefined, fighting = false): string 
     "Ten on the bomb. This ends loud or it ends quiet.",
     "Final seconds. Whatever you're doing, do it faster.",
   ]);
+}
+
+/**
+ * Canned fallback for the tactical-timeout call (LLM-less setups): 4+ straight
+ * losses with a timeout in the bank. With the LLM enabled the freezetime
+ * prompt folds the timeout into the buy call instead.
+ */
+export function timeoutCallLine(): string {
+  // No "N in a row" claims here: GSI's loss counter decays on a win instead of
+  // resetting, so a literal streak number could be wrong out loud.
+  return pick("timeoutCall", [
+    "Take the timeout, please. Even I need a minute, and I'm sitting down.",
+    "Scoreboard looks like a crime scene. Take the fucking tac and stop donating rounds.",
+    "Vote the timeout, people. A short break where nobody dies. Imagine that.",
+    "Saving the tactical for what, another ass-kicking? Use it. Catch your breath.",
+    "Still digging, huh? Timeout. Shovels down, figure out where this went sideways.",
+    "Timeout won't fix your aim, but breathing might. Hit it. Right now.",
+    "We've burned through plans A, B, and C. Timeout. Go find us a damn D.",
+    "Good news: timeouts are free. Bad news: everything else. Call it, regroup, run it back.",
+  ]);
+}
+
+/**
+ * Mini-speech for OUR tactical timeout — the canned fallback when the LLM is
+ * off. 30 seconds of pause is the one mid-match moment with room for this.
+ */
+export function ourTimeoutSpeechLine(ctx: MatchContext): string {
+  // The timeout event fires on ANY of our tactical timeouts — only frame it
+  // as a crisis when the scoreboard actually says so (a team 10-3 up calls
+  // pauses too, and "stop the bleeding" would just be wrong out loud).
+  const behind =
+    (ctx.ourScore !== undefined && ctx.theirScore !== undefined && ctx.ourScore < ctx.theirScore) ||
+    (ctx.ourLossStreak ?? 0) >= 3;
+  if (!behind) {
+    return pick("ourTimeoutSpeechNeutral", [
+      "Alright, thirty seconds. Nothing's broken, so don't fix it — same trades, same calls, no hero variance. Decide the next buy as five right now. Back to work.",
+      "Our pause, our plan. Use the breather: pick the next site call and the buy, one voice, five players. Don't overthink a good thing.",
+      "Use the thirty seconds. Water, breathe, one call for next round and everybody honors it. We're in a decent spot — let's not invent a problem.",
+    ]);
+  }
+  return pick("ourTimeoutSpeech", [
+    "Look at me. Whatever that was, it's over. Quit dry-peeking AWPs like the bullet's gonna apologize — wait for a flash or don't peek. Everyone buys next round, same time, same plan. The bleeding stops this round.",
+    "Huddle up. They're not better than us — we're just dying in five different zip codes. Stick together: one pack, one site, every time. Buy as a team next round and play this game like we've met before. I believe in you, unfortunately.",
+    "Timeout's ours, so use it. We're getting picked off one by one like a nature documentary. Buddy up and trade — nobody dies for free anymore. Match the buy next round, all five, same call. Still a winnable damn game.",
+    "Eyes up. We keep throwing every grenade in the first twenty seconds, then retaking sites with harsh language. Hold your util for the retake. Next buy is a team decision, five voices, one answer. Water break's over, back to work.",
+    "Nobody panic, it's a losing streak, not a funeral. We die in ones and twos because we play in ones and twos. Five bodies, one fight. Match buys next round, everyone or no one. Go be a team for once.",
+    "Same clip on loop: dry peek, instant trip to spectator cam. Cut it out — somebody flashes before anybody swings. Next round we make one money call and everybody honors it. Unclench, we're still in this.",
+  ]);
+}
+
+/** One dry jab when THEY burn their tactical timeout. */
+export function theirTimeoutLine(): string {
+  return pick("theirTimeout", [
+    "Their timeout. That's panic with a thirty-second timer. Don't lose the rhythm.",
+    "Somebody over there is getting an ass-chewing right now. Don't go cold waiting.",
+    "They're calling a meeting about us. Flattering. Stay locked in.",
+    "Oh look, a timeout. You did that. Finish the damn job.",
+    "We're in their heads enough they need a pause. Don't fucking wander out.",
+    "They're in there drawing arrows on a whiteboard. Stay loose.",
+    "They need a breather, we don't. Keep that trigger finger twitchy.",
+    "Timeout's theirs. We just stand here looking dangerous. Stay ready.",
+  ]);
+}
+
+/**
+ * Wrapper for the spoken Leetify recap — the canned fallback when the LLM is
+ * off. The {stats} slot takes a comma-separated numbers sentence verbatim.
+ */
+export function leetifyRecapLine(map: string | undefined, statsSentence: string): string {
+  const where = map ? mapDisplayName(map) : "that last one";
+  // Result-agnostic on purpose: the wrapper doesn't know if the numbers are
+  // good or bad, so no loss-coded verdicts and no claims about what the
+  // player's been doing while Leetify chewed on the demo.
+  return pick("leetifyRecap", [
+    "Match report time — Leetify scored {map} for us. {stats}. Now everybody give me a damn lap.",
+    "Leetify finished chewing through the {map} demo. {stats}. Brave little website.",
+    "Verdict's in from Leetify on {map}. {stats}. Numbers don't give a shit about feelings.",
+    "Leetify says the {map} tape doesn't lie. {stats}. Take it up with the spreadsheet.",
+    "Stick this on the fridge: Leetify's {map} numbers. {stats}. I'm choosing not to comment.",
+    "Took a minute, but Leetify coughed up the {map} numbers. {stats}. Frame it or burn it, your call.",
+  ])
+    .replace("{map}", where)
+    .replace("{stats}", statsSentence);
 }
 
 /**

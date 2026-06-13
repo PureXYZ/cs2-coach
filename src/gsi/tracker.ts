@@ -1,5 +1,5 @@
 import type { GsiPayload, GsiPlayer, GsiWeapon, Team } from "./types.js";
-import { MatchMemory } from "./memory.js";
+import { MatchMemory, type RoundRecord } from "./memory.js";
 import { config } from "../config.js";
 
 // Events the rule engine and LLM coach react to. GSI gives players no kill feed,
@@ -18,6 +18,10 @@ export type CoachEvent =
   // batch — the round-end line then covers it instead of a separate MVP line.
   | { type: "roundEnd"; won: boolean | undefined; method: string; ourScore: number; theirScore: number; mvp?: boolean }
   | { type: "halftime" }
+  // A tactical timeout started — 30 seconds of dead air, the one mid-match
+  // moment with room for an actual speech. ours is undefined when the side
+  // is unknown (the engine stays silent then).
+  | { type: "timeout"; ours?: boolean }
   | { type: "matchPoint"; forUs: boolean }
   | { type: "matchEnd"; won: boolean | undefined; ourScore: number; theirScore: number }
   | { type: "kill"; roundKills: number; headshot: boolean }
@@ -47,8 +51,24 @@ export interface MatchContext {
   ourSide?: Team;
   ourScore?: number;
   theirScore?: number;
-  /** Consecutive losses for our team — drives loss-bonus economy advice. */
+  /** Our team's loss counter (GSI decays it on a win rather than zeroing it —
+   *  treat it as the loss-bonus level, not a literal in-a-row count). */
   ourLossStreak?: number;
+  /** THEIR loss counter, same decaying semantics — the only enemy-economy
+   *  signal GSI gives. */
+  theirLossStreak?: number;
+  /** Tactical timeouts our team still has available. */
+  ourTimeoutsLeft?: number;
+  /** True while the player personally carries the C4 — planting is their job. */
+  hasBomb?: true;
+  /** Own deaths inside the first ~20s of a round this match (present when > 0). */
+  earlyDeaths?: number;
+  /** Cross-session trend lines from past matches — attached by the engine at
+   *  the storytelling moments only (match start, halftime, match end). */
+  recentForm?: string[];
+  /** One-shot engine flag: this freezetime's line should call the tactical
+   *  timeout (set at most once per cooldown window, so the LLM can't nag). */
+  suggestTimeout?: true;
   /** Someone is one round from taking the match — saving is pointless, say so. */
   matchPoint?: "us" | "them";
   /** Last round before a half/OT money reset (MR12 round 12/24, then every 3rd) — saving is pointless. */
@@ -92,6 +112,12 @@ interface PrevSelf {
   matchKills: number;
   mvps: number;
   money: number;
+  /** Last alive-frame flash/burn intensity — the dying frame's own state can
+   *  already be wiped, so death forensics fall back to these. */
+  flashed: number;
+  burning: number;
+  /** Every grenade carried (all kinds), for the died-with-full-pockets check. */
+  nadesCarried: number;
 }
 
 /** Kill-capable grenades we attribute kills to (flash/smoke/decoy kills are too rare to chase). */
@@ -108,6 +134,18 @@ const NADE_KILL_WINDOW_MS: Record<"he" | "fire", number> = { he: 3_000, fire: 9_
 
 /** Competitive knife-kill cash — lands in state.money on the same GSI tick as the kill. */
 const KNIFE_KILL_REWARD = 1_500;
+
+// Death forensics: facts go into match memory as notables; the LLM does the roasting.
+/** state.flashed is a 0-255 whiteout intensity; above this the player was effectively blind. */
+const FLASHED_BLIND_MIN = 160;
+/** state.burning is 0-255 too and decays — a residual tail from clipping a fire
+ *  edge shouldn't read as burning to death, so require real intensity. */
+const BURNING_DEATH_MIN = 150;
+/** A molly flies ~1s and burns ~7s — fire deaths inside this window after our own
+ *  fire-nade throw get blamed on the player's own molly. */
+const OWN_MOLLY_BLAME_MS = 10_000;
+/** Dying inside this window after the round goes live is an "opening seconds" death. */
+const EARLY_DEATH_WINDOW_MS = 20_000;
 
 /**
  * Rounds needed to win given the current scores: 13 in regulation (MR12), then
@@ -143,6 +181,10 @@ export class GsiTracker {
   private roundLiveAt: number | null = null;
   private bombPlantedAt: number | null = null;
   private lastUpdateAt: number | null = null;
+  /** Last own match_stats seen on any self frame — survives the death-cam
+   *  spectate switch and the gameover baseline wipe, so the post-match record
+   *  keeps the K/D even when the player died in the final round. */
+  private lastOwnStats: { kills: number; assists: number; deaths: number; mvps: number } | null = null;
   private readonly memory = new MatchMemory();
   /**
    * The user's side survives death here: once dead, the player block describes a
@@ -173,10 +215,18 @@ export class GsiTracker {
     const prevMapPhase = prev?.map?.phase;
     const mapPhase = map?.phase;
 
-    if (map && mapPhase === "live" && prevMapPhase !== "live" && prevMapPhase !== "intermission") {
+    // A tactical timeout flips map.phase to timeout_ct/timeout_t and back to
+    // live — that resume must not read as a fresh match (it would wipe the
+    // match memory mid-game and announce "match found"). Gated on inMatch so a
+    // COLD start during a timeout/halftime still adopts the match properly.
+    const midMatchPhase =
+      this.inMatch &&
+      (prevMapPhase === "live" || prevMapPhase === "intermission" || prevMapPhase === "timeout_ct" || prevMapPhase === "timeout_t");
+    if (map && mapPhase === "live" && !midMatchPhase) {
       this.inMatch = true;
       this.announcedMatchPointAt = null;
       this.liveRound = 0;
+      this.lastOwnStats = null;
       this.memory.reset();
       events.push({ type: "matchStart", map: map.name ?? "unknown", mode: map.mode ?? "unknown" });
     }
@@ -185,7 +235,22 @@ export class GsiTracker {
       events.push({ type: "halftime" });
     }
 
-    if (mapPhase === "gameover" && prevMapPhase !== "gameover") {
+    // Tactical timeout started. prev must be an IN-MATCH frame: both a cold
+    // start and a reconnect (where only menu payloads preceded — those carry
+    // no map block) land mid-pause, and a speech into a half-finished
+    // timeout helps nobody.
+    const inTimeout = mapPhase === "timeout_ct" || mapPhase === "timeout_t";
+    const wasTimeout = prevMapPhase === "timeout_ct" || prevMapPhase === "timeout_t";
+    if (prev?.map && inTimeout && !wasTimeout) {
+      const ours = ourSide ? (mapPhase === "timeout_ct") === (ourSide === "CT") : undefined;
+      events.push({ type: "timeout", ours });
+    }
+
+    // prev must be an in-match frame: a process restart during the post-match
+    // scoreboard (prev null) or a rejoin from the menu (prev has no map block)
+    // would otherwise re-fire matchEnd for a match this process never saw —
+    // and persist a junk session record and re-run the wrap-up speech.
+    if (prev?.map && mapPhase === "gameover" && prevMapPhase !== "gameover") {
       const { ourScore, theirScore } = this.scores(payload, ourSide);
       events.push({
         type: "matchEnd",
@@ -294,7 +359,14 @@ export class GsiTracker {
         matchKills: payload.player.match_stats?.kills ?? this.prevSelf?.matchKills ?? 0,
         mvps: payload.player.match_stats?.mvps ?? this.prevSelf?.mvps ?? 0,
         money: s.money,
+        flashed: s.flashed,
+        burning: s.burning,
+        nadesCarried: this.allNadeCount(payload.player),
       };
+      // Cached past death/spectate/gameover for the post-match record — the
+      // gameover-frame player block usually describes a spectated teammate.
+      const ms = payload.player.match_stats;
+      if (ms) this.lastOwnStats = { kills: ms.kills, assists: ms.assists, deaths: ms.deaths, mvps: ms.mvps };
 
       // Grenade throws first: the inventory shrinks seconds before the kill lands,
       // so by the time round_kills ticks up the throw is already on record.
@@ -305,7 +377,10 @@ export class GsiTracker {
       // Known limitation: dropping a grenade to a teammate (rare mid-live) also
       // shrinks the inventory and could mis-credit a knife kill to "the nade" —
       // GSI can't tell a drop from a throw, and the wrong call is harmless hype.
-      if (roundPhase === "live" || roundPhase === "over") {
+      // Alive only: the death frame EMPTIES the weapons list, and diffing it
+      // would register every carried nade as a phantom "throw" — which the
+      // death forensics below would then read as dying in your own molly.
+      if ((roundPhase === "live" || roundPhase === "over") && s.health > 0) {
         const nades = this.nadeUnits(payload.player);
         if (this.prevNades) {
           for (const [name, units] of Object.entries(this.prevNades)) {
@@ -380,6 +455,31 @@ export class GsiTracker {
         if (cur.health === 0 && this.prevSelf.health > 0) {
           events.push({ type: "death" });
           this.memory.recordDeath(this.liveRound);
+          // Death forensics — factual notables; the LLM turns them into roasts.
+          // The dying frame's state can already be partially wiped, so each
+          // signal also reads the last alive frame's value.
+          const flashed = Math.max(s.flashed, this.prevSelf.flashed);
+          const burning = Math.max(s.burning, this.prevSelf.burning);
+          if (flashed >= FLASHED_BLIND_MIN) {
+            this.memory.recordNotable(this.liveRound, "died while flashed");
+          }
+          if (burning >= BURNING_DEATH_MIN) {
+            const ownFire =
+              this.lastNadeThrows.fire !== undefined && now - this.lastNadeThrows.fire <= OWN_MOLLY_BLAME_MS;
+            // The own-molly variant states only what's knowable: the player's
+            // own fire nade went out seconds before they burned down. GSI has
+            // no damage attribution, so the string must not over-claim.
+            this.memory.recordNotable(
+              this.liveRound,
+              ownFire ? "died burning seconds after throwing their own molly" : "died burning",
+            );
+          }
+          if (this.prevSelf.nadesCarried >= 2) {
+            this.memory.recordNotable(this.liveRound, `died with ${this.prevSelf.nadesCarried} unthrown grenades`);
+          }
+          if (roundPhase === "live" && this.roundLiveAt !== null && now - this.roundLiveAt <= EARLY_DEATH_WINDOW_MS) {
+            this.memory.recordEarlyDeath();
+          }
         }
         if (cur.mvps > this.prevSelf.mvps) {
           events.push({ type: "mvp" });
@@ -440,6 +540,7 @@ export class GsiTracker {
     const ourSide = this.lastKnownSide;
     const { ourScore, theirScore } = p ? this.scores(p, ourSide) : { ourScore: undefined, theirScore: undefined };
     const team = ourSide === "CT" ? p?.map?.team_ct : ourSide === "T" ? p?.map?.team_t : undefined;
+    const theirTeam = ourSide === "CT" ? p?.map?.team_t : ourSide === "T" ? p?.map?.team_ct : undefined;
 
     const roundWins = p?.map?.round_wins
       ? Object.entries(p.map.round_wins)
@@ -491,6 +592,8 @@ export class GsiTracker {
       ourScore,
       theirScore,
       ourLossStreak: team?.consecutive_round_losses,
+      theirLossStreak: theirTeam?.consecutive_round_losses,
+      ourTimeoutsLeft: team?.timeouts_remaining,
       matchPoint,
       moneyResetsNextRound: moneyResetsNextRound || undefined,
       // Alive only: GSI keeps describing the dead self for the death-cam seconds
@@ -506,6 +609,7 @@ export class GsiTracker {
       money: isSelf ? p?.player?.state?.money : undefined,
       equipValue: isSelf ? p?.player?.state?.equip_value : undefined,
       defuseKit: isSelf ? p?.player?.state?.defusekit : undefined,
+      hasBomb: isSelf && this.carriesBomb(p?.player) ? true : undefined,
       weapons: isSelf ? this.weaponNames(p?.player) : undefined,
       kills: isSelf ? p?.player?.match_stats?.kills : undefined,
       assists: isSelf ? p?.player?.match_stats?.assists : undefined,
@@ -520,12 +624,57 @@ export class GsiTracker {
       pistolRounds: pistols.first || pistols.second ? pistols : undefined,
       streak: this.memory.streak(),
       notables: this.memory.notables(),
+      earlyDeaths: this.memory.earlyDeaths() > 0 ? this.memory.earlyDeaths() : undefined,
       playerIsSelf: isSelf,
     };
   }
 
+  /**
+   * Unabridged per-round history for the storytelling moments (halftime, match
+   * end, the wrap-up speech) — context() keeps the default 8-round window so
+   * mid-round prompts stay lean.
+   */
+  fullHistory(): string[] {
+    return this.memory.history(Number.MAX_SAFE_INTEGER);
+  }
+
+  /** Raw match-memory data for the spoken match wrap-up and the session store. */
+  matchReport(): {
+    rounds: readonly RoundRecord[];
+    pistols: { first?: "won" | "lost"; second?: "won" | "lost" };
+    earlyDeaths: number;
+    notables: string[];
+    /** Own K/A/D/MVPs from the last self frame — present even when the player
+     *  died in the final round (the gameover context fields would be empty). */
+    stats?: { kills: number; assists: number; deaths: number; mvps: number };
+  } {
+    return {
+      rounds: this.memory.allRounds(),
+      pistols: this.memory.pistolResults(),
+      earlyDeaths: this.memory.earlyDeaths(),
+      notables: this.memory.notables(12),
+      stats: this.lastOwnStats ?? undefined,
+    };
+  }
+
+  /** SteamID64 of the local player (from the GSI provider block), once seen. */
+  steamId(): string | undefined {
+    return this.prev?.provider?.steamid;
+  }
+
   isInMatch(): boolean {
     return this.inMatch;
+  }
+
+  /** True when a delayed line (the Leetify recap) can speak without talking
+   *  over play: no live match, GSI silent for 2+ minutes (game closed), or
+   *  the latest payload is a menu frame (no map block — the player left or
+   *  abandoned, which never delivers the gameover that clears inMatch). */
+  quietMomentForSpeech(): boolean {
+    const age = this.lastUpdateAgeMs();
+    if (age === null || age > 120_000) return true;
+    if (!this.prev?.map) return true;
+    return !this.inMatch;
   }
 
   /** ms since the last GSI payload, or null before the first one — timer callbacks
@@ -626,6 +775,21 @@ export class GsiTracker {
       out[w.name] = w.ammo_clip;
     }
     return out;
+  }
+
+  /** Every grenade carried, all kinds — for the died-with-full-pockets forensic. */
+  private allNadeCount(player: GsiPlayer | undefined): number {
+    let n = 0;
+    for (const w of Object.values(player?.weapons ?? {})) {
+      if (w.type !== "Grenade") continue;
+      n += Math.max(1, (w.ammo_clip ?? 0) + (w.ammo_reserve ?? 0));
+    }
+    return n;
+  }
+
+  /** The C4 ships as name "weapon_c4" (type "C4") in the carrier's weapon list. */
+  private carriesBomb(player: GsiPlayer | undefined): boolean {
+    return Object.values(player?.weapons ?? {}).some((w) => w.name === "weapon_c4");
   }
 
   /** Carried units of each kill-capable grenade (CS2 GSI counts stacks via ammo fields). */

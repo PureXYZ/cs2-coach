@@ -18,8 +18,10 @@ process.env.FREEZETIME_SECONDS = "1";
 const { GsiTracker } = await import("../src/gsi/tracker.js");
 const { CoachEngine } = await import("../src/coach/engine.js");
 const { config } = await import("../src/config.js");
-const { retakeDecisionLine, economyLine } = await import("../src/coach/lines.js");
-import type { CoachEvent } from "../src/gsi/tracker.js";
+const { retakeDecisionLine, economyLine, lateRoundLine, ourTimeoutSpeechLine } = await import("../src/coach/lines.js");
+import os from "node:os";
+import path from "node:path";
+import type { CoachEvent, MatchContext } from "../src/gsi/tracker.js";
 import type { GsiPayload, GsiWeapon } from "../src/gsi/types.js";
 import type { SpeakRequest } from "../src/coach/engine.js";
 import type { LlmCoach } from "../src/coach/llm.js";
@@ -34,10 +36,12 @@ interface PlayerState {
   round_killhs?: number;
   equip_value?: number;
   armor?: number;
+  flashed?: number;
+  burning?: number;
 }
 
 function payload(opts: {
-  mapPhase?: "warmup" | "live" | "intermission" | "gameover";
+  mapPhase?: "warmup" | "live" | "intermission" | "gameover" | "timeout_ct" | "timeout_t";
   roundPhase?: "freezetime" | "live" | "over";
   round?: number;
   bomb?: "planted" | "exploded" | "defused";
@@ -45,6 +49,8 @@ function payload(opts: {
   roundWins?: Record<string, string>;
   ctScore?: number;
   tScore?: number;
+  ctLosses?: number;
+  tLosses?: number;
   steamid?: string;
   team?: "T" | "CT";
   state?: PlayerState;
@@ -59,8 +65,8 @@ function payload(opts: {
       name: "de_mirage",
       phase: opts.mapPhase ?? "live",
       round: opts.round ?? 0,
-      team_ct: { score: opts.ctScore ?? 0, consecutive_round_losses: 0, timeouts_remaining: 1, matches_won_this_series: 0 },
-      team_t: { score: opts.tScore ?? 0, consecutive_round_losses: 0, timeouts_remaining: 1, matches_won_this_series: 0 },
+      team_ct: { score: opts.ctScore ?? 0, consecutive_round_losses: opts.ctLosses ?? 0, timeouts_remaining: 1, matches_won_this_series: 0 },
+      team_t: { score: opts.tScore ?? 0, consecutive_round_losses: opts.tLosses ?? 0, timeouts_remaining: 1, matches_won_this_series: 0 },
       round_wins: opts.roundWins,
     },
     round: opts.roundPhase ? { phase: opts.roundPhase, bomb: opts.bomb, win_team: opts.winTeam } : undefined,
@@ -99,7 +105,7 @@ const engine = new CoachEngine(
     console.log(`  [say:${req.category}] ${req.text}`);
   },
   null,
-  () => tracker.context(),
+  { getCtx: () => tracker.context() },
 );
 
 const seen: CoachEvent[] = [];
@@ -179,7 +185,8 @@ feed("r2 over", payload({ roundPhase: "over", round: 2, winTeam: "T", ctScore: 1
 console.log("\n=== scenario: death → spectate teammate's triple kill ===");
 feed("r3 freeze", payload({ roundPhase: "freezetime", round: 2, ctScore: 1, tScore: 1 }));
 feed("r3 live", payload({ roundPhase: "live", round: 2, ctScore: 1, tScore: 1, kills: 1 }));
-feed("death", payload({ roundPhase: "live", round: 2, ctScore: 1, tScore: 1, state: { health: 0 }, kills: 1 }));
+// Real GSI empties the weapons list on the death frame — model that.
+feed("death", payload({ roundPhase: "live", round: 2, ctScore: 1, tScore: 1, state: { health: 0 }, kills: 1, weapons: {} }));
 expect(has("death"), "own death detected");
 feed("spectating mate (their 1k = baseline)", payload({ roundPhase: "live", round: 2, ctScore: 1, tScore: 1, steamid: MATE, state: { round_kills: 1 }, kills: 3 }));
 feed("mate 2nd kill", payload({ roundPhase: "live", round: 2, ctScore: 1, tScore: 1, steamid: MATE, state: { round_kills: 2 }, kills: 3 }));
@@ -312,7 +319,7 @@ console.log("\n=== scenario: noise control — singles/doubles silent, same-batc
 // category cooldowns from the long run above can't mask the behavior under test.
 function freshEngine(): { out: SpeakRequest[]; engine: InstanceType<typeof CoachEngine> } {
   const out: SpeakRequest[] = [];
-  const engine2 = new CoachEngine((req) => out.push(req), null, () => tracker.context());
+  const engine2 = new CoachEngine((req) => out.push(req), null, { getCtx: () => tracker.context() });
   return { out, engine: engine2 };
 }
 {
@@ -367,7 +374,7 @@ const engineF = new CoachEngine(
     console.log(`  [say:${req.category}] ${req.text}`);
   },
   null,
-  () => trackerF.context(),
+  { getCtx: () => trackerF.context() },
 );
 function feedF(label: string, p: GsiPayload): void {
   const events = trackerF.update(p);
@@ -397,13 +404,11 @@ function llmEngine(t: InstanceType<typeof GsiTracker>, out: SpeakRequest[]): { e
     line: () => new Promise<string | null>((r) => { resolve = r; }),
     recordSpoken: () => {},
   } as unknown as LlmCoach;
-  const e = new CoachEngine(
-    (req) => out.push(req),
-    fakeLlm,
-    () => t.context(),
-    () => 0,
-    () => t.lastOwnKillAtMs(),
-  );
+  const e = new CoachEngine((req) => out.push(req), fakeLlm, {
+    getCtx: () => t.context(),
+    payloadAgeMs: () => 0,
+    lastOwnKillAt: () => t.lastOwnKillAtMs(),
+  });
   return { engine: e, resolve: (s) => resolve(s) };
 }
 {
@@ -463,14 +468,12 @@ console.log("\n=== scenario: triple-kill line goes stale once the fourth kill la
 {
   const out: SpeakRequest[] = [];
   const t = new GsiTracker();
-  const e = new CoachEngine(
-    (req) => out.push(req),
-    null,
-    () => t.context(),
-    () => 0,
-    () => t.lastOwnKillAtMs(),
-    () => t.ownRoundKillsNow(),
-  );
+  const e = new CoachEngine((req) => out.push(req), null, {
+    getCtx: () => t.context(),
+    payloadAgeMs: () => 0,
+    lastOwnKillAt: () => t.lastOwnKillAtMs(),
+    ownRoundKills: () => t.ownRoundKillsNow(),
+  });
   const run = (p: GsiPayload) => { const ev = t.update(p); if (ev.length) e.handle(ev, t.context()); };
   run(payload({ mapPhase: "warmup" }));
   run(payload({ roundPhase: "freezetime", round: 0 }));
@@ -495,14 +498,12 @@ console.log("\n=== scenario: triple-kill line goes stale once the fourth kill la
   // still speaks even when the player got traded on the closing kill.
   const out: SpeakRequest[] = [];
   const t = new GsiTracker();
-  const e = new CoachEngine(
-    (req) => out.push(req),
-    null,
-    () => t.context(),
-    () => 0,
-    () => t.lastOwnKillAtMs(),
-    () => t.ownRoundKillsNow(),
-  );
+  const e = new CoachEngine((req) => out.push(req), null, {
+    getCtx: () => t.context(),
+    payloadAgeMs: () => 0,
+    lastOwnKillAt: () => t.lastOwnKillAtMs(),
+    ownRoundKills: () => t.ownRoundKillsNow(),
+  });
   const run = (p: GsiPayload) => { const ev = t.update(p); if (ev.length) e.handle(ev, t.context()); };
   run(payload({ mapPhase: "warmup" }));
   run(payload({ roundPhase: "freezetime", round: 0 }));
@@ -575,6 +576,376 @@ console.log("\n=== scenario: freezetime economy knows resets, match point and pi
   const pistolEco = economyLine({ playerIsSelf: true, money: 800, roundKind: "pistol" });
   expect(pistolEco !== null && /pistol|kevlar|armor|util|nade|team|pack|group/i.test(pistolEco), `pistol round gets pistol advice ("${pistolEco}")`);
   expect(pistolEco !== null && !/\beco\b|\bsave\b/i.test(pistolEco), "pistol round not mistaken for an eco");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: enemy loss streak + timeout call (LLM-less) at freezetime ===");
+{
+  const out: SpeakRequest[] = [];
+  const t = new GsiTracker();
+  const e = new CoachEngine((req) => out.push(req), null, { getCtx: () => t.context() });
+  const run = (p: GsiPayload) => { const ev = t.update(p); if (ev.length) e.handle(ev, t.context()); };
+  run(payload({ mapPhase: "warmup" }));
+  // matchStart alone first — a same-batch round-1 freezetime is suppressed by design.
+  run(payload({ roundPhase: "live", round: 5, ctScore: 1, tScore: 5, ctLosses: 5 }));
+  run(payload({ roundPhase: "freezetime", round: 5, ctScore: 1, tScore: 5, ctLosses: 5, tLosses: 0 }));
+  const ctxT = t.context();
+  expect(ctxT.ourLossStreak === 5, `our loss streak read (${ctxT.ourLossStreak})`);
+  expect(ctxT.theirLossStreak === 0, `enemy loss streak exposed in context (${ctxT.theirLossStreak})`);
+  expect(ctxT.ourTimeoutsLeft === 1, `timeouts remaining exposed (${ctxT.ourTimeoutsLeft})`);
+  const timeoutLine = out.find((s) => s.category === "timeout");
+  expect(timeoutLine !== undefined, "canned timeout call spoken on a 5-loss streak (no LLM)");
+  expect(timeoutLine !== undefined && /timeout|\btac\b|tactical/i.test(timeoutLine.text), `timeout line makes the call ("${timeoutLine?.text.slice(0, 60)}")`);
+  expect(out.some((s) => s.category === "economy"), "economy line still speaks alongside it");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: matchStart + round-1 freezetime → ONE line that carries the pistol call ===");
+{
+  const { out, engine: e } = freshEngine();
+  e.handle(
+    [
+      { type: "matchStart", map: "de_mirage", mode: "competitive" },
+      { type: "freezetime", round: 1 },
+    ],
+    { ...tracker.context(), roundPhase: "freezetime", roundKind: "pistol", money: 800, playerIsSelf: true },
+  );
+  const matchLines = out.filter((s) => s.category === "match");
+  expect(matchLines.length === 1, "exactly one line for the matchStart+freezetime batch");
+  expect(!out.some((s) => s.category === "economy"), "no separate economy line racing the greeting");
+  expect(
+    /armor|util|kevlar|flash|nade|pistol|pack|group|together|five/i.test(matchLines[0]?.text ?? ""),
+    `the one line still carries the pistol call ("${matchLines[0]?.text.slice(0, 80)}")`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: LLM timeout directive rides the snapshot as a one-shot flag ===");
+{
+  const captured: MatchContext[] = [];
+  const fakeLlm = {
+    line: (c: MatchContext) => { captured.push(c); return Promise.resolve(null); },
+    recordSpoken: () => {},
+  } as unknown as LlmCoach;
+  const e = new CoachEngine(() => {}, fakeLlm, { getCtx: () => tracker.context() });
+  const lossCtx = { ...tracker.context(), ourLossStreak: 5, ourTimeoutsLeft: 1, money: 4000, playerIsSelf: true, roundPhase: "freezetime" };
+  e.handle([{ type: "freezetime", round: 7 }], lossCtx);
+  expect(captured[0]?.suggestTimeout === true, "freezetime prompt carries the timeout directive");
+  e.handle([{ type: "teamkill" }], lossCtx);
+  expect(captured[1]?.suggestTimeout === undefined, "non-freezetime prompts never carry it");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: bomb-carrier awareness ===");
+{
+  const t = new GsiTracker();
+  t.update(payload({ mapPhase: "warmup", team: "T" }));
+  t.update(payload({ roundPhase: "freezetime", round: 0, team: "T" }));
+  const withBomb = {
+    w0: { name: "weapon_glock", type: "Pistol", state: "active", ammo_clip: 20 },
+    w1: { name: "weapon_c4", type: "C4", state: "holstered" },
+  } as const;
+  t.update(payload({ roundPhase: "live", round: 0, team: "T", weapons: withBomb }));
+  expect(t.context().hasBomb === true, "C4 carrier flagged in context");
+  t.update(payload({ roundPhase: "live", round: 0, team: "T" })); // bomb planted/dropped — default loadout
+  expect(t.context().hasBomb === undefined, "flag clears when the bomb leaves the inventory");
+  const carrierLine = lateRoundLine("T", true);
+  expect(/bomb|c4|plant|carry|package|deliver/i.test(carrierLine), `carrier nudge talks about the bomb ("${carrierLine.slice(0, 60)}")`);
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: death forensics — flashed, full pockets, own molly, early deaths ===");
+{
+  const t = new GsiTracker();
+  const run = (p: GsiPayload) => t.update(p);
+  run(payload({ mapPhase: "warmup" }));
+  run(payload({ roundPhase: "freezetime", round: 0 }));
+  run(payload({ roundPhase: "live", round: 0 }));
+  const nadePockets = {
+    w0: { name: "weapon_ak47", type: "Rifle", state: "active", ammo_clip: 30 },
+    w1: { name: "weapon_flashbang", type: "Grenade", state: "holstered", ammo_reserve: 1 },
+    w2: { name: "weapon_smokegrenade", type: "Grenade", state: "holstered", ammo_reserve: 1 },
+  } as const;
+  run(payload({ roundPhase: "live", round: 0, weapons: nadePockets, state: { flashed: 255 } }));
+  // Real GSI empties the weapons list on the death frame — the forensics must
+  // come from the last ALIVE frame, so the sim models the wipe.
+  run(payload({ roundPhase: "live", round: 0, weapons: {}, state: { flashed: 255, health: 0 } }));
+  const ctxF = t.context();
+  expect(ctxF.notables?.some((n) => n.includes("died while flashed")) === true, "blind death recorded as notable");
+  expect(ctxF.notables?.some((n) => n.includes("2 unthrown grenades")) === true, "full-pockets death recorded");
+  expect(ctxF.earlyDeaths === 1, `opening-seconds death counted (got ${ctxF.earlyDeaths})`);
+
+  run(payload({ roundPhase: "freezetime", round: 1 }));
+  const mollyHand = {
+    w0: { name: "weapon_ak47", type: "Rifle", state: "holstered", ammo_clip: 30 },
+    w1: { name: "weapon_molotov", type: "Grenade", state: "active", ammo_reserve: 1 },
+  } as const;
+  const rifleOnly = { w0: { name: "weapon_ak47", type: "Rifle", state: "active", ammo_clip: 30 } } as const;
+  run(payload({ roundPhase: "live", round: 1, weapons: mollyHand }));
+  run(payload({ roundPhase: "live", round: 1, weapons: rifleOnly })); // molly left the inventory
+  run(payload({ roundPhase: "live", round: 1, weapons: rifleOnly, state: { burning: 200 } }));
+  run(payload({ roundPhase: "live", round: 1, weapons: {}, state: { burning: 200, health: 0 } }));
+  expect(t.context().notables?.some((n) => n.includes("own molly")) === true, "burning death inside own molly window blamed on the player");
+
+  // Enemy fire with an UNTHROWN incendiary in pocket: the death-frame wipe
+  // must not register a phantom throw and blame the player's own molly.
+  run(payload({ roundPhase: "freezetime", round: 2 }));
+  const rifleAndInc = {
+    w0: { name: "weapon_ak47", type: "Rifle", state: "active", ammo_clip: 30 },
+    w1: { name: "weapon_incgrenade", type: "Grenade", state: "holstered", ammo_reserve: 1 },
+  } as const;
+  run(payload({ roundPhase: "live", round: 2, weapons: rifleAndInc }));
+  run(payload({ roundPhase: "live", round: 2, weapons: rifleAndInc, state: { burning: 255 } }));
+  run(payload({ roundPhase: "live", round: 2, weapons: {}, state: { burning: 255, health: 0 } }));
+  const r3Notes = (t.context().notables ?? []).filter((n) => n.startsWith("R3:"));
+  expect(r3Notes.some((n) => n.includes("died burning")), "enemy-fire death recorded as died burning");
+  expect(!r3Notes.some((n) => n.includes("own molly")), "enemy-fire death NOT blamed on the player's own molly");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: dead at gameover — K/D falls back to the last own frame ===");
+{
+  const { buildMatchRecord } = await import("../src/coach/debrief.js");
+  const t = new GsiTracker();
+  const run = (p: GsiPayload) => t.update(p);
+  run(payload({ mapPhase: "warmup" }));
+  run(payload({ roundPhase: "freezetime", round: 0 }));
+  run(payload({ roundPhase: "live", round: 0 }));
+  run(payload({ roundPhase: "live", round: 0, kills: 9 })); // last alive own frame
+  run(payload({ roundPhase: "live", round: 0, kills: 9, state: { health: 0 }, weapons: {} }));
+  run(payload({ roundPhase: "live", round: 0, steamid: MATE, kills: 23, state: { round_kills: 2 } }));
+  run(payload({ roundPhase: "over", round: 1, winTeam: "CT", ctScore: 13, tScore: 7, steamid: MATE, kills: 23, roundWins: { "1": "ct_win_elimination" } }));
+  const evs = run(payload({ mapPhase: "gameover", ctScore: 13, tScore: 7, steamid: MATE, kills: 23 }));
+  const endEv = evs.find((e) => e.type === "matchEnd") as Extract<CoachEvent, { type: "matchEnd" }>;
+  expect(endEv !== undefined, "matchEnd fires with the spectated-teammate player block");
+  const rec = buildMatchRecord(endEv, t.context(), t.matchReport());
+  expect(rec.kills === 9, `K/D from the last own frame, not the spectated teammate (got ${rec.kills})`);
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: restart during the gameover screen must not re-fire matchEnd ===");
+{
+  const t = new GsiTracker();
+  const evs = t.update(payload({ mapPhase: "gameover", ctScore: 13, tScore: 7 }));
+  expect(!evs.some((e) => e.type === "matchEnd"), "first-ever payload on the scoreboard is a baseline sync, not a matchEnd");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: tactical timeout must not wipe match memory or re-announce the match ===");
+{
+  const t = new GsiTracker();
+  const run = (p: GsiPayload) => t.update(p);
+  run(payload({ mapPhase: "warmup" }));
+  run(payload({ roundPhase: "freezetime", round: 0 }));
+  run(payload({ roundPhase: "live", round: 0 }));
+  run(payload({ roundPhase: "live", round: 0, state: { round_kills: 1 }, kills: 1 }));
+  run(payload({ roundPhase: "over", round: 1, winTeam: "CT", ctScore: 1, roundWins: { "1": "ct_win_elimination" } }));
+  run(payload({ mapPhase: "timeout_ct", roundPhase: "freezetime", round: 1 }));
+  const resumeEvents = run(payload({ mapPhase: "live", roundPhase: "freezetime", round: 1 }));
+  expect(!resumeEvents.some((e) => e.type === "matchStart"), "timeout → live resume is not a fresh matchStart");
+  expect(t.context().history?.some((h) => h.includes("R1") && h.includes("1k")) === true, "match memory survives the timeout");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: /coach quiet gates lines and LLM spend ===");
+{
+  const out: SpeakRequest[] = [];
+  let muted = true;
+  let llmCalls = 0;
+  const fakeLlm = {
+    line: () => { llmCalls++; return Promise.resolve("should never be requested while muted"); },
+    recordSpoken: () => {},
+  } as unknown as LlmCoach;
+  const e = new CoachEngine((req) => out.push(req), fakeLlm, { getCtx: () => tracker.context(), isQuiet: () => muted });
+  e.handle([{ type: "kill", roundKills: 3, headshot: false }], tracker.context());
+  e.handle([{ type: "freezetime", round: 5 }], tracker.context());
+  expect(out.length === 0, "muted: no lines reach the voice queue");
+  expect(llmCalls === 0, "muted: no LLM calls are made");
+  muted = false;
+  e.handle([{ type: "kill", roundKills: 3, headshot: false }], tracker.context());
+  expect(out.length === 1, "unmuted: speech resumes immediately");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: smart-tier prompts get full history + recentForm; fast tier stays lean ===");
+{
+  const captured: MatchContext[] = [];
+  const fakeLlm = {
+    line: (ctx: MatchContext) => { captured.push(ctx); return Promise.resolve(null); },
+    recordSpoken: () => {},
+  } as unknown as LlmCoach;
+  const fullHist = Array.from({ length: 20 }, (_, i) => `R${i + 1} CT full WON (elim)`);
+  const form = ["Past matches, newest first: lost 9-13 on Mirage (today)."];
+  const e = new CoachEngine(() => {}, fakeLlm, {
+    getCtx: () => tracker.context(),
+    fullHistory: () => fullHist,
+    recentForm: () => form,
+  });
+  e.handle([{ type: "halftime" }], { ...tracker.context(), history: fullHist.slice(-8) });
+  expect(captured[0]?.history?.length === 20, `halftime prompt carries the full history (got ${captured[0]?.history?.length})`);
+  expect(captured[0]?.recentForm?.length === 1, "halftime prompt carries cross-session form");
+  e.handle([{ type: "teamkill" }], tracker.context());
+  expect(captured[1]?.recentForm === undefined, "fast-tier prompt does NOT carry cross-session form");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: session store — record, trends, reload ===");
+{
+  const { SessionStore } = await import("../src/coach/session-store.js");
+  const file = path.join(os.tmpdir(), `cs2-coach-sim-sessions-${Date.now()}.json`);
+  const store = new SessionStore(file);
+  expect(store.recentForm() === undefined, "no form lines before any match is on file");
+  store.record({
+    endedAt: new Date(Date.now() - 86_400_000).toISOString(),
+    map: "de_mirage", mode: "competitive", won: false, ourScore: 9, theirScore: 13,
+    kills: 14, assists: 3, deaths: 19, mvps: 1,
+    pistols: { first: "lost", second: "lost" }, earlyDeaths: 4, roundsPlayed: 22,
+  });
+  store.record({
+    endedAt: new Date().toISOString(),
+    map: "de_mirage", mode: "competitive", won: false, ourScore: 7, theirScore: 13,
+    kills: 11, assists: 5, deaths: 18, mvps: 0,
+    pistols: { first: "lost", second: "won" }, earlyDeaths: 3, roundsPlayed: 20,
+  });
+  const form = store.recentForm("de_mirage") ?? [];
+  console.log("  form:", JSON.stringify(form, null, 2));
+  expect(form[0]?.startsWith("Past matches, newest first:") === true, "form leads with the match list");
+  expect(form[0]?.includes("lost 7-13 on Mirage (today)") === true, "newest match first with a day label");
+  expect(form.some((l) => l.includes("2 losses in a row")), "match losing streak surfaced");
+  expect(form.some((l) => l.includes("won 1 of 4")), "pistol record aggregated");
+  expect(form.some((l) => l.includes("On Mirage specifically: 0 won, 2 lost")), "map record surfaced");
+  const reloaded = new SessionStore(file);
+  expect(reloaded.count === 2, `store reloads from disk (${reloaded.count} records)`);
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: match end → session record ===");
+{
+  const { buildMatchRecord } = await import("../src/coach/debrief.js");
+  feed("gameover", payload({ mapPhase: "gameover", ctScore: 13, tScore: 7, kills: 7, mvps: 1 }));
+  expect(has("matchEnd"), "matchEnd detected at gameover");
+  const endEvent = seen.find((e) => e.type === "matchEnd") as Extract<CoachEvent, { type: "matchEnd" }>;
+  const rec = buildMatchRecord(endEvent, tracker.context(), tracker.matchReport());
+  expect(rec.won === true && rec.ourScore === 13 && rec.theirScore === 7, `record carries the result (${rec.ourScore}-${rec.theirScore})`);
+  expect(rec.pistols?.first === "won", "record remembers the pistol-round result");
+  expect((rec.notables ?? []).some((n) => n.includes("knife")), "record keeps the knife-kill notable");
+  expect((rec.buys?.full ?? 0) + (rec.buys?.force ?? 0) + (rec.buys?.eco ?? 0) > 0, "record counts the buys");
+  expect(rec.kills === 7 && rec.mvps === 1, `record carries the K/D (${rec.kills} kills, ${rec.mvps} MVPs)`);
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: tactical timeout → speech for ours, jab for theirs ===");
+{
+  const out: SpeakRequest[] = [];
+  const t = new GsiTracker();
+  const e = new CoachEngine((req) => out.push(req), null, { getCtx: () => t.context() });
+  const run = (p: GsiPayload) => { const ev = t.update(p); if (ev.length) e.handle(ev, t.context()); };
+  run(payload({ mapPhase: "warmup" }));
+  run(payload({ roundPhase: "live", round: 3 }));
+  run(payload({ roundPhase: "freezetime", round: 3 }));
+  const evOurs = t.update(payload({ mapPhase: "timeout_ct", roundPhase: "freezetime", round: 3 }));
+  expect(evOurs.some((ev) => ev.type === "timeout" && ev.ours === true), "our timeout detected (we are CT, timeout_ct)");
+  e.handle(evOurs, t.context());
+  const speech = out.find((s) => s.category === "timeoutTalk");
+  expect(speech !== undefined, "timeout speech spoken");
+  expect((speech?.text.split(/\s+/).length ?? 0) >= 18, `the speech is an actual speech (${speech?.text.split(/\s+/).length} words)`);
+
+  run(payload({ mapPhase: "live", roundPhase: "freezetime", round: 3 })); // resume
+  const evTheirs = t.update(payload({ mapPhase: "timeout_t", roundPhase: "freezetime", round: 3 }));
+  expect(evTheirs.some((ev) => ev.type === "timeout" && ev.ours === false), "their timeout detected (we are CT, timeout_t)");
+  const out2: SpeakRequest[] = [];
+  const e2 = new CoachEngine((req) => out2.push(req), null, { getCtx: () => t.context() });
+  e2.handle(evTheirs, t.context());
+  const jab = out2.find((s) => s.category === "timeoutTalk");
+  expect(jab !== undefined && jab.text.split(/\s+/).length <= 16, `their timeout gets a short jab ("${jab?.text.slice(0, 60)}")`);
+
+  const cold = new GsiTracker();
+  const coldEvents = cold.update(payload({ mapPhase: "timeout_ct", roundPhase: "freezetime", round: 3 }));
+  expect(!coldEvents.some((ev) => ev.type === "timeout"), "cold start mid-timeout stays quiet (half the pause is gone)");
+
+  // Reconnect: only menu payloads (no map block) preceded — same rule applies.
+  const rejoin = new GsiTracker();
+  rejoin.update({ provider: { name: "cs2", appid: 730, version: 1, steamid: ME, timestamp: 0 } } as GsiPayload);
+  const rejoinEvents = rejoin.update(payload({ mapPhase: "timeout_ct", roundPhase: "freezetime", round: 3 }));
+  expect(!rejoinEvents.some((ev) => ev.type === "timeout"), "reconnect from the menu into a running timeout stays quiet");
+
+  // Crisis framing only when the scoreboard says so.
+  const aheadLine = ourTimeoutSpeechLine({ playerIsSelf: true, ourScore: 9, theirScore: 2, ourLossStreak: 0 });
+  expect(
+    !/losing streak|funeral|bleeding|not better than us|picked off/i.test(aheadLine),
+    `timeout speech while ahead doesn't invent a crisis ("${aheadLine.slice(0, 60)}...")`,
+  );
+  const behindLine = ourTimeoutSpeechLine({ playerIsSelf: true, ourScore: 2, theirScore: 9 });
+  expect((behindLine.split(/\s+/).length ?? 0) >= 25, "timeout speech while behind is still a full speech");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: our timeout + freezetime in one batch → the speech owns the moment ===");
+{
+  const { out, engine: e } = freshEngine();
+  e.handle(
+    [
+      { type: "timeout", ours: true },
+      { type: "freezetime", round: 9 },
+    ],
+    { ...tracker.context(), money: 4000, playerIsSelf: true },
+  );
+  expect(out.some((s) => s.category === "timeoutTalk"), "our-timeout batch speaks the speech");
+  expect(!out.some((s) => s.category === "economy"), "and suppresses the duplicate freezetime buy line");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: long form requested exactly at the dead-air moments ===");
+{
+  const calls: { type: string; longForm?: boolean; kills?: number }[] = [];
+  const fakeLlm = {
+    line: (c: MatchContext, ev: CoachEvent, _tier: string, opts?: { longForm?: boolean }) => {
+      calls.push({ type: ev.type, longForm: opts?.longForm, kills: c.kills });
+      return Promise.resolve(null);
+    },
+    recordSpoken: () => {},
+  } as unknown as LlmCoach;
+  const e = new CoachEngine(() => {}, fakeLlm, {
+    getCtx: () => tracker.context(),
+    finalStats: () => ({ kills: 21, assists: 3, deaths: 17, mvps: 2 }),
+  });
+  e.handle([{ type: "matchEnd", won: true, ourScore: 13, theirScore: 9 }], { ...tracker.context(), kills: undefined, playerIsSelf: false });
+  expect(calls[0]?.type === "matchEnd" && calls[0]?.longForm === true, "match wrap-up requests the long form");
+  expect(calls[0]?.kills === 21, "wrap-up snapshot restores the K/D from the last own frame");
+  e.handle([{ type: "timeout", ours: true }], tracker.context());
+  expect(calls[1]?.type === "timeout" && calls[1]?.longForm === true, "our timeout speech requests the long form");
+  e.handle([{ type: "halftime" }], tracker.context());
+  expect(calls[2]?.type === "halftime" && calls[2]?.longForm !== true, "halftime stays normal length");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: the Leetify recap waits for a quiet moment ===");
+{
+  const { spokenStatsSentence } = await import("../src/leetify.js");
+  const { leetifyRecapLine } = await import("../src/coach/lines.js");
+  const t = new GsiTracker();
+  expect(t.quietMomentForSpeech() === true, "no GSI yet → quiet moment (game isn't running)");
+  t.update(payload({ mapPhase: "warmup" }));
+  t.update(payload({ roundPhase: "live", round: 0 }));
+  expect(t.quietMomentForSpeech() === false, "live match → NOT a quiet moment");
+  // Abandon: the client goes back to the menu (payloads without a map block),
+  // so no gameover ever clears inMatch — menu frames must count as quiet.
+  t.update({ provider: { name: "cs2", appid: 730, version: 1, steamid: ME, timestamp: 0 } } as GsiPayload);
+  expect(t.quietMomentForSpeech() === true, "menu payloads after abandoning a match count as quiet");
+
+  const t2 = new GsiTracker();
+  t2.update(payload({ mapPhase: "warmup" }));
+  t2.update(payload({ roundPhase: "live", round: 0 }));
+  t2.update(payload({ mapPhase: "gameover", ctScore: 13, tScore: 5 }));
+  expect(t2.quietMomentForSpeech() === true, "after gameover → quiet moment again");
+
+  const sentence = spokenStatsSentence({ totalKills: 13, totalDeaths: 19, adr: 67.09, hsKills: 9, leetifyRating: -0.04, reactionTimeMs: 469 });
+  expect(sentence === "13 kills to 19 deaths, ADR 67.09, 9 headshot kills, Leetify rating minus 0.04, time to damage 469 milliseconds", `stats sentence reads for TTS ("${sentence}")`);
+  expect(spokenStatsSentence({}) === null, "no usable stats → no sentence");
+  const kdOnly = spokenStatsSentence({ kdRatio: 0.68 });
+  expect(kdOnly === "K D ratio 0.68", `K/D fallback avoids the slash for TTS ("${kdOnly}")`);
+  const recap = leetifyRecapLine("de_mirage", sentence!);
+  expect(recap.includes("Mirage") && recap.includes("ADR 67.09") && /leetify/i.test(recap), `canned recap credits Leetify and reads the numbers ("${recap.slice(0, 70)}...")`);
 }
 
 // ---------------------------------------------------------------------------
