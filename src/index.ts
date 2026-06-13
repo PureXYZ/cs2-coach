@@ -1,7 +1,7 @@
 import os from "node:os";
 import { Events } from "discord.js";
 import { config } from "./config.js";
-import { log, pruneOldLogs } from "./log.js";
+import { log, pruneOldLogs, closeLog } from "./log.js";
 import { startGsiServer } from "./gsi/server.js";
 import { GsiPayloadLog } from "./gsi/payload-log.js";
 import type { CoachEvent, MatchContext } from "./gsi/tracker.js";
@@ -92,6 +92,14 @@ async function main(): Promise<void> {
   // Only the newest match's recap may speak — back-to-back games would
   // otherwise stack hour-long holds that all fire into the same quiet moment.
   let recapSeq = 0;
+  // Idempotency for matchEnd: a multi-feed authority re-election across the gameover
+  // seam can forward a SECOND matchEnd for the same game (the content-signature seam
+  // de-dup only covers a few seconds). Without this guard that would write a duplicate
+  // session record (corrupting cross-session form) and start a second hour-long Leetify
+  // poll. Keyed on map+score; a genuinely new match with the same score inside 5 min is
+  // impossible (a match runs 30+ min).
+  let lastMatchEndKey: string | null = null;
+  let lastMatchEndAt = 0;
 
   // Session recording + the spoken Leetify recap. Runs on its own (the voice
   // wrap-up speech goes out via the engine in parallel); latency is free here.
@@ -99,6 +107,15 @@ async function main(): Promise<void> {
     // Captured at the gameover frame — the Leetify lookup matches finished_at
     // against this instant (±10 min) to identify the right game.
     const endedAt = Date.now();
+    // Drop a duplicate matchEnd for the SAME game (multi-feed re-election seam) before
+    // it double-records the session or starts a second Leetify poll.
+    const matchKey = `${ctx.map ?? "?"}:${event.ourScore}-${event.theirScore}`;
+    if (lastMatchEndKey === matchKey && endedAt - lastMatchEndAt < 5 * 60_000) {
+      log.info("sessions", "Duplicate matchEnd for the same game — already handled, skipping");
+      return;
+    }
+    lastMatchEndKey = matchKey;
+    lastMatchEndAt = endedAt;
     const recapToken = ++recapSeq;
     const report = roster.matchReport();
     // The confirmed wired crew, snapshotted SYNCHRONOUSLY now — confirmedEver is
@@ -177,20 +194,21 @@ async function main(): Promise<void> {
     const squadSentence = squadStats
       ? spokenSquadSentence(squadStats, config.leetify.squadRecap === "full" ? "full" : "leaders") ?? undefined
       : undefined;
+    const llmText = llm
+      ? await llm.leetifyLine({
+          map: ctx.map,
+          won: event.won,
+          ourScore: event.ourScore,
+          theirScore: event.theirScore,
+          statsSentence,
+          squadSentence,
+          // Qualitative multi-match direction (no numbers) — speakable as-is and
+          // safe to pass: it quotes no altered Leetify value (see leetify.ts).
+          trend: stats.trend,
+        })
+      : null;
     const text =
-      (llm
-        ? await llm.leetifyLine({
-            map: ctx.map,
-            won: event.won,
-            ourScore: event.ourScore,
-            theirScore: event.theirScore,
-            statsSentence,
-            squadSentence,
-            // Qualitative multi-match direction (no numbers) — speakable as-is and
-            // safe to pass: it quotes no altered Leetify value (see leetify.ts).
-            trend: stats.trend,
-          })
-        : null) ??
+      llmText ??
       // Canned fallback gets the squad comparison AND the trend tacked on too, so an
       // LLM-less setup still covers the crew and the multi-match direction.
       leetifyRecapLine(ctx.map, statsSentence, squadSentence) + (stats.trend ? " " + stats.trend : "");
@@ -210,6 +228,10 @@ async function main(): Promise<void> {
       stillRelevant: canSpeak,
       redactText: true,
     });
+    // Record the recap in the decision log too (redacted — length only), so the
+    // offline "what did it say" trace isn't missing post-match recaps. This path
+    // bypasses the engine, so the engine's onDecision hook never sees it.
+    decisionLog?.write({ snapshot: ctx, event, tier: "smart", text, source: llmText ? "llm" : "fallback", redact: true });
   };
 
   const engine = new CoachEngine((req) => voice.say(req), llm, {
@@ -217,6 +239,10 @@ async function main(): Promise<void> {
     payloadAgeMs: () => roster.lastUpdateAgeMs(),
     lastOwnKillAt: () => roster.lastOwnKillAtMs(),
     ownRoundKills: () => roster.ownRoundKillsNow(),
+    // True in-game start instants (authority feed) — clock callouts schedule off these
+    // so GSI buffering / the ~1-2s Valve plant delay don't make them land late.
+    roundLiveAt: () => roster.roundLiveAtMs(),
+    bombPlantedAt: () => roster.bombPlantedAtMs(),
     fullHistory: () => roster.fullHistory(),
     recentForm: () => sessions.recentForm(roster.context().map),
     finalStats: () => roster.matchReport().stats,
@@ -307,7 +333,15 @@ async function main(): Promise<void> {
     } catch (err) {
       log.error("main", "Error destroying Discord client", err);
     }
-    // Give the async log sink a beat to flush before the process dies.
+    // Flush + close the on-disk sinks so the final frames/decisions/log lines are
+    // written before exit (a redeploy SIGTERM is exactly when the last frames matter).
+    // allSettled never rejects, so one stuck stream can't block the others.
+    await Promise.allSettled([
+      payloadLog?.close() ?? Promise.resolve(),
+      decisionLog?.close() ?? Promise.resolve(),
+      closeLog(),
+    ]);
+    // Give the async log sink a final beat to flush before the process dies.
     await new Promise((resolve) => setTimeout(resolve, 250));
     process.exit(code);
   };

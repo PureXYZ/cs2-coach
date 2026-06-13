@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { log } from "../log.js";
 
@@ -17,7 +17,11 @@ export interface SavedVoiceChannel {
 export function saveVoiceChannel(saved: SavedVoiceChannel): void {
   try {
     mkdirSync(dirname(STATE_FILE), { recursive: true });
-    writeFileSync(STATE_FILE, JSON.stringify(saved), "utf8");
+    // Atomic write: a crash mid-write leaves either the old or the new complete
+    // file, never truncated JSON that loadVoiceChannel would have to discard.
+    const tmp = STATE_FILE + ".tmp";
+    writeFileSync(tmp, JSON.stringify(saved), "utf8");
+    renameSync(tmp, STATE_FILE);
   } catch (err) {
     log.warn("voice", `Could not save voice state: ${err instanceof Error ? err.message : err}`);
   }

@@ -99,6 +99,12 @@ const FRESH_READ_MS = config.gsi.feedStaleMs / 2;
 // heartbeat before yanking authority back from a teammate (anti-flap).
 const PRIMARY_LEAVE_GRACE_MS = Math.min(config.gsi.feedStaleMs + 5_000, config.gsi.feedIdleMs - 1);
 const PRIMARY_RECLAIM_CONFIRM_MS = config.gsi.feedStaleMs - 3_000;
+// Hard ceiling on concurrent feeds. The auth model is a single SHARED token echoed
+// by everyone, so any token holder could POST a flood of distinct valid-format
+// SteamID64s — each would otherwise spawn a GsiTracker+MatchMemory (reaped only after
+// feedIdleMs) and the roster iterates ALL feeds every frame. A real game pairs at most
+// ~10 players, so 16 is ample headroom; past it, new feeds are ignored (logged once).
+const MAX_FEEDS = 16;
 
 export class RosterManager {
   private feeds = new Map<string, FeedState>();
@@ -110,8 +116,10 @@ export class RosterManager {
    *  Leetify recap uses to decide which feeds' live games may veto it, even after
    *  the primary has returned to the menu (its own map then reads undefined). */
   private lastPrimaryMap: string | undefined;
-  /** Seam de-dup: last epoch ms each global event type was forwarded. */
-  private lastGlobalAt = new Map<CoachEvent["type"], number>();
+  /** Seam de-dup: last epoch ms each global event SIGNATURE was forwarded. Keyed by
+   *  type + content (score/round/side) so a re-election re-emitting the SAME logical
+   *  event collapses, while a genuinely different one (new round, new score) passes. */
+  private lastGlobalAt = new Map<string, number>();
   /** Round number a last-man-standing call last fired for (once per round). */
   private lastManRound: number | null = null;
   /** C3: offenders (steamids) already called out as the entry-trade weak link THIS
@@ -130,6 +138,8 @@ export class RosterManager {
   private specNarratedLatch = new Set<string>();
   /** Ops ITEM 14: whether the CONFIGURED primary produced a feed THIS match. */
   private primaryEverSeen = false;
+  /** Log-once latch for the MAX_FEEDS ceiling (a token flood would otherwise spam). */
+  private warnedFeedCap = false;
 
   constructor(private readonly configuredPrimary = config.coach.primarySteam64) {}
 
@@ -145,6 +155,16 @@ export class RosterManager {
 
     let feed = this.feeds.get(steamid);
     if (!feed) {
+      // Reap idle feeds first so legit churn (a friend left, another joined) frees a
+      // slot before the cap bites; only a genuine flood of fresh feeds hits the ceiling.
+      this.reap(now);
+      if (this.feeds.size >= MAX_FEEDS) {
+        if (!this.warnedFeedCap) {
+          this.warnedFeedCap = true;
+          log.warn("roster", `Feed cap (${MAX_FEEDS}) reached — ignoring new feed ${this.shortId(steamid)} (warning shown once)`);
+        }
+        return { events: [], ctx: this.mergedCtx(this.buildTeam(now)) };
+      }
       feed = { tracker: new GsiTracker(), firstSeen: now, lastSeen: now, ctx: EMPTY_CTX, sameSide: 0, oppSide: 0, lastConfirmed: undefined };
       this.feeds.set(steamid, feed);
       log.info("roster", `Feed joined ${this.shortId(steamid)} — ${this.feeds.size} wired`);
@@ -426,18 +446,50 @@ export class RosterManager {
       this.econRing = [];            // Econ ITEM 17: don't leak a buy pattern across games
       this.primaryEverSeen = false;  // Ops ITEM 14: re-arm 'primary never connected'
       this.weakLinkCalled.clear();   // C3: re-arm the per-friend weak-link nudge each match
+      // Per-match high-water set must reset on EVERY new match, not only the 0-0 path in
+      // update() — a cold start straight into a live (non-0-0) game never hits that gate,
+      // and a stale teammate from the prior match would otherwise leak into squadComplete.
+      this.confirmedEver.clear();
     }
     // Events ITEM 16: the spectate-narration latch is per-round — clear at every boundary.
     if (ev.type === "freezetime" || ev.type === "roundEnd" || ev.type === "matchStart") {
       this.specNarratedLatch.clear();
     }
 
-    // Absorb the authority-re-election seam: the same transition emitted twice
-    // within a few seconds by two feeds collapses to one.
-    const last = this.lastGlobalAt.get(ev.type) ?? 0;
+    // Absorb the authority-re-election seam: the SAME logical transition emitted twice
+    // by two feeds collapses to one. Keying on a content signature (not bare type) means
+    // a re-emission of the identical event is dropped while a genuinely different one
+    // (next round, new score) is forwarded immediately even inside the window.
+    const sig = this.globalSignature(ev);
+    const last = this.lastGlobalAt.get(sig) ?? 0;
     if (config.gsi.globalSeamMs > 0 && now - last < config.gsi.globalSeamMs) return null;
-    this.lastGlobalAt.set(ev.type, now);
+    this.lastGlobalAt.set(sig, now);
     return ev;
+  }
+
+  /** Content signature for the seam de-dup: type plus the fields that make a global
+   *  event unique (score/round/side). Two feeds emitting the SAME round-end share a
+   *  signature (collapsed); successive different events don't (forwarded). */
+  private globalSignature(ev: CoachEvent): string {
+    switch (ev.type) {
+      case "roundEnd":
+        return `roundEnd:${ev.ourScore}:${ev.theirScore}:${ev.method}`;
+      case "matchEnd":
+        return `matchEnd:${ev.ourScore}:${ev.theirScore}`;
+      case "matchPoint":
+        return `matchPoint:${ev.forUs}`;
+      case "freezetime":
+      case "roundLive":
+        return `${ev.type}:${ev.round}`;
+      case "bombPlanted":
+      case "bombDefused":
+      case "bombExploded":
+        return `${ev.type}:${ev.ourSide ?? "?"}`;
+      case "timeout":
+        return `timeout:${ev.ours ?? "?"}`;
+      default:
+        return ev.type; // matchStart, halftime — no discriminating content
+    }
   }
 
   private fusePersonal(
@@ -456,7 +508,10 @@ export class RosterManager {
         const specFeed = this.feeds.get(ev.spectatedSteamid);
         if (specFeed) {
           if (this.isFresh(specFeed, now)) return null;
-          this.specNarratedLatch.add(`${ev.spectatedSteamid}:${feed.ctx.round ?? "?"}:${ev.roundKills}`);
+          // Key on the SPECTATED teammate's own round (as we last saw it), NOT the
+          // primary's — if the two feeds are a round apart, the primary's round would
+          // never match the key the teammate's own catch-up kill checks below.
+          this.specNarratedLatch.add(`${ev.spectatedSteamid}:${specFeed.ctx.round ?? "?"}:${ev.roundKills}`);
           return ev;
         }
       }
@@ -523,6 +578,10 @@ export class RosterManager {
     const liveIds = new Set(live.map(([id]) => id));
     for (const id of this.confirmedEver) {
       if (liveIds.has(id)) continue;
+      // The primary is never a stale appendee: its personal state is merged separately
+      // in mergedCtx (a dead/stale primary contributes nothing there, by design), and
+      // listing it here with undefined money/alive would shadow that with a phantom entry.
+      if (id === primaryId) continue;
       const f = this.feeds.get(id);
       if (!f) continue;                       // reaped -> genuinely gone
       if (!this.onRefMap(f, refMap)) continue; // different lobby now
@@ -692,9 +751,12 @@ export class RosterManager {
     if (offenders.length < 2) return undefined;
     const named = offenders.filter((n): n is string => !!n);
     const allSame = named.length === offenders.length && named.every((n) => n === named[0]);
+    // Worded around MONEY, not "buying": buyClass reads the unspent wallet, so a player
+    // sitting on cash may be already-kitted (economizing correctly), not over-buying —
+    // don't assert they spent out of sync, just flag the econ gap to coordinate.
     return allSame
-      ? `${named[0]} has been buying out of sync with the rest of the wired crew the last few rounds.`
-      : `The wired crew has been buying out of sync the last few rounds — someone full-buys while the others save.`;
+      ? `${named[0]}'s money's been out of sync with the wired crew the last few rounds — get the buy calls coordinated.`
+      : `The wired crew's money's been out of sync the last few rounds — one's loaded while the others are saving. Call the buy together.`;
   }
 
   /** Merged context for the engine and LLM: global half from the AUTHORITY feed,
@@ -829,6 +891,18 @@ export class RosterManager {
   /** The primary's exact last-own-kill timestamp (kill-hype staleness checks). */
   lastOwnKillAtMs(): number | null {
     return this.primaryFeed()?.tracker.lastOwnKillAtMs() ?? null;
+  }
+
+  /** The AUTHORITY feed's round-live / bomb-plant epochs — the engine schedules its
+   *  clock callouts off these (the true in-game start) rather than its own handle time,
+   *  so GSI buffering / async processing / the ~1-2s Valve plant delay don't make the
+   *  callout land late. Global timing belongs to the same feed that supplies the events. */
+  roundLiveAtMs(): number | null {
+    return this.authorityFeed()?.tracker.roundLiveAtMs() ?? null;
+  }
+
+  bombPlantedAtMs(): number | null {
+    return this.authorityFeed()?.tracker.bombPlantedAtMs() ?? null;
   }
 
   /** The primary's current own round-kill count (null while dead/no primary). */

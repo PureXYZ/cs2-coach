@@ -1,10 +1,8 @@
 import { Readable } from "node:stream";
 import { StreamType } from "@discordjs/voice";
+import { STREAM_IDLE_MS, TTS_TTFB_MS } from "./constants.js";
 import { idleGuarded } from "./idle.js";
 import type { TtsProvider, TtsResult } from "./types.js";
-
-/** Mid-stream stall watchdog window — the per-fetch abort now guards only TTFB. */
-const STREAM_IDLE_MS = 5_000;
 
 /**
  * Deepgram Aura-2 over REST. encoding=opus returns an Ogg/Opus stream at a fixed
@@ -40,7 +38,7 @@ export class DeepgramTts implements TtsProvider {
     // fails over — it's caught downstream by idleGuarded / the synth deadline,
     // which drop the line and advance rather than retrying the next provider.
     const controller = new AbortController();
-    const ttfbTimer = setTimeout(() => controller.abort(), 10_000);
+    const ttfbTimer = setTimeout(() => controller.abort(), TTS_TTFB_MS);
     let res: Response;
     try {
       res = await fetch(url, {

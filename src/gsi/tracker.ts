@@ -1,6 +1,6 @@
 import type { GsiPayload, GsiPlayer, GsiWeapon, Team, TeamContext } from "./types.js";
 import { MatchMemory, type RoundRecord } from "./memory.js";
-import { config } from "../config.js";
+import { config, STEAMID64_RE } from "../config.js";
 
 // Events the rule engine and LLM coach react to. GSI gives players no kill feed,
 // no positions and no clock — every event here is derivable from own-player state,
@@ -602,7 +602,7 @@ export class GsiTracker {
       // never backfills leavers with bots in competitive/Premier, so a single
       // sighting is conclusive, and "competitive with bots" reports the same
       // map.mode as the real thing — this flag is the only separator.
-      if (this.inMatch && p?.steamid && !/^7656\d{13}$/.test(p.steamid)) {
+      if (this.inMatch && p?.steamid && !STEAMID64_RE.test(p.steamid)) {
         this.botsSeen = true;
       }
       if (roundPhase === "live" && p?.steamid && p.state) {
@@ -832,6 +832,19 @@ export class GsiTracker {
    *  error the rounded context field would introduce. */
   lastOwnKillAtMs(): number | null {
     return this.lastOwnKillAt;
+  }
+
+  /** Epoch ms the current round went live (null between rounds). The engine
+   *  schedules its clock callouts off THIS, not its own handle-time, so GSI
+   *  buffering / async processing lag doesn't make the callout land late. */
+  roundLiveAtMs(): number | null {
+    return this.roundLiveAt;
+  }
+
+  /** Epoch ms the bomb was recorded planted (null when no live plant). Lets the
+   *  bomb-ten callout key off the actual plant frame instead of engine-handle time. */
+  bombPlantedAtMs(): number | null {
+    return this.bombPlantedAt;
   }
 
   /** The player's own round_kills as of the latest payload (null while dead/
