@@ -2,7 +2,8 @@ import { Readable } from "node:stream";
 import { StreamType } from "@discordjs/voice";
 import { STREAM_IDLE_MS, TTS_TTFB_MS } from "./constants.js";
 import { idleGuarded } from "./idle.js";
-import type { TtsProvider, TtsResult } from "./types.js";
+import { currentVoiceId } from "./voices.js";
+import type { SynthOptions, TtsProvider, TtsResult } from "./types.js";
 
 /**
  * ElevenLabs Flash v2.5 over the streaming REST endpoint with native 48 kHz
@@ -15,7 +16,6 @@ export class ElevenLabsTts implements TtsProvider {
 
   constructor(
     private readonly apiKey: string | undefined,
-    private readonly voiceId: string,
     private readonly modelId: string,
     private readonly voiceSettings: {
       stability: number;
@@ -29,8 +29,12 @@ export class ElevenLabsTts implements TtsProvider {
     return !!this.apiKey;
   }
 
-  async synth(text: string): Promise<TtsResult> {
-    const url = new URL(`https://api.elevenlabs.io/v1/text-to-speech/${this.voiceId}/stream`);
+  async synth(text: string, opts?: SynthOptions): Promise<TtsResult> {
+    // Per-line override (the `/coach say voice:` option) wins; otherwise the live
+    // `/coach voice` selection, read fresh each synth so a switch takes effect
+    // on the very next line.
+    const voiceId = opts?.voiceId ?? currentVoiceId();
+    const url = new URL(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`);
     url.searchParams.set("output_format", "opus_48000_64");
 
     // The timeout must guard only time-to-first-byte. The response body is an

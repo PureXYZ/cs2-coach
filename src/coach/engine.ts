@@ -47,6 +47,12 @@ export interface SpeakRequest {
    * exclusive with onPlayed.
    */
   onDropped?: () => void;
+  /**
+   * One-off ElevenLabs voice override for this line only (the `/coach say voice:`
+   * option). Unset = the current `/coach voice` selection. Ignored by the
+   * non-ElevenLabs providers.
+   */
+  voiceId?: string;
 }
 
 export type Speak = (req: SpeakRequest) => void;

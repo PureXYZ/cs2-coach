@@ -338,7 +338,7 @@ export class VoiceCoach {
     const session = this.session;
     this.synthesizing = true;
     this.inFlight = next;
-    this.synthWithDeadline(next.text)
+    this.synthWithDeadline(next.text, next.voiceId)
       .then((result) => {
         this.synthesizing = false;
         this.inFlight = null;
@@ -403,7 +403,7 @@ export class VoiceCoach {
   }
 
   /** TTS with a hard deadline; a result arriving after the deadline is disposed of. */
-  private synthWithDeadline(text: string): Promise<TtsResult> {
+  private synthWithDeadline(text: string, voiceId?: string): Promise<TtsResult> {
     return new Promise<TtsResult>((resolve, reject) => {
       let timedOut = false;
       const timer = setTimeout(() => {
@@ -411,7 +411,7 @@ export class VoiceCoach {
         reject(new Error(`TTS deadline exceeded (${SYNTH_DEADLINE_MS}ms)`));
       }, SYNTH_DEADLINE_MS);
 
-      this.tts.synth(text).then(
+      this.tts.synth(text, voiceId ? { voiceId } : undefined).then(
         (result) => {
           clearTimeout(timer);
           if (timedOut) {
