@@ -61,9 +61,11 @@ THE SQUAD (who you can see):
 - The player's friends are in the voice channel. You only know the names the snapshot gives you (the "team" block, plus any "spectating" name) — never invent or guess a name. Roasting the player is the main job; teammates get lighter teasing.
 - The "team" block appears only when 2+ friends run the coach. It lists ONLY the teammates whose own game you can see — "team.wiredCount" of the squad. You have NO information about any teammate NOT in team.members: not their gear, not their money, not whether they're alive. Treat them as unknown and never speak about them.
 - HONESTY — the most important rule here: NEVER assert a WHOLE-TEAM fact ("everyone's alive", "you're the last one alive", "the team's all broke", "we're split") UNLESS "team.rosterComplete" is true. Otherwise speak only about the players you can see, BY NAME, and hedge the rest: "the three of you I can see are on eco", "last of our guys I can see — dunno about the other two". team.rosterComplete true means the whole squad is wired in and you MAY state those facts with confidence.
+- "team.visibility" is a one-line VERDICT on exactly how much of the squad you can honestly speak for. FOLLOW IT LITERALLY — it overrides any instinct to round "the two I can see" up to "the team". It is the plain-English form of the rosterComplete rule above; when the two ever seem to conflict, obey team.visibility.
 - "team.members[].alive": true = that wired player is up, false = dead, missing = unknown. "team.aliveWired" = how many of the PLAYERS YOU CAN SEE are alive — always phrase it that way, never as a whole-team count unless rosterComplete.
 - "team.econ" lists each wired player's buy money BY NAME. Use it at freezetime to call ONE unified buy and, when one player's loaded and another's broke, to name a DROP ("Mouse, you've got the cash — drop a rifle for Andy"). Only the names and amounts in that list are real; never invent a teammate's money.
-- "team.bombCarrierName" is the wired teammate personally holding the C4 right now — name them when it's time to plant.
+- "team.members[].tier" is "fresh" or "lagging". A LAGGING feed is still connected but its money/alive is a few seconds old — speak that player's money or whether they're up only as "last I saw", and NEVER base a live drop call on a lagging player's wallet. A confirmed DEATH (alive false) stays true at any age; the hedge is for present-tense reads only.
+- "team.bombCarrierName" is the wired teammate personally holding the C4 right now — name them when it's time to plant. But NO POSITIONS for ANYONE, ever: you cannot see where a single player is. Never call a trade or refrag by location ("trade him in apps"), never say who is "exposed", "caught out", "out of position" or "flanking" — you have no map presence for the player OR any teammate, wired or not.
 - While the player is dead and spectating, narrating the spectated teammate BY NAME is still gold.
 
 ${ECONOMY_CHEATSHEET}
@@ -314,6 +316,25 @@ function methodStory(method: string, won: boolean): string {
   return method;
 }
 
+/**
+ * Shared squad clause for the DEAD-AIR break moments (our timeout, halftime, match
+ * end). Gated on a real multi-feed view (ctx.team with 2+ members), NOT on econ
+ * (empty at a break when the crew is dead). Names the wired crew, allows ONE lighter
+ * rotated jab at a DIFFERENT teammate (own money/state only, hedged unless
+ * rosterComplete, at most one). Empty string for a solo player. NOTE (ITEM 12): jab
+ * rotation is only ASKED for, not enforced — recentLines tracks phrasing, not who was named.
+ */
+function squadBreakClause(ctx: MatchContext): string {
+  const members = ctx.team?.members ?? [];
+  if (!ctx.team || members.length <= 1) return "";
+  const names = members.map((m) => m.name).filter(Boolean);
+  const named = names.length ? ` The wired crew right now is ${names.join(", ")}.` : "";
+  const jab = names.length > 1
+    ? ` You MAY land ONE lighter jab at a teammate you haven't ribbed lately — by name, about their OWN money or play only, hedged unless team.rosterComplete, and at most one.`
+    : "";
+  return `${named} Follow team.visibility: speak whole-team facts only if rosterComplete, otherwise stay to the players you can see, by name.${jab}`;
+}
+
 function describeMoment(event: CoachEvent, ctx: MatchContext, longForm = false): string {
   switch (event.type) {
     case "matchStart": {
@@ -371,9 +392,16 @@ function describeMoment(event: CoachEvent, ctx: MatchContext, longForm = false):
       // Multi-feed: the snapshot's team.econ shows the wired crew's money by name —
       // sync the buy and call a named drop when wallets diverge (honest-partial).
       const teamBuy = ctx.team?.econ && ctx.team.econ.length > 1
-        ? ` You can see the wired crew's money by name in team.econ — fold in ONE synced buy call, and if someone's loaded while a teammate's broke, name a specific drop. Only the players listed there, and hedge unless team.rosterComplete.`
+        ? ` You can see the wired crew's money by name in team.econ — each entry also carries equipValue (gear already owned) and alive, so a player sitting on cash with no gear needs a buy while one already kitted can drop, and you NEVER name a drop to a teammate whose alive is false. Fold in ONE synced buy call, and if someone's loaded while a teammate's broke, name a specific drop. Only the players listed there, and hedge unless team.rosterComplete.`
         : "";
-      return `Freezetime / buy period, round ${event.round}. Give ONE buy call matched to the money and loss bonus, plus ONE concrete tactical idea for this map and side. Coaching angle for the tactical idea this round (ground it in the snapshot; ignore it only if the economy dictates otherwise): ${angle}.${playbook}${teamBuy}${mustSpend}${mp}${structure}${timeout} If the round history shows a pattern — lost streak, won pistols, repeated bomb-site losses — use it.`;
+      // Full stack wired — invite ONE coordinated execute with named jobs off the
+      // playbook above (a SUGGESTED setup; positions are never asserted).
+      const squadExecute = ctx.team?.rosterComplete && ctx.team.members.length > 1
+        ? ` Full stack wired (${ctx.team.members.map((m) => m.name).filter(Boolean).join(", ")}): you MAY invite ONE coordinated execute, handing named jobs (entry, flash support, trade, lurk, planter) to the crew off the playbook above. Keep it a SUGGESTED setup — you can't see where anyone actually is — and don't repeat a recent plan.`
+        : "";
+      // Cross-round buy-sync read for a coordinating squad, when buildTeam flagged one.
+      const buySync = ctx.team?.buySyncNote ? ` ${ctx.team.buySyncNote} If it fits, call it out and tell them to sync the next buy.` : "";
+      return `Freezetime / buy period, round ${event.round}. Give ONE buy call matched to the money and loss bonus, plus ONE concrete tactical idea for this map and side. Coaching angle for the tactical idea this round (ground it in the snapshot; ignore it only if the economy dictates otherwise): ${angle}.${playbook}${teamBuy}${squadExecute}${buySync}${mustSpend}${mp}${structure}${timeout} If the round history shows a pattern — lost streak, won pistols, repeated bomb-site losses — use it.`;
     }
     case "bombPlanted":
       if (event.ourSide === "CT") {
@@ -392,7 +420,11 @@ function describeMoment(event: CoachEvent, ctx: MatchContext, longForm = false):
           ctx.lastKillSecondsAgo !== undefined && ctx.lastKillSecondsAgo <= 10
             ? ` The player got a kill ${ctx.lastKillSecondsAgo} seconds ago — they are MID-FIGHT and winning it. Do NOT tell them to save or disengage; back the play in very few words.`
             : "";
-        return `The ENEMY (T side) just planted the bomb — your team is CT, about 40 seconds on the clock. Make the retake-or-save call from the snapshot: gear value, HP, armor, defuse kit, score situation and economy next round. Beyond the team block (the wired players you can see), you don't know teammate gear or alive counts, so phrase it conditionally.${mustWin}${fighting} Short and dry-urgent.`;
+        const numbers =
+          ctx.team?.rosterComplete && typeof ctx.team.aliveWired === "number"
+            ? ` The squad's fully wired — ${ctx.team.aliveWired} of us alive. Make a CONCRETE numbers call on OUR side ("${ctx.team.aliveWired}-man retake" / "only ${ctx.team.aliveWired} of us, save"), but you still can't see the enemy, so hedge THEIR strength.`
+            : ` Beyond the team block (the wired players you can see), you don't know teammate gear or alive counts, so phrase it conditionally.`;
+        return `The ENEMY (T side) just planted the bomb — your team is CT, about 40 seconds on the clock. Make the retake-or-save call from the snapshot: gear value, HP, armor, defuse kit, score situation and economy next round.${numbers}${mustWin}${fighting} Short and dry-urgent.`;
       }
       if (event.ourSide === "T") {
         return `YOUR team just planted the bomb (you're T side). One short post-plant discipline line: positions, patience, play the clock.`;
@@ -408,11 +440,14 @@ function describeMoment(event: CoachEvent, ctx: MatchContext, longForm = false):
       return `The player just TEAM-KILLED a teammate. One deadpan roast or mock-apology on their behalf — sarcastic, not genuinely hostile.`;
     case "timeout":
       if (event.ours) {
-        return `OUR team just called a tactical timeout — a 30-second pause, the one mid-match moment with room for an actual SPEECH. Take 35-60 words, three to five sentences (the one-line cap does NOT apply). Read the snapshot first: if the history shows the rounds bleeding, say why and give ONE concrete fix for the very next round; if we're ahead or it's a routine pause, make it a reset-and-refocus talk instead — same structure, no invented crisis. Either way: the buy plan if money matters, and a dry steadying close. Snide is fine, rah-rah is not.`;
+        return `OUR team just called a tactical timeout — a 30-second pause, the one mid-match moment with room for an actual SPEECH. Take 35-60 words, three to five sentences (the one-line cap does NOT apply). Read the snapshot first: if the history shows the rounds bleeding, say why and give ONE concrete fix for the very next round; if we're ahead or it's a routine pause, make it a reset-and-refocus talk instead — same structure, no invented crisis. Either way: the buy plan if money matters, and a dry steadying close. Snide is fine, rah-rah is not.${squadBreakClause(ctx)}`;
       }
       return `THEY called a tactical timeout. One short dry line: the pause is theirs — they're rattled or regrouping — and our side stays warm and sharp through it.`;
-    case "halftime":
-      return `Halftime break. Give a short, dry halftime talk grounded in the actual half: the score, pistol result, streaks, anything notable from history. Set the mindset for the side switch (economy resets, new roles) — sarcasm welcome, the actual reset facts mandatory.`;
+    case "halftime": {
+      const squad = squadBreakClause(ctx);
+      const buySync = ctx.team?.buySyncNote ? ` ${ctx.team.buySyncNote} A halftime note to sync the buys going into the new side is fair game.` : "";
+      return `Halftime break. Give a short, dry halftime talk grounded in the actual half: the score, pistol result, streaks, anything notable from history. Set the mindset for the side switch (economy resets, new roles) — sarcasm welcome, the actual reset facts mandatory.${squad}${buySync}`;
+    }
     case "matchPoint":
       return event.forUs
         ? "Match point in our favor — closing mindset, no hero plays. Deadpan, not a pep rally."
@@ -425,16 +460,24 @@ function describeMoment(event: CoachEvent, ctx: MatchContext, longForm = false):
       const speech = longForm && event.won !== undefined
         ? ` This is the post-match wrap-up and nothing comes after it — take 50-90 words, three to six sentences (the one-line cap does NOT apply): the result, the thing that actually decided the match (use the full history), the player's own numbers from the snapshot, and ONE concrete thing to fix before the next queue. Spoken register the whole way — it's still you talking, just longer.`
         : "";
+      // Squad break clause + the K/D guardrail: the snapshot's numbers are the
+      // PRIMARY player's alone, so never quote or guess a teammate's stats.
+      const squad = ctx.team && (ctx.team.members?.length ?? 0) > 1
+        ? `${squadBreakClause(ctx)} The K/D and MVP numbers in the snapshot are the PRIMARY player's ALONE — you have NO stats for any teammate, so never quote or guess a teammate's kills, deaths or rating.`
+        : "";
       // won is undefined when the app (re)connected too late to know our side —
       // never let the ternary read that as a loss and roast a winning team.
       if (event.won === undefined) {
-        return `The match just ended ${event.ourScore}-${event.theirScore}, but you don't know which score is ours. A dry, outcome-neutral sign-off — do NOT claim a win or a loss.${speech}`;
+        return `The match just ended ${event.ourScore}-${event.theirScore}, but you don't know which score is ours. A dry, outcome-neutral sign-off — do NOT claim a win or a loss.${speech}${squad}`;
       }
       return event.won
-        ? `The match was just WON ${event.ourScore}-${event.theirScore}. A sarcastic victory lap — grudging respect, call back the best moment from notables/history if there is one.${speech}`
-        : `The match was just lost ${event.ourScore}-${event.theirScore}. A dry sign-off — a real observation from history beats empty comfort. Roast the result, not the people; end on the queue-again note.${speech}`;
+        ? `The match was just WON ${event.ourScore}-${event.theirScore}. A sarcastic victory lap — grudging respect, call back the best moment from notables/history if there is one.${speech}${squad}`
+        : `The match was just lost ${event.ourScore}-${event.theirScore}. A dry sign-off — a real observation from history beats empty comfort. Roast the result, not the people; end on the queue-again note.${speech}${squad}`;
     }
     default:
       return `Event: ${event.type}. React appropriately in one short, dry line.`;
   }
 }
+
+/** Test-only: expose describeMoment so the sim can assert prompt shape offline. */
+export const describeMomentForTest = describeMoment;

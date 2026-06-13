@@ -76,6 +76,9 @@ interface FeedState {
    *  side vs the opposite side (reset each match). Majority decides teammate-vs-enemy. */
   sameSide: number;
   oppSide: number;
+  /** Ops ITEM 9: last membership classification we logged — one line per
+   *  confirm/quarantine TRANSITION, not per payload. undefined until first seen. */
+  lastConfirmed?: boolean;
 }
 
 export interface RosterUpdate {
@@ -84,6 +87,17 @@ export interface RosterUpdate {
 }
 
 const EMPTY_CTX: MatchContext = { playerIsSelf: false };
+
+// Econ ITEM 11 — shared fresh-read threshold (a feed's money/alive are 'now' only
+// when it posted within HALF the connection window). Used by buildTeam's tier tag
+// AND deriveLastMan's survivor freshness check so both move together.
+const FRESH_READ_MS = config.gsi.feedStaleMs / 2;
+// Connection-blip ITEM 1 — authority hysteresis. LEAVE_GRACE keeps the primary as
+// authority through a brief gap; clamped STRICTLY below feedIdleMs so a reaped
+// primary still releases. RECLAIM_CONFIRM makes a returned primary stay fresh ~one
+// heartbeat before yanking authority back from a teammate (anti-flap).
+const PRIMARY_LEAVE_GRACE_MS = Math.min(config.gsi.feedStaleMs + 5_000, config.gsi.feedIdleMs - 1);
+const PRIMARY_RECLAIM_CONFIRM_MS = config.gsi.feedStaleMs - 3_000;
 
 export class RosterManager {
   private feeds = new Map<string, FeedState>();
@@ -99,6 +113,23 @@ export class RosterManager {
   private lastGlobalAt = new Map<CoachEvent["type"], number>();
   /** Round number a last-man-standing call last fired for (once per round). */
   private lastManRound: number | null = null;
+  /** Connection-blip ITEM 1: when the primary's feed first went non-fresh (null while fresh). */
+  private primaryStaleSince: number | null = null;
+  /** Connection-blip ITEM 1: when the primary first became continuously fresh again. */
+  private primaryFreshSince: number | null = null;
+  /** Connection-blip ITEM 2: per-match high-water set of CONFIRMED-teammate steamids. */
+  private confirmedEver = new Set<string>();
+  /** Econ ITEM 17: per-round buy snapshots (last 5) for the cross-round buy-sync read. */
+  private econRing: Array<{ round: number; buys: Array<{ name?: string; klass: "full" | "force" | "eco" }> }> = [];
+  /** Events ITEM 16: spectated kills narrated through a STALE teammate's feed, keyed
+   *  `${steamid}:${round}:${roundKills}`, so the catch-up duplicate is dropped. */
+  private specNarratedLatch = new Set<string>();
+  /** Ops ITEM 5: live COACH_SQUAD_SIZE override (session-only). undefined => always hedge. */
+  private squadSizeOverride: number | undefined = config.coach.squadSize;
+  /** Ops ITEM 15: live primary override; consulted FIRST in primaryId(). */
+  private overridePrimary: string | null = null;
+  /** Ops ITEM 14: whether the CONFIGURED primary produced a feed THIS match. */
+  private primaryEverSeen = false;
 
   constructor(private readonly configuredPrimary = config.coach.primarySteam64) {}
 
@@ -114,7 +145,7 @@ export class RosterManager {
 
     let feed = this.feeds.get(steamid);
     if (!feed) {
-      feed = { tracker: new GsiTracker(), firstSeen: now, lastSeen: now, ctx: EMPTY_CTX, sameSide: 0, oppSide: 0 };
+      feed = { tracker: new GsiTracker(), firstSeen: now, lastSeen: now, ctx: EMPTY_CTX, sameSide: 0, oppSide: 0, lastConfirmed: undefined };
       this.feeds.set(steamid, feed);
       log.info("roster", `Feed joined ${this.shortId(steamid)} — ${this.feeds.size} wired`);
     }
@@ -142,11 +173,17 @@ export class RosterManager {
     ) {
       feed.sameSide = 0;
       feed.oppSide = 0;
+      // Connection-blip ITEM 2: genuinely new match — drop the high-water set on the
+      // SAME 0-0 gate, so a mid-match warmup/timeout blip (live score) never wipes it.
+      this.confirmedEver.clear();
     }
 
     // Record this feed's side membership against the primary anchor, and remember
     // the primary's current map for the recap's quiet-moment check.
     if (isPrimary) {
+      // Ops ITEM 14: the CONFIGURED primary actually showed up this match (clears the
+      // 'never connected' warning). Keyed on the configured id, not the adopted fallback.
+      if (this.configuredPrimary && steamid === this.configuredPrimary) this.primaryEverSeen = true;
       if (feed.ctx.map) this.lastPrimaryMap = feed.ctx.map;
     } else {
       // Vote ONLY when this feed and the primary are on the SAME round. At a
@@ -172,6 +209,7 @@ export class RosterManager {
     }
 
     const refMap = this.refMap(now);
+    this.logMembershipTransition(steamid, feed, now, refMap);
     this.electAuthority(now, refMap);
     const isAuthority = this.authorityId === steamid;
 
@@ -184,7 +222,7 @@ export class RosterManager {
     }
 
     const team = this.buildTeam(now, refMap);
-    const lastMan = this.deriveLastMan(team);
+    const lastMan = this.deriveLastMan(team, now, refMap);
     if (lastMan) out.push(lastMan);
 
     return { events: out, ctx: this.mergedCtx(team) };
@@ -202,7 +240,8 @@ export class RosterManager {
   }
 
   private primaryId(): string | null {
-    return this.configuredPrimary ?? this.adoptedPrimary;
+    // The live /coach primary override wins over both configured and adopted.
+    return this.overridePrimary ?? this.configuredPrimary ?? this.adoptedPrimary;
   }
 
   private isPrimary(steamid: string): boolean {
@@ -249,11 +288,27 @@ export class RosterManager {
     return id === this.primaryId() || feed.sameSide > feed.oppSide;
   }
 
+  /** Ops ITEM 9 — why a feed is NOT a confirmed member, in isTeammate's OWN order
+   *  (stale -> off-map -> vote state), or null if it IS a member. */
+  private membershipReason(feed: FeedState, id: string, now: number, refMap: string | undefined): string | null {
+    if (!this.isFresh(feed, now)) return "stale";
+    if (!this.onRefMap(feed, refMap)) return "off-map";
+    if (id === this.primaryId()) return null;
+    if (feed.sameSide > feed.oppSide) return null;
+    if (feed.sameSide === 0 && feed.oppSide === 0) return "unconfirmed-no-votes-yet";
+    return "opposite-side-vote";
+  }
+
   /** Drop feeds that have gone silent (friend closed CS2 / disconnected). */
   private reap(now: number): void {
     for (const [id, feed] of this.feeds) {
       if (now - feed.lastSeen <= config.gsi.feedIdleMs) continue;
       this.feeds.delete(id);
+      // Genuinely gone (idle-reaped, not a brief blip) — drop from the high-water set
+      // too, or squadComplete would keep counting a departed teammate and fire a false
+      // "last one alive" whole-team call. A blipped feed (stale but < feedIdleMs) is
+      // never reaped here, so it still counts and is still appended as alive=undefined.
+      this.confirmedEver.delete(id);
       if (this.authorityId === id) this.authorityId = null;
       log.info("roster", `Feed dropped ${this.shortId(id)} (idle) — ${this.feeds.size} wired`);
     }
@@ -267,26 +322,41 @@ export class RosterManager {
    *  teammate confirmation, not merely "not a known enemy". */
   private electAuthority(now: number, refMap: string | undefined): void {
     const primary = this.primaryId();
-    if (primary && this.isFresh(this.feeds.get(primary), now)) {
-      this.setAuthority(primary);
-      return;
+    const primaryFeed = primary ? this.feeds.get(primary) : undefined;
+    const primaryFresh = this.isFresh(primaryFeed, now);
+    // ITEM 1 — track the primary's freshness edges for the two hysteresis windows.
+    if (primaryFresh) {
+      this.primaryStaleSince = null;
+      if (this.primaryFreshSince === null) this.primaryFreshSince = now;
+    } else {
+      this.primaryFreshSince = null; // a lapse cancels any in-progress reclaim-confirm
+      if (this.primaryStaleSince === null && primaryFeed) this.primaryStaleSince = now;
+    }
+    if (primary && primaryFresh) {
+      // Reclaim immediately if it never lost authority, else after reclaim-confirm dwell.
+      const teammateHasIt = this.authorityId !== null && this.authorityId !== primary;
+      const confirmed = this.primaryFreshSince !== null && now - this.primaryFreshSince >= PRIMARY_RECLAIM_CONFIRM_MS;
+      if (!teammateHasIt || confirmed) {
+        this.setAuthority(primary);
+        return;
+      }
+      // else: fresh again but inside reclaim-confirm — let the teammate keep authority.
+    } else if (primary && this.authorityId === primary) {
+      // leave-grace: hold the (now non-fresh) primary as authority through a sub-feedIdle gap.
+      const within = this.primaryStaleSince !== null && now - this.primaryStaleSince < PRIMARY_LEAVE_GRACE_MS;
+      if (within && this.feeds.has(primary)) return;
     }
     const eligible = (id: string, f: FeedState) =>
       this.isFresh(f, now) && this.onRefMap(f, refMap) && (id === this.primaryId() || f.sameSide > f.oppSide);
-
     if (this.authorityId) {
       const cur = this.feeds.get(this.authorityId);
       if (cur && eligible(this.authorityId, cur)) return;
     }
-
     let pick: string | null = null;
     let pickSince = Infinity;
     for (const [id, feed] of this.feeds) {
       if (!eligible(id, feed)) continue;
-      if (feed.firstSeen < pickSince) {
-        pick = id;
-        pickSince = feed.firstSeen;
-      }
+      if (feed.firstSeen < pickSince) { pick = id; pickSince = feed.firstSeen; }
     }
     this.setAuthority(pick);
   }
@@ -295,6 +365,35 @@ export class RosterManager {
     if (this.authorityId === id) return;
     this.authorityId = id;
     if (id) log.info("roster", `Authority → ${this.shortId(id)}`);
+  }
+
+  /** Connection-blip ITEM 13 — the squad's furthest-along round: MAX of the
+   *  authority's round and every CONFIRMED, fresh feed's round. Only ever rises, so
+   *  it converts an authority lagging a faster teammate at a boundary into an honest
+   *  unknown rather than a false last-man. Undefined when nothing reports a round. */
+  private squadRefRound(now: number, refMap: string | undefined): number | undefined {
+    let ref = this.authorityFeed()?.tracker.context().round;
+    for (const [id, f] of this.feeds) {
+      if (!this.isTeammate(f, id, now, refMap)) continue;
+      const r = f.ctx.round;
+      if (r !== undefined && (ref === undefined || r > ref)) ref = r;
+    }
+    return ref;
+  }
+
+  /** Ops ITEM 9 — log ONCE when a feed crosses confirmed<->quarantined. The primary
+   *  is always confirmed and never logged as a swap. */
+  private logMembershipTransition(id: string, feed: FeedState, now: number, refMap: string | undefined): void {
+    const confirmed = this.isTeammate(feed, id, now, refMap);
+    if (feed.lastConfirmed === confirmed) return;
+    feed.lastConfirmed = confirmed;
+    if (id === this.primaryId()) return;
+    if (confirmed) {
+      log.info("roster", `Feed confirmed ${this.shortId(id)} (${feed.tracker.ownName() ?? "?"}) — squad member`);
+    } else {
+      const reason = this.membershipReason(feed, id, now, refMap) ?? "unknown";
+      log.info("roster", `Feed quarantined ${this.shortId(id)} (${feed.tracker.ownName() ?? "?"}) — ${reason}`);
+    }
   }
 
   // --- event fusion ----------------------------------------------------------
@@ -308,7 +407,15 @@ export class RosterManager {
     // a roster-level inMatch flag — the per-feed tracker already emits each exactly
     // once per match, including re-announcing a fresh match after an abandon; the
     // seam window below collapses the re-election overlap.)
-    if (ev.type === "matchStart") this.lastManRound = null;
+    if (ev.type === "matchStart") {
+      this.lastManRound = null;
+      this.econRing = [];            // Econ ITEM 17: don't leak a buy pattern across games
+      this.primaryEverSeen = false;  // Ops ITEM 14: re-arm 'primary never connected'
+    }
+    // Events ITEM 16: the spectate-narration latch is per-round — clear at every boundary.
+    if (ev.type === "freezetime" || ev.type === "roundEnd" || ev.type === "matchStart") {
+      this.specNarratedLatch.clear();
+    }
 
     // Absorb the authority-re-election seam: the same transition emitted twice
     // within a few seconds by two feeds collapses to one.
@@ -327,14 +434,16 @@ export class RosterManager {
     refMap: string | undefined,
   ): CoachEvent | null {
     if (isPrimary) {
-      // The primary's own events flow exactly as single-player — EXCEPT a
-      // spectate-narration of a teammate who is themselves a wired feed: that
-      // teammate reports the kill first-hand via their own feed, so drop the
-      // duplicate (the dead-spectate double-count fix). Keyed on the steamid being
-      // a known roster feed at all (not just fresh) so a momentarily-stale wired
-      // teammate isn't double-narrated — they'll report it when they catch up.
-      if (ev.type === "teammateKill" && ev.spectatedSteamid && this.feeds.has(ev.spectatedSteamid)) {
-        return null;
+      // Events ITEM 16: suppress a spectate-narration of a wired teammate ONLY when
+      // their feed is FRESH (their own kill is coming). If STALE, narrate now and
+      // latch it so the catch-up duplicate is dropped below.
+      if (ev.type === "teammateKill" && ev.spectatedSteamid) {
+        const specFeed = this.feeds.get(ev.spectatedSteamid);
+        if (specFeed) {
+          if (this.isFresh(specFeed, now)) return null;
+          this.specNarratedLatch.add(`${ev.spectatedSteamid}:${feed.ctx.round ?? "?"}:${ev.roundKills}`);
+          return ev;
+        }
       }
       return ev;
     }
@@ -345,6 +454,9 @@ export class RosterManager {
     // teammate is ever hyped: an enemy friend on the shared token who triples must
     // NOT get a "teammate's doing the job" line.
     if (ev.type === "kill" && ev.roundKills >= 3 && this.isTeammate(feed, steamid, now, refMap)) {
+      // Events ITEM 16: drop the catch-up duplicate the primary already narrated
+      // while spectating this teammate during their stale window.
+      if (this.specNarratedLatch.delete(`${steamid}:${feed.ctx.round ?? "?"}:${ev.roundKills}`)) return null;
       return { type: "teammateMultiKill", who: { steamid, name: feed.tracker.ownName() }, roundKills: ev.roundKills };
     }
     return null;
@@ -355,11 +467,16 @@ export class RosterManager {
   private buildTeam(now: number, refMap: string | undefined = this.refMap(now)): TeamContext | undefined {
     const live: Array<[string, FeedState]> = [];
     for (const [id, f] of this.feeds) if (this.isTeammate(f, id, now, refMap)) live.push([id, f]);
+    // Connection-blip ITEM 2: every confirmed-fresh member raises the per-match
+    // high-water mark, so a one-feed blip below still counts toward squadComplete.
+    for (const [id] of live) this.confirmedEver.add(id);
     if (live.length < 2) return undefined; // solo / only-primary → no team block (single-player behaviour)
 
-    // The current round, from the authority's live context — used to tell a feed
-    // that's caught up from one still showing last round's (dead) state.
-    const currentRound = this.authorityFeed()?.tracker.context().round;
+    // The squad's furthest-along round (MAX over the authority and every fresh
+    // confirmed feed) — used to tell a feed that's caught up from one still showing
+    // last round's (dead) state, and to convert an authority lagging a faster
+    // teammate at a boundary into an honest unknown rather than a false last-man.
+    const refRound = this.squadRefRound(now, refMap);
     const primaryId = this.primaryId();
     const members: TeamMember[] = live.map(([id, f]) => {
       const c = f.ctx;
@@ -367,18 +484,40 @@ export class RosterManager {
       // round. A teammate who died last round but hasn't updated into this one yet
       // still has a "dead" cached frame — counting that as dead would fire a false
       // last-man at round start. Treat it as unknown instead.
-      const caughtUp = c.round !== undefined && currentRound !== undefined && c.round >= currentRound;
+      const caughtUp = c.round !== undefined && refRound !== undefined && c.round >= refRound;
       const alive = !caughtUp ? undefined : c.playerIsSelf ? (c.health ?? 0) > 0 : false;
+      const staleMs = now - f.lastSeen;
       return {
         name: f.tracker.ownName(),
         isPrimary: id === primaryId,
         alive,
         money: c.playerIsSelf ? c.money : undefined,
-        staleMs: now - f.lastSeen,
+        tier: staleMs <= FRESH_READ_MS ? "fresh" : "lagging",
+        staleMs,
       };
     });
 
-    const squadSize = config.coach.squadSize;
+    // Connection-blip ITEM 2: keep a CONFIRMED member who blipped non-fresh (still
+    // in the map, not yet reaped) in the roster as an UNKNOWN — so rosterComplete /
+    // aliveWired correctly drop to honest-unknown rather than the member silently
+    // vanishing and a false last-man firing on the survivors.
+    const liveIds = new Set(live.map(([id]) => id));
+    for (const id of this.confirmedEver) {
+      if (liveIds.has(id)) continue;
+      const f = this.feeds.get(id);
+      if (!f) continue;                       // reaped -> genuinely gone
+      if (!this.onRefMap(f, refMap)) continue; // different lobby now
+      members.push({
+        name: f.tracker.ownName(),
+        isPrimary: id === primaryId,
+        alive: undefined,
+        money: undefined,
+        tier: "lagging",          // REQUIRED field — a stale appendee is always lagging
+        staleMs: now - f.lastSeen,
+      });
+    }
+
+    const squadSize = this.squadSize();
     const rosterComplete = squadSize !== undefined && live.length >= squadSize;
     // A whole-team alive COUNT is only honest when we can see the whole team AND
     // every member's status is known. Otherwise expose per-player alive (for
@@ -388,25 +527,68 @@ export class RosterManager {
         ? members.filter((m) => m.alive === true).length
         : undefined;
 
-    const carrier = live.find(([, f]) => f.ctx.hasBomb === true);
+    // The C4 carrier — only named when their feed is caught up to the squad round
+    // AND tightly fresh, so a stale weapon_c4 frame never drives a late-round call.
+    const carrier = live.find(([, f]) => {
+      if (f.ctx.hasBomb !== true) return false;
+      const caughtUp = f.ctx.round !== undefined && refRound !== undefined && f.ctx.round >= refRound;
+      return caughtUp && now - f.lastSeen <= FRESH_READ_MS;
+    });
     const bombCarrierName = carrier?.[1].tracker.ownName();
 
     let econ: TeamContext["econ"];
     if (config.coach.teamTactics) {
-      const withMoney = members
-        .filter((m) => m.money !== undefined)
-        .map((m) => ({ name: m.name, money: m.money as number, isPrimary: m.isPrimary }));
-      if (withMoney.length > 0) econ = withMoney;
+      const econEntries = live
+        .map(([id, f], i) => {
+          const m = members[i]; // members[0..live.length-1] align with live by construction
+          return {
+            name: m.name,
+            money: m.money,
+            isPrimary: m.isPrimary,
+            equipValue: f.ctx.playerIsSelf ? f.ctx.equipValue : undefined,
+            alive: m.alive,
+            keep: m.money !== undefined && m.tier === "fresh",
+          };
+        })
+        .filter((e) => e.keep)
+        .map(({ keep: _keep, ...e }) => ({ ...e, money: e.money as number }));
+      if (econEntries.length > 0) econ = econEntries;
     }
 
-    return { wiredCount: live.length, rosterComplete, squadSize, members, aliveWired, bombCarrierName, econ };
+    // Econ ITEM 17: snapshot this freezetime's buys (once per round) and derive the
+    // cross-round buy-sync read. Only under rosterComplete (the whole-team license).
+    let buySyncNote: string | undefined;
+    if (rosterComplete && refRound !== undefined && econ && econ.length >= 2) {
+      const phaseIsFreeze = this.authorityFeed()?.tracker.context().roundPhase === "freezetime";
+      if (phaseIsFreeze && this.econRing.at(-1)?.round !== refRound) {
+        this.econRing.push({ round: refRound, buys: econ.map((e) => ({ name: e.name, klass: buyClass(e.money) })) });
+        if (this.econRing.length > 5) this.econRing.shift();
+      }
+      buySyncNote = this.deriveBuySync();
+    }
+
+    // LLM-prompt ITEM 6a: the one-line honesty verdict the LLM follows literally.
+    const visibility = rosterComplete
+      ? `Full ${squadSize}-stack wired and fresh: you may state whole-team facts (last one alive, everyone's broke) with confidence.`
+      : squadSize !== undefined
+        ? `${live.length} of your ${squadSize}-stack wired: speak only about those players, BY NAME, and hedge everything about the other ${squadSize - live.length} — never a whole-team count.`
+        : `${live.length} teammates wired, squad size unknown: speak only about the players you can see, BY NAME, and hedge the rest — never a whole-team fact.`;
+
+    return { wiredCount: live.length, rosterComplete, squadSize, members, aliveWired, bombCarrierName, econ, buySyncNote, visibility };
   }
 
-  /** "Last one alive" — only with whole-team certainty (rosterComplete), every
-   *  member's status known, and exactly one alive. In always-hedge mode (no squad
-   *  size) the coach can't know un-wired teammates are dead, so it stays silent. */
-  private deriveLastMan(team: TeamContext | undefined): CoachEvent | null {
-    if (!config.coach.teamTactics || !team || !team.rosterComplete) return null;
+  /** "Last one alive" — only with whole-team certainty, every member's status
+   *  known, and exactly one alive. In always-hedge mode (no squad size) the coach
+   *  can't know un-wired teammates are dead, so it stays silent. */
+  private deriveLastMan(team: TeamContext | undefined, now: number, refMap: string | undefined): CoachEvent | null {
+    if (!config.coach.teamTactics || !team) return null;
+    // Connection-blip ITEM 2: a narrower gate than team.rosterComplete (left as-is for
+    // the econ license). Armed when the high-water reached squadSize AND no member we're
+    // actively hearing from is still behind the round.
+    const squadSize = team.squadSize;
+    const noFreshUnknown = !team.members.some((m) => m.alive === undefined && m.staleMs <= config.gsi.feedStaleMs);
+    const squadComplete = squadSize !== undefined && this.confirmedEver.size >= squadSize && noFreshUnknown;
+    if (!squadComplete) return null;
     if (team.members.some((m) => m.alive === undefined)) return null; // a feed behind the round → unsure
     const alive = team.members.filter((m) => m.alive === true);
     if (alive.length !== 1) return null;
@@ -415,15 +597,38 @@ export class RosterManager {
     // have since died without us seeing the death frame) must not be named the last
     // man. Half the connection window is well under the 10s heartbeat yet far above
     // a live player's update rate.
-    if (alive[0].staleMs > config.gsi.feedStaleMs / 2) return null;
+    if (alive[0].staleMs > FRESH_READ_MS) return null; // Econ ITEM 11: shared const (value-identical)
     const ctx = this.mergedCtx(team);
     if (ctx.roundPhase !== "live") return null;
-    if (this.lastManRound === (ctx.round ?? null)) return null;
-    this.lastManRound = ctx.round ?? null;
+    // Connection-blip ITEM 13: latch on the squad-MAX round (same ref buildTeam used).
+    const latchRound = this.squadRefRound(now, refMap) ?? ctx.round ?? null;
+    if (this.lastManRound === latchRound) return null;
+    this.lastManRound = latchRound;
     const survivor = alive[0];
     // The primary survivor is addressed in the second person ("you're the last
     // one up"); a teammate survivor is named.
     return { type: "lastManStanding", who: { name: survivor.isPrimary ? undefined : survivor.name }, rosterComplete: true };
+  }
+
+  /** Econ ITEM 17 — read the last few rounds' buy snapshots for a recurring out-of-sync
+   *  pattern (one lone full-buyer while the rest save, or vice versa). Names the offender
+   *  only when it's consistently the same player; otherwise a generic crew nudge. */
+  private deriveBuySync(): string | undefined {
+    if (this.econRing.length < 2) return undefined;
+    const offenders: Array<string | undefined> = [];
+    for (const snap of this.econRing) {
+      if (snap.buys.length < 2) continue;
+      const buying = snap.buys.filter((b) => b.klass === "full");
+      const saving = snap.buys.filter((b) => b.klass === "eco");
+      if (buying.length === 1 && saving.length >= 1) offenders.push(buying[0].name);
+      else if (saving.length === 1 && buying.length >= 1) offenders.push(saving[0].name);
+    }
+    if (offenders.length < 2) return undefined;
+    const named = offenders.filter((n): n is string => !!n);
+    const allSame = named.length === offenders.length && named.every((n) => n === named[0]);
+    return allSame
+      ? `${named[0]} has been buying out of sync with the rest of the wired crew the last few rounds.`
+      : `The wired crew has been buying out of sync the last few rounds — someone full-buys while the others save.`;
   }
 
   /** Merged context for the engine and LLM: global half from the AUTHORITY feed,
@@ -501,6 +706,52 @@ export class RosterManager {
     let n = 0;
     for (const [id, f] of this.feeds) if (this.isTeammate(f, id, now, refMap)) n++;
     return n;
+  }
+
+  /** Ops ITEM 5: set the live COACH_SQUAD_SIZE override (session-only). A non-positive
+   *  value clears it back to always-hedge. */
+  setSquadSize(n: number): void {
+    this.squadSizeOverride = n > 0 ? n : undefined;
+    log.info("roster", `Squad size set to ${this.squadSizeOverride ?? "unset (always hedge)"} via /coach squad`);
+  }
+
+  /** Ops ITEM 5: the effective squad size (override; undefined => always hedge). */
+  squadSize(): number | undefined { return this.squadSizeOverride; }
+
+  /** Ops ITEM 9: feeds currently connected but NOT confirmed members, with the reason
+   *  (stale/off-map/vote state) — for /coach status. */
+  quarantinedFeeds(): { name?: string; reason: string }[] {
+    const now = Date.now();
+    const refMap = this.refMap(now);
+    const out: { name?: string; reason: string }[] = [];
+    for (const [id, f] of this.feeds) {
+      if (now - f.lastSeen > config.gsi.feedIdleMs) continue;
+      const reason = this.membershipReason(f, id, now, refMap);
+      if (reason) out.push({ name: f.tracker.ownName(), reason });
+    }
+    return out;
+  }
+
+  /** Ops ITEM 14: whether the CONFIGURED primary produced a feed this match. */
+  primaryEverSeenThisMatch(): boolean { return this.primaryEverSeen; }
+
+  /** Ops ITEM 15: live /coach primary override. Refuses a bad id, a non-confirmed
+   *  feed, or a swap mid-round (it repoints session memory; deferred to a break). */
+  setPrimary(steamid: string): { ok: true } | { ok: false; reason: string } {
+    if (!STEAMID64_RE.test(steamid)) return { ok: false, reason: "that's not a valid SteamID64" };
+    const now = Date.now();
+    const refMap = this.refMap(now);
+    const feed = this.feeds.get(steamid);
+    if (!feed || !this.isTeammate(feed, steamid, now, refMap)) {
+      return { ok: false, reason: "that SteamID isn't a currently-confirmed wired teammate" };
+    }
+    if (this.mergedCtx(this.buildTeam(now, refMap)).roundPhase === "live") {
+      return { ok: false, reason: "round's live — I'll swap it at the next freeze/round end" };
+    }
+    this.overridePrimary = steamid;
+    this.setAuthority(null);
+    log.info("roster", `Primary → ${this.shortId(steamid)} (${feed.tracker.ownName() ?? "?"}) via /coach primary`);
+    return { ok: true };
   }
 
   /** Merged context snapshot (timer callouts + status), recomputed live. */
@@ -586,6 +837,13 @@ export class RosterManager {
   private shortId(steamid: string): string {
     return `…${steamid.slice(-5)}`;
   }
+}
+
+/** Econ ITEM 17 — coarse buy bucket for the cross-round buy-sync read. */
+function buyClass(money: number): "full" | "force" | "eco" {
+  if (money >= 4000) return "full";
+  if (money >= 2000) return "force";
+  return "eco";
 }
 
 /** The key with the highest count in a tally, or undefined for an empty tally or

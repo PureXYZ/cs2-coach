@@ -23,14 +23,22 @@ export interface BotDeps {
   voice: VoiceCoach;
   /** /coach quiet's flag — owned by index.ts so the engine shares it. */
   quiet: { get: () => boolean; set: (on: boolean) => void };
+  /** Ops ITEM 5: /coach squad <n> read/set the live squad-size override (session-only). */
+  squad: { get: () => number | undefined; set: (n: number) => void };
+  /** Ops ITEM 15: /coach primary <steamid64> — promote a confirmed teammate to primary. */
+  setPrimary: (steamid: string) => { ok: true } | { ok: false; reason: string };
   status: () => {
     gsiAgeMs: number | null;
     ttsProviders: string[];
     llmModel: string | null;
-    /** Cross-session memory size, for the status readout. */
     sessionsOnFile: number;
-    /** How many player feeds (you + friends) are currently wired in. */
     wiredFeeds: number;
+    /** Ops ITEM 5: effective squad size (override or env). */
+    squadSize: number | undefined;
+    /** Ops ITEM 14: whether the configured primary has connected a feed this match. */
+    primaryMode: "present" | "friend-only" | "solo";
+    /** Ops ITEM 9: non-member feeds still connected and why — rendered only when non-empty. */
+    quarantined: { name?: string; reason: string }[];
   };
 }
 
@@ -103,6 +111,14 @@ const commands = [
     .addSubcommand((sub) => sub.setName("quiet").setDescription("Mute/unmute the coach (game tracking continues)"))
     .addSubcommand((sub) =>
       sub
+        .setName("squad")
+        .setDescription("Set how many of you are running the coach (0 = always hedge)")
+        .addIntegerOption((opt) =>
+          opt.setName("size").setDescription("Squad size, 0-10 (0 clears whole-team calls)").setMinValue(0).setMaxValue(10).setRequired(true),
+        ),
+    )
+    .addSubcommand((sub) =>
+      sub
         .setName("song")
         .setDescription("Blast a song in the voice channel")
         .addStringOption((opt) =>
@@ -112,7 +128,13 @@ const commands = [
             .addChoices(...Object.entries(SONGS).map(([value, s]) => ({ name: s.name, value }))),
         ),
     )
-    .addSubcommand((sub) => sub.setName("stop").setDescription("Stop the song (coaching continues)")),
+    .addSubcommand((sub) => sub.setName("stop").setDescription("Stop the song (coaching continues)"))
+    .addSubcommand((sub) =>
+      sub
+        .setName("primary")
+        .setDescription("Promote a teammate to primary (session memory binds next match)")
+        .addStringOption((opt) => opt.setName("steamid64").setDescription("The teammate's SteamID64 (17 digits)").setRequired(true)),
+    ),
 ].map((c) => c.toJSON());
 
 export async function startBot(deps: BotDeps): Promise<Client> {
@@ -250,6 +272,32 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
       return;
     }
 
+    case "squad": {
+      const size = interaction.options.getInteger("size", true);
+      deps.squad.set(size);
+      await interaction.reply({
+        content: size === 0
+          ? "Squad size cleared — I'll always hedge to \"the players I can see\" and never call whole-team facts."
+          : `Squad size set to **${size}**. Whole-team calls unlock once ${size} of you are CONFIRMED wired (run \`/coach status\`).`,
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    case "primary": {
+      const steamid = interaction.options.getString("steamid64", true).trim();
+      const result = deps.setPrimary(steamid);
+      if (!result.ok) {
+        await interaction.reply({ content: `Can't switch primary — ${result.reason}.`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+      await interaction.reply({
+        content: "Done — that feed's the primary now and stays it for the rest of this match and onward. Heads up: this match's recording and Leetify recap will follow the new feed, not the old primary.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
     case "status": {
       const s = deps.status();
       const gsi =
@@ -258,18 +306,27 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
           : s.gsiAgeMs < 60_000
             ? `✅ live (last update ${(s.gsiAgeMs / 1000).toFixed(1)}s ago)`
             : `⚠️ stale (last update ${Math.round(s.gsiAgeMs / 1000)}s ago)`;
-      await interaction.reply({
-        content: [
-          `**GSI:** ${gsi}`,
-          `**Voice:** ${deps.voice.connected ? "✅ connected" : "❌ not in a channel"} (queue: ${deps.voice.queueLength})`,
-          `**Squad:** ${s.wiredFeeds} player feed${s.wiredFeeds === 1 ? "" : "s"} wired in${s.wiredFeeds > 1 ? " (team coaching live)" : ""}`,
-          `**Coach:** ${deps.quiet.get() ? "🔇 muted (`/coach quiet` to unmute)" : "🎙️ speaking"}`,
-          `**TTS:** ${s.ttsProviders.join(" → ")}`,
-          `**LLM:** ${s.llmModel ?? "disabled (rule-based lines only)"}`,
-          `**Memory:** ${s.sessionsOnFile} past match${s.sessionsOnFile === 1 ? "" : "es"} on file`,
-        ].join("\n"),
-        flags: MessageFlags.Ephemeral,
-      });
+      const squadLine = (() => {
+        const base = `${s.wiredFeeds} player feed${s.wiredFeeds === 1 ? "" : "s"} wired in`;
+        const sizeNote = s.squadSize !== undefined ? ` of ${s.squadSize}` : " (always hedging — set \`/coach squad <n>\`)";
+        const mode = s.primaryMode === "friend-only"
+          ? " — ⚠️ your configured primary hasn't connected this match (recording/Leetify will skip)"
+          : s.primaryMode === "solo" ? " — no primary configured (adopted the first feed)" : "";
+        return `**Squad:** ${base}${sizeNote}${s.wiredFeeds > 1 ? " (team coaching live)" : ""}${mode}`;
+      })();
+      const statusLines = [
+        `**GSI:** ${gsi}`,
+        `**Voice:** ${deps.voice.connected ? "✅ connected" : "❌ not in a channel"} (queue: ${deps.voice.queueLength})`,
+        squadLine,
+        `**Coach:** ${deps.quiet.get() ? "🔇 muted (\`/coach quiet\` to unmute)" : "🎙️ speaking"}`,
+        `**TTS:** ${s.ttsProviders.join(" → ")}`,
+        `**LLM:** ${s.llmModel ?? "disabled (rule-based lines only)"}`,
+        `**Memory:** ${s.sessionsOnFile} past match${s.sessionsOnFile === 1 ? "" : "es"} on file`,
+      ];
+      if (s.quarantined.length > 0) {
+        statusLines.push(`**Quarantined:** ${s.quarantined.map((q) => `${q.name ?? "unknown feed"} — ${q.reason}`).join("; ")}`);
+      }
+      await interaction.reply({ content: statusLines.join("\n"), flags: MessageFlags.Ephemeral });
       return;
     }
   }

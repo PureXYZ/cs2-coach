@@ -218,12 +218,24 @@ async function main(): Promise<void> {
         log.info("main", on ? "Coach muted via /coach quiet" : "Coach unmuted");
       },
     },
+    squad: {
+      get: () => roster.squadSize(),
+      set: (n) => roster.setSquadSize(n),
+    },
+    setPrimary: (steamid) => roster.setPrimary(steamid),
     status: () => ({
       gsiAgeMs: gsi.lastPayloadAgeMs(),
       ttsProviders: tts.activeNames,
       llmModel: llm ? `${config.llm.model} (mid-round: ${config.llm.fastModel})` : null,
       sessionsOnFile: sessions.count,
       wiredFeeds: roster.wiredCount(),
+      squadSize: roster.squadSize(),
+      primaryMode: !config.coach.primarySteam64
+        ? ("solo" as const)
+        : roster.primaryEverSeenThisMatch()
+          ? ("present" as const)
+          : ("friend-only" as const),
+      quarantined: roster.quarantinedFeeds(),
     }),
   });
 
