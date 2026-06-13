@@ -58,7 +58,7 @@ So the coach can never call enemy positions or alive counts — nothing can whil
 - Post-match wrap-up — 50–90 spoken words on what decided the match, your numbers, and one thing to fix.
 - Leetify recap — once [Leetify](https://leetify.com/) finishes parsing the demo (typically 5–15 min) the coach reads their headline numbers out in voice, waiting until you're not mid-game. Needs a Leetify account; the data is spoken live and never stored.
 
-**With friends** — when your squad runs the same cfg, all of the above goes team-wide: synced buy calls, drop suggestions by name, and teammate-highlight callouts, while staying honest about the players it can't see (see [Play with your friends](#7-play-with-your-friends-multi-player)).
+**With friends** — when your squad runs the same cfg, all of the above goes team-wide: synced buy calls, drop suggestions by name, and teammate-highlight callouts, while staying honest about the players it can't see (see [Play with your friends](#8-play-with-your-friends-multi-player)).
 
 The persona throughout is a dry, sarcastic, permanently unimpressed coach — by design.
 
@@ -101,11 +101,25 @@ Put an Anthropic API key in `ANTHROPIC_API_KEY` (https://platform.claude.com). W
 
 Optional: `PLAYER_NICKNAME` — the spoken name for you (defaults to your Steam name, which TTS may mangle).
 
-### 5. Generate + install the GSI config (the only thing CS2 needs)
+### 5. Set the coach's public address (`COACH_PUBLIC_HOST`)
+
+Put the address CS2 should send game state to in `.env`:
 
 ```bash
-npm run cfg -- --host <ip-or-domain>   # coach on the hosted server (preferred)
-npm run cfg -- --host 127.0.0.1        # coach on the same PC as CS2 (dev/testing)
+COACH_PUBLIC_HOST=https://coach.example.com   # hosted with a domain + HTTPS (preferred)
+COACH_PUBLIC_HOST=http://203.0.113.7:3000     # hosted on a raw droplet IP
+COACH_PUBLIC_HOST=http://127.0.0.1:3000       # coach on the same PC as CS2 (dev/testing)
+```
+
+This is the single source of truth for both `npm run cfg` and the `/coach setup` command — point it at a **stable domain** so a server IP change never breaks an already-installed cfg. (Hosting details are in [docs/HOSTING.md](docs/HOSTING.md).)
+
+### 6. Generate + install the GSI config (the only thing CS2 needs)
+
+The easy path for anyone in your Discord — including you — is **`/coach setup`**: the bot DMs the config file and the steps (in Steam, right-click **Counter-Strike 2 → Manage → Browse local files**, then drop the file in `game\csgo\cfg`). Or generate it from the CLI:
+
+```bash
+npm run cfg                       # uses COACH_PUBLIC_HOST from .env
+npm run cfg -- --host <ip-or-url> # override the host explicitly
 ```
 
 This writes `cs2/gamestate_integration_coach.cfg`. Copy that file to the gaming PC at:
@@ -114,9 +128,9 @@ This writes `cs2/gamestate_integration_coach.cfg`. Copy that file to the gaming 
 C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Global Offensive\game\csgo\cfg\
 ```
 
-Then **restart CS2** (the cfg is only read at launch). The cfg hardcodes the address, so the coach host needs a stable IP or domain. (Hosting details are in [docs/HOSTING.md](docs/HOSTING.md).)
+Then **restart CS2** (the cfg is only read at launch).
 
-### 6. Run it
+### 7. Run it
 
 On the hosted server it runs as a Docker container — `npm run deploy` (or a push to main) builds and restarts it; see [docs/HOSTING.md](docs/HOSTING.md). Locally:
 
@@ -136,15 +150,15 @@ In Discord: join a voice channel with your friends, run **`/coach join`**, then 
 
 Set `GSI_LOG_PAYLOADS=false` to turn the payload capture off; old files can be deleted freely.
 
-### 7. Play with your friends (multi-player)
+### 8. Play with your friends (multi-player)
 
 The coach reads the whole squad, not just you. Each friend's CS2 client only exposes its *own* player to GSI — but pointing several clients at the same coach unions those feeds into a real team view: everyone's money and loadouts, who's alive, who's carrying the bomb, who just popped off.
 
-Setup is the same cfg, shared:
+Setup is the same cfg, shared — and a friend can fetch it themselves:
 
-1. You already generated `cs2/gamestate_integration_coach.cfg` in step 5 (pointed at the hosted coach, with the shared `GSI_TOKEN` baked in).
-2. **Send that exact same file to each friend.** They drop it in their own `…\csgo\cfg\` folder and restart CS2 — nothing per-friend to edit. Each client tags its own Steam ID, and the coach demuxes the feeds automatically.
-3. In `.env`, set `COACH_PRIMARY_STEAM64` to **your** SteamID64 so cross-session memory and the Leetify recap stay tied to your account even if a friend's game connects first. (`/coach status` shows how many feeds are wired in.)
+1. Each friend runs **`/coach setup`** in Discord. The bot DMs them `gamestate_integration_coach.cfg` (already pointed at the hosted coach, with the shared `GSI_TOKEN` baked in) plus the steps: in Steam, right-click **Counter-Strike 2 → Manage → Browse local files**, drop the file in `game\csgo\cfg`, and fully restart CS2. No file to pass around by hand, and nothing per-friend to edit — each client tags its own Steam ID, so the coach demuxes the feeds automatically. (This needs `COACH_PUBLIC_HOST` set; see step 5.)
+2. The friend runs **`/coach status`** — their own name shows up under **Feeds** within ~10s, confirming their game is reaching the coach.
+3. In `.env`, set `COACH_PRIMARY_STEAM64` to **your** SteamID64 so cross-session memory and the Leetify recap stay tied to your account even if a friend's game connects first.
 
 What changes when 2+ of you are wired:
 
@@ -158,11 +172,12 @@ Set `COACH_TEAM_TACTICS=false` to switch the team-economy/drop calls off and kee
 
 | Command | What it does |
 |---|---|
+| `/coach setup` | DMs you the GSI config file plus where-to-drop-it steps — the no-software way for a friend to get connected (needs `COACH_PUBLIC_HOST` set) |
 | `/coach join` | Joins the voice channel you're in |
 | `/coach leave` | Leaves voice |
 | `/coach quiet` | Mutes/unmutes the coach mid-match (game tracking continues) |
 | `/coach say <text>` | Speak arbitrary text (test) |
-| `/coach status` | GSI freshness, squad feeds wired in, voice/queue, mute state, TTS chain, LLM model, session memory |
+| `/coach status` | GSI freshness, **feeds connected right now** (confirm a friend's install), voice/queue, mute state, TTS chain, LLM model, session memory |
 | `/coach song [title]` | Plays one of the coach's covers — pick from buttons or pass a title (EZ4ENCE, Xue Hua Piao Piao, Zenzenzense, White Pony); picking while one plays switches songs |
 | `/coach stop` | Stops the song; coaching lines resume |
 

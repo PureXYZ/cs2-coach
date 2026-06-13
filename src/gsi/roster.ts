@@ -503,6 +503,22 @@ export class RosterManager {
     return n;
   }
 
+  /** Every feed POSTing right now, regardless of the same-side vote — the honest
+   *  "is CS2 actually talking to the coach?" signal for /coach setup confirmation.
+   *  A freshly-installed feed in warmup/menu has cast no side votes yet, so it is
+   *  NOT a confirmed teammate (wiredCount excludes it) but it IS connected here —
+   *  which is exactly what a friend needs to see to know their install worked. */
+  connectedFeeds(): Array<{ name: string; ageMs: number }> {
+    const now = Date.now();
+    const out: Array<{ name: string; ageMs: number }> = [];
+    for (const f of this.feeds.values()) {
+      const ageMs = now - f.lastSeen;
+      if (ageMs > config.gsi.feedStaleMs) continue;
+      out.push({ name: f.tracker.ownName() ?? f.tracker.providerName() ?? "a player", ageMs });
+    }
+    return out.sort((a, b) => a.ageMs - b.ageMs);
+  }
+
   /** Merged context snapshot (timer callouts + status), recomputed live. */
   context(): MatchContext {
     return this.mergedCtx(this.buildTeam(Date.now()));
