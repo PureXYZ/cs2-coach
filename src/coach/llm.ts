@@ -34,6 +34,7 @@ VOICE:
 - BANNED: literary or written-English phrasing ("expectations set at sea level", "the projections did not see that coming", "taken like an unlocked bike"). If nobody would say it out loud mid-game, don't write it.
 - The sarcasm is the wrapper, NEVER the content: every line still carries the real call — the buy, the retake/save decision, the score, the discipline point. A joke that replaces the advice is a failed line.
 - Don't recycle joke constructions: if a recent line opened "Oh look," or "Congratulations," find a new angle.
+- LOCK THE REGISTER on these — this is the mean-but-dry voice, no warming up: "Full buy, you've got the cash for once, so try not to feed it back to them in twenty seconds." / "Nice clutch. Now do that when it's not three rounds too late to matter." Snide, useful, never a hug. Don't drift soft, supportive or hype-coach — the player asked for the roast, not a cheerleader.
 
 WHAT YOU CAN AND CANNOT SEE:
 - You see the player's OWN state (money, HP, armor, weapons, kills), team scores, round history and the match memory. You have NO kill feed and NO positions, and NO data on the ENEMY beyond their loss-bonus level. You do NOT see teammates' state EXCEPT the ones in the "team" block (see THE SQUAD) and the "spectating" teammate while dead. Never invent positions, alive counts, or any economy not in the snapshot.
@@ -51,6 +52,7 @@ WHAT YOU CAN AND CANNOT SEE:
 - "history" and "notables" really happened — referencing them is encouraged. Inventing other past events is forbidden.
 
 HOW TO SPEAK:
+- Respond with ONLY the spoken line — no preamble, no reasoning, no meta-commentary about your process, no notes. The very first character is the first word of the line.
 - ONE line. Mid-round twitch moments (kills, bomb calls, retake) stay tight: 8-15 words. A freezetime buy call can run longer when you're actually laying out a plan — up to about 35 words — but never pad; every word earns its place. Round-end reactions stay under 15 words (they chain straight into the next buy call). Output ONLY the line — no preamble, quotes, markdown, emoji or reasoning. It goes straight to text-to-speech.
 - Say "nade" or "grenade", never the bare letters "HE" — text-to-speech reads that as the pronoun "he".
 - Plain spoken English, contractions welcome. Deadpan, not shouty; mid-round lines are short and dry-urgent.
@@ -149,6 +151,11 @@ export class LlmCoach {
           ...(tier === "smart" && this.effort
             ? { output_config: { effort: longForm ? "high" : this.effort } }
             : {}),
+          // Adaptive thinking ONLY on the long-form speeches (wrap-up, timeout),
+          // where the extra reasoning sharpens a multi-sentence debrief and the
+          // latency cost is free. The fast/freezetime one-liners stay thinking-off
+          // (they run effort=low precisely for latency) — a think step would tax it.
+          ...(longForm ? { thinking: { type: "adaptive" as const } } : {}),
           system,
           messages: [{ role: "user", content: userContent }],
         },
@@ -195,13 +202,22 @@ export class LlmCoach {
     ourScore: number;
     theirScore: number;
     statsSentence: string;
+    /** A qualitative multi-match trend clause (direction only, NO numbers) — e.g.
+     *  "your preaim's been creeping up the last few games". Spoken as-is if used;
+     *  it introduces no values, so the spoken-number verifier stays untouched. */
+    trend?: string;
   }): Promise<string | null> {
     const where = input.map ? ` on ${mapDisplayName(input.map)}` : "";
     const result = input.won === undefined ? "" : input.won ? " (won)" : " (lost)";
     const userContent = [
       `Leetify finished analyzing the demo of the match that ended a while ago${where}, final score ${input.ourScore}-${input.theirScore}${result}. The players are BETWEEN games right now — this is downtime talk, not a mid-round call.`,
       `Leetify's numbers for the player: ${input.statsSentence}.`,
-      `Speak ONE recap, 25-50 words (the usual cap doesn't apply): credit Leetify by name, read the headline numbers EXACTLY as given (you may leave stats out, never change a value), and land one dry verdict. Say "minus" for negative numbers — no symbols, it goes straight to text-to-speech.`,
+      // Trend is qualitative (direction, no numbers) — the model may speak it as
+      // written without tripping the verifier below (which only polices numerals).
+      input.trend
+        ? `Recent multi-match trend from Leetify (qualitative, speak as-is if used): ${input.trend}`
+        : "",
+      `Speak ONE recap, 25-50 words (the usual cap doesn't apply): credit Leetify by name, read the headline numbers EXACTLY as given (you may leave stats out, never change a value), and land one dry verdict. You may reference the multi-match trend if it's given. Say "minus" for negative numbers — no symbols, it goes straight to text-to-speech.`,
       this.recentLines.length
         ? `Your recent lines, oldest first (do NOT reuse their phrasing, openers or joke constructions): ${JSON.stringify(this.recentLines)}`
         : "",
@@ -305,6 +321,55 @@ function roundEndNextUp(event: { ourScore: number; theirScore: number }, ctx: Ma
   return "";
 }
 
+/**
+ * A concise factual loadout note for the freezetime / CT-retake prompt, so the
+ * call can get weapon-specific (AWP angle vs dry-gun vs use-your-util) instead
+ * of a generic "full buy". Empty string when no loadout is in the snapshot
+ * (dead/spectating or warmup) — nothing invented. Self+alive only by construction
+ * (the tracker omits ctx.loadout otherwise).
+ */
+function loadoutNote(ctx: MatchContext): string {
+  const lo = ctx.loadout;
+  if (!lo?.primary) return "";
+  // Classify the primary so the model can make weapon-specific calls without us
+  // hard-coding every gun name — AWP plays differently to a rifle or a pistol.
+  const t = lo.primaryType;
+  const klass =
+    lo.primary === "awp" || t === "SniperRifle"
+      ? "an AWP"
+      : t === "Pistol"
+        ? "a pistol"
+        : t === "Rifle" || t === "Machine Gun"
+          ? "a rifle"
+          : `a ${lo.primary}`;
+  // "Low ammo" only when BOTH clip and reserve are genuinely thin — a fresh
+  // buy reads full, so this fires on a dry-gun eco, not after every reload.
+  const lowAmmo =
+    lo.clip !== undefined && lo.reserve !== undefined && lo.clip <= 5 && lo.reserve <= 30
+      ? ` Ammo is low (${lo.clip} in the clip, ${lo.reserve} reserve) — a reload or a swap may matter.`
+      : "";
+  const nades = lo.nades?.length
+    ? ` They are carrying ${lo.nades.length} grenade${lo.nades.length === 1 ? "" : "s"} (${lo.nades.join(", ")}) — remind them to use the util.`
+    : " They have no grenades.";
+  return ` The player's own gun is ${lo.primary} (${klass}).${lowAmmo}${nades}`;
+}
+
+/** Own-data patterns this match, when the tracker surfaced any — real, derived
+ *  from the records, so the coach may state them as fact (at most one per line). */
+function habitsNote(ctx: MatchContext): string {
+  return ctx.habits?.length
+    ? ` Own-data patterns this match (real, use at most one): ${JSON.stringify(ctx.habits)}`
+    : "";
+}
+
+/** The focus the player asked to be held to this session — work it in when
+ *  relevant, never force it into every line. Empty when no goal is set. */
+function goalNote(ctx: MatchContext): string {
+  return ctx.goal
+    ? ` The player asked you to hold them to ONE focus this session: "${ctx.goal}". Work it in when this moment is relevant to it — do not force it into every line.`
+    : "";
+}
+
 /** True translation of GSI's win-condition token, relative to OUR side. */
 function methodStory(method: string, won: boolean): string {
   if (method.includes("bomb")) return won ? "your bomb detonated" : "their bomb detonated on you";
@@ -323,9 +388,9 @@ function describeMoment(event: CoachEvent, ctx: MatchContext, longForm = false):
       // The usual case: round-1 freezetime arrives in the same GSI frame and
       // its event is suppressed — this one line is greeting AND pistol call.
       if (ctx.roundPhase === "freezetime" && ctx.roundKind === "pistol") {
-        return `A new match is starting on ${ctx.map ?? event.map} and the ROUND 1 PISTOL freezetime is already running. This ONE line is both the greeting and the pistol call: one concrete plan (where to go, armor vs util vs upgraded pistol, together as five). Don't let the greeting eat the call.${form}`;
+        return `A new match is starting on ${ctx.map ?? event.map} and the ROUND 1 PISTOL freezetime is already running. This ONE line is both the greeting and the pistol call: one concrete plan (where to go, armor vs util vs upgraded pistol, together as five). Don't let the greeting eat the call.${form}${goalNote(ctx)}`;
       }
-      return `A new match is starting on ${ctx.map ?? event.map}. One greeting line in character: expectations appropriately low, plus ONE concrete focus point for the match (pistols, trading, util — pick from history if it shows a habit).${form}`;
+      return `A new match is starting on ${ctx.map ?? event.map}. One greeting line in character: expectations appropriately low, plus ONE concrete focus point for the match (pistols, trading, util — pick from history if it shows a habit).${form}${goalNote(ctx)}`;
     }
     case "freezetime": {
       // One-shot engine flag (cooldown-gated) — without it this directive
@@ -373,7 +438,15 @@ function describeMoment(event: CoachEvent, ctx: MatchContext, longForm = false):
       const teamBuy = ctx.team?.econ && ctx.team.econ.length > 1
         ? ` You can see the wired crew's money by name in team.econ — fold in ONE synced buy call, and if someone's loaded while a teammate's broke, name a specific drop. Only the players listed there, and hedge unless team.rosterComplete.`
         : "";
-      return `Freezetime / buy period, round ${event.round}. Give ONE buy call matched to the money and loss bonus, plus ONE concrete tactical idea for this map and side. Coaching angle for the tactical idea this round (ground it in the snapshot; ignore it only if the economy dictates otherwise): ${angle}.${playbook}${teamBuy}${mustSpend}${mp}${structure}${timeout} If the round history shows a pattern — lost streak, won pistols, repeated bomb-site losses — use it.`;
+      // Enemy loss bonus is the ONLY enemy-economy signal we get — translate the
+      // raw number into a buy prediction so the call can pre-empt an enemy eco/force.
+      const enemyEcon = ctx.theirLossStreak !== undefined
+        ? ` Their loss-bonus level is ${ctx.theirLossStreak} (0 = they will buy, 1-2 = eco or cheap force likely, 3+ = broke this round but a round from full rifles) — fold an anti-eco or rebuy-warning beat into the call when actionable.`
+        : "";
+      // Own loadout, when alive: lets the call get specific — AWP vs rifle vs dry
+      // pistol, low ammo, util on hand — instead of a generic "full buy" line.
+      const loadout = loadoutNote(ctx);
+      return `Freezetime / buy period, round ${event.round}. Give ONE buy call matched to the money and loss bonus, plus ONE concrete tactical idea for this map and side. Coaching angle for the tactical idea this round (ground it in the snapshot; ignore it only if the economy dictates otherwise): ${angle}.${playbook}${teamBuy}${enemyEcon}${loadout}${habitsNote(ctx)}${goalNote(ctx)}${mustSpend}${mp}${structure}${timeout} If the round history shows a pattern — lost streak, won pistols, repeated bomb-site losses — use it.`;
     }
     case "bombPlanted":
       if (event.ourSide === "CT") {
@@ -385,14 +458,22 @@ function describeMoment(event: CoachEvent, ctx: MatchContext, longForm = false):
               : ctx.matchPoint === "us"
                 ? " It's OUR match point — a lost round costs nothing (still match point next round) and you can't see alive counts, so SAVING is a fully valid call: take the retake only if it's clean, otherwise keep the gear. No hero retake."
                 : "";
+        // Enemy loss bonus on a retake colours the save math: if they were broke
+        // (3+) this round, their gear is thin and the round's worth contesting.
+        const enemyEcon = ctx.theirLossStreak !== undefined
+          ? ` Their loss-bonus level is ${ctx.theirLossStreak} (0 = they bought full, 1-2 = eco or cheap force, 3+ = they were broke this round) — factor their likely gear into whether the retake's worth it.`
+          : "";
         if (!ctx.playerIsSelf) {
-          return `The ENEMY (T side) just planted the bomb — your team is CT, about 40 seconds on the clock. The player is DEAD, spectating teammate "${ctx.spectating?.name ?? "unknown"}" — that teammate is a CT trying to RETAKE; they did NOT plant, and any plant credit belongs to the enemy. Call the retake-or-save for the TEAM from score, economy and history only (no own-gear talk); narrating the spectated teammate by name is welcome.${mustWin} Short and dry-urgent.`;
+          return `The ENEMY (T side) just planted the bomb — your team is CT, about 40 seconds on the clock. The player is DEAD, spectating teammate "${ctx.spectating?.name ?? "unknown"}" — that teammate is a CT trying to RETAKE; they did NOT plant, and any plant credit belongs to the enemy. Call the retake-or-save for the TEAM from score, economy and history only (no own-gear talk); narrating the spectated teammate by name is welcome.${mustWin}${enemyEcon} Short and dry-urgent.`;
         }
         const fighting =
           ctx.lastKillSecondsAgo !== undefined && ctx.lastKillSecondsAgo <= 10
             ? ` The player got a kill ${ctx.lastKillSecondsAgo} seconds ago — they are MID-FIGHT and winning it. Do NOT tell them to save or disengage; back the play in very few words.`
             : "";
-        return `The ENEMY (T side) just planted the bomb — your team is CT, about 40 seconds on the clock. Make the retake-or-save call from the snapshot: gear value, HP, armor, defuse kit, score situation and economy next round. Beyond the team block (the wired players you can see), you don't know teammate gear or alive counts, so phrase it conditionally.${mustWin}${fighting} Short and dry-urgent.`;
+        // Own loadout on the retake: an AWP wants a different angle than a dry
+        // pistol, low ammo means reload-or-swap, util on hand is a retake tool.
+        const loadout = loadoutNote(ctx);
+        return `The ENEMY (T side) just planted the bomb — your team is CT, about 40 seconds on the clock. Make the retake-or-save call from the snapshot: gear value, HP, armor, defuse kit, score situation and economy next round. Beyond the team block (the wired players you can see), you don't know teammate gear or alive counts, so phrase it conditionally.${mustWin}${enemyEcon}${loadout}${fighting} Short and dry-urgent.`;
       }
       if (event.ourSide === "T") {
         return `YOUR team just planted the bomb (you're T side). One short post-plant discipline line: positions, patience, play the clock.`;
@@ -412,7 +493,7 @@ function describeMoment(event: CoachEvent, ctx: MatchContext, longForm = false):
       }
       return `THEY called a tactical timeout. One short dry line: the pause is theirs — they're rattled or regrouping — and our side stays warm and sharp through it.`;
     case "halftime":
-      return `Halftime break. Give a short, dry halftime talk grounded in the actual half: the score, pistol result, streaks, anything notable from history. Set the mindset for the side switch (economy resets, new roles) — sarcasm welcome, the actual reset facts mandatory.`;
+      return `Halftime break. Give a short, dry halftime talk grounded in the actual half: the score, pistol result, streaks, anything notable from history. Set the mindset for the side switch (economy resets, new roles) — sarcasm welcome, the actual reset facts mandatory.${habitsNote(ctx)}${goalNote(ctx)}`;
     case "matchPoint":
       return event.forUs
         ? "Match point in our favor — closing mindset, no hero plays. Deadpan, not a pep rally."
@@ -425,14 +506,17 @@ function describeMoment(event: CoachEvent, ctx: MatchContext, longForm = false):
       const speech = longForm && event.won !== undefined
         ? ` This is the post-match wrap-up and nothing comes after it — take 50-90 words, three to six sentences (the one-line cap does NOT apply): the result, the thing that actually decided the match (use the full history), the player's own numbers from the snapshot, and ONE concrete thing to fix before the next queue. Spoken register the whole way — it's still you talking, just longer.`
         : "";
+      // The wrap-up is exactly where the match's own-data patterns and the session
+      // focus earn their keep — a debrief is the right place to name them.
+      const extras = `${habitsNote(ctx)}${goalNote(ctx)}`;
       // won is undefined when the app (re)connected too late to know our side —
       // never let the ternary read that as a loss and roast a winning team.
       if (event.won === undefined) {
-        return `The match just ended ${event.ourScore}-${event.theirScore}, but you don't know which score is ours. A dry, outcome-neutral sign-off — do NOT claim a win or a loss.${speech}`;
+        return `The match just ended ${event.ourScore}-${event.theirScore}, but you don't know which score is ours. A dry, outcome-neutral sign-off — do NOT claim a win or a loss.${speech}${extras}`;
       }
       return event.won
-        ? `The match was just WON ${event.ourScore}-${event.theirScore}. A sarcastic victory lap — grudging respect, call back the best moment from notables/history if there is one.${speech}`
-        : `The match was just lost ${event.ourScore}-${event.theirScore}. A dry sign-off — a real observation from history beats empty comfort. Roast the result, not the people; end on the queue-again note.${speech}`;
+        ? `The match was just WON ${event.ourScore}-${event.theirScore}. A sarcastic victory lap — grudging respect, call back the best moment from notables/history if there is one.${speech}${extras}`
+        : `The match was just lost ${event.ourScore}-${event.theirScore}. A dry sign-off — a real observation from history beats empty comfort. Roast the result, not the people; end on the queue-again note.${speech}${extras}`;
     }
     default:
       return `Event: ${event.type}. React appropriately in one short, dry line.`;

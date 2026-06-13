@@ -13,6 +13,7 @@
     "play": "npm run build && node dist/src/index.js",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
+    "test": "npm run typecheck && npm run sim",
     "sim": "tsx scripts/simulate.ts",
     "replay": "tsx scripts/replay-log.ts",
     "cfg": "tsx scripts/generate-gsi-cfg.ts",

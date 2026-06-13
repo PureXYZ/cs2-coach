@@ -36,6 +36,22 @@ function floatEnv(name: string, fallback: number, min?: number, max?: number): n
 
 export type TtsProviderName = "deepgram" | "elevenlabs" | "edge";
 
+// A valid SteamID64 is the literal 7656 prefix + 13 digits (17 digits total).
+// Shared so config validation and the multi-feed roster agree on what binds.
+export const STEAMID64_RE = /^7656\d{13}$/;
+
+// COACH_PRIMARY_STEAM64 must be a real SteamID64 or it silently never matches a
+// feed's provider.steamid — the primary then never binds and memory/Leetify
+// quietly attach to whoever connects first. Fail loudly at startup instead.
+function steamId64Env(name: string): string | undefined {
+  const raw = process.env[name];
+  if (!raw) return undefined;
+  if (!STEAMID64_RE.test(raw)) {
+    throw new Error(`${name} must be a 17-digit SteamID64 (7656…), got "${raw}"`);
+  }
+  return raw;
+}
+
 export const config = {
   gsi: {
     port: intEnv("GSI_PORT", 3000),
@@ -62,6 +78,14 @@ export const config = {
     // that re-election overlap. (The sim sets this to 0 to test back-to-back
     // matches in compressed time.)
     globalSeamMs: intEnv("GSI_GLOBAL_SEAM_MS", 4000),
+    // A last-man-alive call is only honest while the death that caused it is
+    // recent; past this the situation has likely already resolved. Drives the
+    // freshness gate on last-man framing.
+    lastManFreshMs: intEnv("GSI_LASTMAN_FRESH_MS", 3000),
+    // Auto-prune logs/ files (coach-*.log, gsi-*.ndjson, decisions-*.ndjson)
+    // older than this at startup, so an always-on droplet doesn't fill its disk.
+    // 0 = keep forever.
+    logRetentionDays: intEnv("GSI_LOG_RETENTION_DAYS", 14),
   },
 
   discord: {
@@ -133,7 +157,9 @@ export const config = {
     // and the Leetify recap. Set it to your SteamID64 so those bind to YOUR
     // account even if a friend's CS2 connects to the coach first. Unset = adopt
     // the first feed seen and pin it for the session (correct when you run solo).
-    primarySteam64: optional("COACH_PRIMARY_STEAM64") || undefined,
+    // A malformed id used to silently never bind the primary (it could never
+    // match a real provider.steamid); steamId64Env now throws at startup instead.
+    primarySteam64: steamId64Env("COACH_PRIMARY_STEAM64"),
     // How many of you run the coach. Setting this is the ONLY thing that lets the
     // coach speak with whole-team certainty ("you're the last one alive",
     // "everyone's broke"). Leave it unset and the coach always hedges to "the
@@ -143,6 +169,14 @@ export const config = {
     // freezetime, plus last-man framing. On by default; set false to keep the
     // coach focused on the primary player and skip the team-econ calls.
     teamTactics: optional("COACH_TEAM_TACTICS", "true") !== "false",
+    // Verbose tracing: turns on log.debug() output (the silent-drop reasons the
+    // engine emits, etc.). Off by default — this is noisy and only for diagnosing
+    // why a moment did or didn't speak.
+    debug: optional("COACH_DEBUG") === "true",
+    // Append every spoken/fallback decision to logs/decisions-*.ndjson for offline
+    // review of what the coach chose to say (text redacted for Leetify recaps).
+    // Off by default.
+    logDecisions: optional("COACH_LOG_DECISIONS") === "true",
   },
 
   leetify: {
