@@ -18,7 +18,7 @@ process.env.FREEZETIME_SECONDS = "1";
 const { GsiTracker } = await import("../src/gsi/tracker.js");
 const { CoachEngine } = await import("../src/coach/engine.js");
 const { config } = await import("../src/config.js");
-const { retakeDecisionLine, economyLine, lateRoundLine } = await import("../src/coach/lines.js");
+const { retakeDecisionLine, economyLine, lateRoundLine, ourTimeoutSpeechLine } = await import("../src/coach/lines.js");
 import os from "node:os";
 import path from "node:path";
 import type { CoachEvent, MatchContext } from "../src/gsi/tracker.js";
@@ -862,6 +862,36 @@ console.log("\n=== scenario: tactical timeout → speech for ours, jab for their
   const cold = new GsiTracker();
   const coldEvents = cold.update(payload({ mapPhase: "timeout_ct", roundPhase: "freezetime", round: 3 }));
   expect(!coldEvents.some((ev) => ev.type === "timeout"), "cold start mid-timeout stays quiet (half the pause is gone)");
+
+  // Reconnect: only menu payloads (no map block) preceded — same rule applies.
+  const rejoin = new GsiTracker();
+  rejoin.update({ provider: { name: "cs2", appid: 730, version: 1, steamid: ME, timestamp: 0 } } as GsiPayload);
+  const rejoinEvents = rejoin.update(payload({ mapPhase: "timeout_ct", roundPhase: "freezetime", round: 3 }));
+  expect(!rejoinEvents.some((ev) => ev.type === "timeout"), "reconnect from the menu into a running timeout stays quiet");
+
+  // Crisis framing only when the scoreboard says so.
+  const aheadLine = ourTimeoutSpeechLine({ playerIsSelf: true, ourScore: 9, theirScore: 2, ourLossStreak: 0 });
+  expect(
+    !/losing streak|funeral|bleeding|not better than us|picked off/i.test(aheadLine),
+    `timeout speech while ahead doesn't invent a crisis ("${aheadLine.slice(0, 60)}...")`,
+  );
+  const behindLine = ourTimeoutSpeechLine({ playerIsSelf: true, ourScore: 2, theirScore: 9 });
+  expect((behindLine.split(/\s+/).length ?? 0) >= 25, "timeout speech while behind is still a full speech");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: our timeout + freezetime in one batch → the speech owns the moment ===");
+{
+  const { out, engine: e } = freshEngine();
+  e.handle(
+    [
+      { type: "timeout", ours: true },
+      { type: "freezetime", round: 9 },
+    ],
+    { ...tracker.context(), money: 4000, playerIsSelf: true },
+  );
+  expect(out.some((s) => s.category === "timeoutTalk"), "our-timeout batch speaks the speech");
+  expect(!out.some((s) => s.category === "economy"), "and suppresses the duplicate freezetime buy line");
 }
 
 // ---------------------------------------------------------------------------
@@ -898,12 +928,22 @@ console.log("\n=== scenario: the Leetify recap waits for a quiet moment ===");
   t.update(payload({ mapPhase: "warmup" }));
   t.update(payload({ roundPhase: "live", round: 0 }));
   expect(t.quietMomentForSpeech() === false, "live match → NOT a quiet moment");
-  t.update(payload({ mapPhase: "gameover", ctScore: 13, tScore: 5 }));
-  expect(t.quietMomentForSpeech() === true, "after gameover → quiet moment again");
+  // Abandon: the client goes back to the menu (payloads without a map block),
+  // so no gameover ever clears inMatch — menu frames must count as quiet.
+  t.update({ provider: { name: "cs2", appid: 730, version: 1, steamid: ME, timestamp: 0 } } as GsiPayload);
+  expect(t.quietMomentForSpeech() === true, "menu payloads after abandoning a match count as quiet");
+
+  const t2 = new GsiTracker();
+  t2.update(payload({ mapPhase: "warmup" }));
+  t2.update(payload({ roundPhase: "live", round: 0 }));
+  t2.update(payload({ mapPhase: "gameover", ctScore: 13, tScore: 5 }));
+  expect(t2.quietMomentForSpeech() === true, "after gameover → quiet moment again");
 
   const sentence = spokenStatsSentence({ totalKills: 13, totalDeaths: 19, adr: 67.09, hsKills: 9, leetifyRating: -0.04, reactionTimeMs: 469 });
   expect(sentence === "13 kills to 19 deaths, ADR 67.09, 9 headshot kills, Leetify rating minus 0.04, time to damage 469 milliseconds", `stats sentence reads for TTS ("${sentence}")`);
   expect(spokenStatsSentence({}) === null, "no usable stats → no sentence");
+  const kdOnly = spokenStatsSentence({ kdRatio: 0.68 });
+  expect(kdOnly === "K D ratio 0.68", `K/D fallback avoids the slash for TTS ("${kdOnly}")`);
   const recap = leetifyRecapLine("de_mirage", sentence!);
   expect(recap.includes("Mirage") && recap.includes("ADR 67.09") && /leetify/i.test(recap), `canned recap credits Leetify and reads the numbers ("${recap.slice(0, 70)}...")`);
 }

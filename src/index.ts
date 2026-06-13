@@ -68,12 +68,17 @@ async function main(): Promise<void> {
     return { ...ctx, playerName: config.coach.playerNickname ?? ctx.playerName };
   };
 
+  // Only the newest match's recap may speak — back-to-back games would
+  // otherwise stack hour-long holds that all fire into the same quiet moment.
+  let recapSeq = 0;
+
   // Session recording + the spoken Leetify recap. Runs on its own (the voice
   // wrap-up speech goes out via the engine in parallel); latency is free here.
   const handleMatchEnd = async (event: Extract<CoachEvent, { type: "matchEnd" }>, ctx: MatchContext) => {
     // Captured at the gameover frame — the Leetify lookup matches finished_at
     // against this instant (±10 min) to identify the right game.
     const endedAt = Date.now();
+    const recapToken = ++recapSeq;
     const record = buildMatchRecord(event, ctx, tracker.matchReport());
     sessions.record(record);
 
@@ -83,17 +88,23 @@ async function main(): Promise<void> {
     if (!stats) return;
 
     // NEVER talk over play: the numbers land 5-15+ minutes after the match,
-    // which can be mid-way through the next one — hold the recap until a
-    // quiet moment (between games, warmup, or the game closed), or drop it.
+    // which can be mid-way through the next one. Hold for a quiet moment
+    // (between games, warmup, menu, game closed), re-check around the slow
+    // LLM call, and keep the same guard live in the voice queue so it's
+    // re-verified right before synthesis AND right before playback.
     const deadline = Date.now() + 60 * 60_000;
-    while (!tracker.quietMomentForSpeech() && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 30_000));
-    }
-    if (!tracker.quietMomentForSpeech()) {
+    const canSpeak = () =>
+      !quiet.on && voice.connected && tracker.quietMomentForSpeech() && recapToken === recapSeq;
+    const hold = async () => {
+      while (!canSpeak() && recapToken === recapSeq && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 30_000));
+      }
+      return canSpeak();
+    };
+    if (!(await hold())) {
       log.info("leetify", "No quiet moment found within the hour — keeping the recap to ourselves");
       return;
     }
-    if (quiet.on || !voice.connected) return;
 
     const statsSentence = spokenStatsSentence(stats);
     if (!statsSentence) return;
@@ -107,7 +118,22 @@ async function main(): Promise<void> {
             statsSentence,
           })
         : null) ?? leetifyRecapLine(ctx.map, statsSentence);
-    voice.say({ text, priority: 1, maxAgeMs: 90_000, category: "leetify", eventAt: Date.now() });
+    // The LLM call can take 20+ seconds — the next match may have gone live.
+    if (!(await hold())) {
+      log.info("leetify", "Quiet moment passed while writing the recap — dropping it");
+      return;
+    }
+    // redactText: the spoken line carries Leetify's numbers, and their
+    // guidelines forbid persisting API data — the voice logs must stay clean.
+    voice.say({
+      text,
+      priority: 1,
+      maxAgeMs: 60_000,
+      category: "leetify",
+      eventAt: Date.now(),
+      stillRelevant: canSpeak,
+      redactText: true,
+    });
   };
 
   const engine = new CoachEngine((req) => voice.say(req), llm, {

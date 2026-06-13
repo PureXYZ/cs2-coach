@@ -16,6 +16,11 @@ export interface LineOpts {
    *  for the speaker, so the line gets more words and effort=high — quality
    *  over latency where latency is free. */
   longForm?: boolean;
+  /** Request-timeout override: the default smart budget (9s) is sized for a
+   *  ~15s freezetime, which doesn't apply post-match or during a 30s pause —
+   *  effort=high plus 3-6x the output tokens needs the extra room or the
+   *  speech silently downgrades to the canned fallback. */
+  timeoutMs?: number;
 }
 
 const SYSTEM_CORE = `You are "Coach" — a dry, sarcastic, perpetually unimpressed Counter-Strike 2 coach sitting in a Discord voice channel with a player and their friends during a Premier/Competitive match. The player ASKED for a negative, sarcastic coach — it's a consensual roast between friends. Each request gives you a JSON snapshot of the game state plus a description of the moment; you reply with ONE spoken coaching line.
@@ -95,7 +100,7 @@ export class LlmCoach {
    */
   async line(context: MatchContext, event: CoachEvent, tier: LlmTier = "smart", opts?: LineOpts): Promise<string | null> {
     const model = tier === "fast" ? this.fastModel : this.model;
-    const timeout = tier === "fast" ? this.fastTimeoutMs : this.timeoutMs;
+    const timeout = opts?.timeoutMs ?? (tier === "fast" ? this.fastTimeoutMs : this.timeoutMs);
     const longForm = opts?.longForm ?? false;
 
     // Static core + the active map's notes. The cache marker is currently inert
@@ -209,12 +214,31 @@ export class LlmCoach {
         { timeout: 20_000, maxRetries: 1 },
       );
       log.info("llm", `${this.model} wrote the Leetify recap in ${Date.now() - startedAt}ms`);
+      // A truncated recap would be spoken mid-number — worse than the canned wrapper.
+      if (response.stop_reason === "max_tokens") {
+        log.warn("llm", "Leetify recap hit max_tokens — using the canned wrapper");
+        return null;
+      }
       const text = response.content
         .filter((block): block is Anthropic.TextBlock => block.type === "text")
         .map((block) => block.text)
         .join(" ")
         .trim();
       if (!text) return null;
+      // Trust but verify the two non-negotiables from Leetify's guidelines:
+      // the credit must be present, and every number spoken must be one of the
+      // provided values (omitting is fine, rounding/inventing is not). The
+      // canned wrapper one fallback away satisfies both by construction.
+      const allowed = new Set([
+        ...(input.statsSentence.match(/\d+(?:\.\d+)?/g) ?? []),
+        String(input.ourScore),
+        String(input.theirScore),
+      ]);
+      const spokenNumbers = text.match(/\d+(?:\.\d+)?/g) ?? [];
+      if (!/leetify/i.test(text) || spokenNumbers.some((n) => !allowed.has(n))) {
+        log.warn("llm", "Leetify recap dropped the credit or altered a value — using the canned wrapper");
+        return null;
+      }
       this.recordSpoken(text);
       return text;
     } catch (err) {
@@ -356,7 +380,7 @@ function describeMoment(event: CoachEvent, ctx: MatchContext, longForm = false):
       return `The player just TEAM-KILLED a teammate. One deadpan roast or mock-apology on their behalf — sarcastic, not genuinely hostile.`;
     case "timeout":
       if (event.ours) {
-        return `OUR team just called a tactical timeout — a 30-second pause, the one mid-match moment with room for an actual SPEECH. Take 35-60 words, three to five sentences (the one-line cap does NOT apply): why the rounds are bleeding (read the history and streak), ONE concrete fix for the very next round, the buy plan if money matters, and a dry steadying close. Snide is fine, rah-rah is not — this should make a tilted team breathe.`;
+        return `OUR team just called a tactical timeout — a 30-second pause, the one mid-match moment with room for an actual SPEECH. Take 35-60 words, three to five sentences (the one-line cap does NOT apply). Read the snapshot first: if the history shows the rounds bleeding, say why and give ONE concrete fix for the very next round; if we're ahead or it's a routine pause, make it a reset-and-refocus talk instead — same structure, no invented crisis. Either way: the buy plan if money matters, and a dry steadying close. Snide is fine, rah-rah is not.`;
       }
       return `THEY called a tactical timeout. One short dry line: the pause is theirs — they're rattled or regrouping — and our side stays warm and sharp through it.`;
     case "halftime":
@@ -367,8 +391,10 @@ function describeMoment(event: CoachEvent, ctx: MatchContext, longForm = false):
         : "Opponent match point — must-win round, no saving, one round at a time. Dry, not doom.";
     case "matchEnd": {
       // Long form: the post-match has nothing to talk over, so the wrap-up is
-      // a proper debrief speech instead of one capped line.
-      const speech = longForm
+      // a proper debrief speech instead of one capped line. Not when the
+      // outcome is unknown — a 90-word speech that can't name the result
+      // would contradict its own checklist.
+      const speech = longForm && event.won !== undefined
         ? ` This is the post-match wrap-up and nothing comes after it — take 50-90 words, three to six sentences (the one-line cap does NOT apply): the result, the thing that actually decided the match (use the full history), the player's own numbers from the snapshot, and ONE concrete thing to fix before the next queue. Spoken register the whole way — it's still you talking, just longer.`
         : "";
       // won is undefined when the app (re)connected too late to know our side —

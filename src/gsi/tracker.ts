@@ -235,19 +235,22 @@ export class GsiTracker {
       events.push({ type: "halftime" });
     }
 
-    // Tactical timeout started. prev-guarded: a cold start mid-timeout must
-    // not deliver a speech into a half-finished pause.
+    // Tactical timeout started. prev must be an IN-MATCH frame: both a cold
+    // start and a reconnect (where only menu payloads preceded — those carry
+    // no map block) land mid-pause, and a speech into a half-finished
+    // timeout helps nobody.
     const inTimeout = mapPhase === "timeout_ct" || mapPhase === "timeout_t";
     const wasTimeout = prevMapPhase === "timeout_ct" || prevMapPhase === "timeout_t";
-    if (prev && inTimeout && !wasTimeout) {
+    if (prev?.map && inTimeout && !wasTimeout) {
       const ours = ourSide ? (mapPhase === "timeout_ct") === (ourSide === "CT") : undefined;
       events.push({ type: "timeout", ours });
     }
 
-    // prev must exist: a process restart during the post-match scoreboard would
-    // otherwise re-fire matchEnd for a match this process never saw — and now
-    // persist a junk session record and re-run the wrap-up speech.
-    if (prev && mapPhase === "gameover" && prevMapPhase !== "gameover") {
+    // prev must be an in-match frame: a process restart during the post-match
+    // scoreboard (prev null) or a rejoin from the menu (prev has no map block)
+    // would otherwise re-fire matchEnd for a match this process never saw —
+    // and persist a junk session record and re-run the wrap-up speech.
+    if (prev?.map && mapPhase === "gameover" && prevMapPhase !== "gameover") {
       const { ourScore, theirScore } = this.scores(payload, ourSide);
       events.push({
         type: "matchEnd",
@@ -635,7 +638,7 @@ export class GsiTracker {
     return this.memory.history(Number.MAX_SAFE_INTEGER);
   }
 
-  /** Raw match-memory data for the post-match scorecard and the session store. */
+  /** Raw match-memory data for the spoken match wrap-up and the session store. */
   matchReport(): {
     rounds: readonly RoundRecord[];
     pistols: { first?: "won" | "lost"; second?: "won" | "lost" };
@@ -664,10 +667,13 @@ export class GsiTracker {
   }
 
   /** True when a delayed line (the Leetify recap) can speak without talking
-   *  over play: no live match, or GSI silent for 2+ minutes (game closed). */
+   *  over play: no live match, GSI silent for 2+ minutes (game closed), or
+   *  the latest payload is a menu frame (no map block — the player left or
+   *  abandoned, which never delivers the gameover that clears inMatch). */
   quietMomentForSpeech(): boolean {
     const age = this.lastUpdateAgeMs();
     if (age === null || age > 120_000) return true;
+    if (!this.prev?.map) return true;
     return !this.inMatch;
   }
 

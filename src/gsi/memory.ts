@@ -130,7 +130,7 @@ export class MatchMemory {
 
   /**
    * Every closed round record (plus the open one, if a match ends without a
-   * final round-over frame) — the raw material for the post-match scorecard
+   * final round-over frame) — the raw material for the spoken match wrap-up
    * and the cross-session store.
    */
   allRounds(): readonly RoundRecord[] {

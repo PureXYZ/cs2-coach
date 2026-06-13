@@ -147,7 +147,9 @@ export function spokenStatsSentence(stats: LeetifyMatchStats): string | null {
   if (stats.totalKills != null && stats.totalDeaths != null) {
     parts.push(`${stats.totalKills} kills to ${stats.totalDeaths} deaths`);
   } else if (stats.kdRatio != null) {
-    parts.push(`K/D ${stats.kdRatio}`);
+    // "K D ratio", not "K/D" — TTS reads the slash out loud. Label change
+    // only; the value stays verbatim per Leetify's guidelines.
+    parts.push(`K D ratio ${stats.kdRatio}`);
   }
   if (stats.adr != null) parts.push(`ADR ${stats.adr}`);
   if (stats.hsKills != null) parts.push(`${stats.hsKills} headshot kills`);

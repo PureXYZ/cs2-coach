@@ -28,6 +28,11 @@ export interface SpeakRequest {
    * ("TRIPLE KILL" must not play after the fourth kill already landed).
    */
   stillRelevant?: () => boolean;
+  /**
+   * Keep the line's text out of every log (length only). Set on lines built
+   * from third-party API data the project must not persist (Leetify).
+   */
+  redactText?: boolean;
 }
 
 export type Speak = (req: SpeakRequest) => void;
@@ -115,8 +120,13 @@ export class CoachEngine {
   }
 
   handle(events: CoachEvent[], ctx: MatchContext): void {
-    const batch = new Set(events.map((e) => e.type));
-    for (const event of events) {
+    // Our timeout owns its freezetime: the speech carries the buy plan, so the
+    // separate economy line would be a duplicate racing it for the same pause
+    // (a timeout voted during the prior round lands ON the freezetime frame).
+    const ourTimeout = events.some((e) => e.type === "timeout" && e.ours === true);
+    const batchEvents = ourTimeout ? events.filter((e) => e.type !== "freezetime") : events;
+    const batch = new Set(batchEvents.map((e) => e.type));
+    for (const event of batchEvents) {
       try {
         if (this.suppressedInBatch(event.type, batch)) continue;
         this.handleOne(event, ctx, batch);
@@ -299,7 +309,9 @@ export class CoachEngine {
           "smart",
           1,
           undefined,
-          { longForm: true },
+          // 20s budget: effort=high × 3-6x the tokens doesn't fit the 9s
+          // freezetime-sized default, and post-match nothing is waiting.
+          { longForm: true, timeoutMs: 20_000 },
         );
         // Quiet or not: the session store and the Leetify recap still want the match.
         try {
@@ -310,11 +322,14 @@ export class CoachEngine {
         break;
 
       case "timeout":
-        // 30 seconds of dead air. Ours: the regroup speech (long form).
-        // Theirs: one dry jab. Side unknown: stay quiet.
+        // 30 seconds of dead air. Ours: the regroup speech (long form, 14s
+        // LLM budget so the speech still starts comfortably inside the pause;
+        // 30s staleness so a slow-but-successful one isn't dropped). Theirs:
+        // one dry jab. Side unknown: stay quiet.
         if (event.ours === true) {
-          this.tacticalMoment(event, ctx, () => lines.ourTimeoutSpeechLine(), "timeoutTalk", 25_000, "smart", 2, undefined, {
+          this.tacticalMoment(event, ctx, () => lines.ourTimeoutSpeechLine(ctx), "timeoutTalk", 30_000, "smart", 2, undefined, {
             longForm: true,
+            timeoutMs: 14_000,
           });
         } else if (event.ours === false) {
           this.say(() => lines.theirTimeoutLine(), { category: "timeoutTalk", priority: 2, maxAgeMs: 20_000 });
