@@ -53,7 +53,11 @@ const COOLDOWNS_MS: Record<string, number> = {
   roundEnd: 8_000,
   match: 5_000,
   teamkill: 20_000,
+  // Shared by spectator narration AND wired-teammate multikill hype, so two
+  // friends popping off can't out-shout the primary's coaching (one channel).
   teammate: 12_000,
+  // Last-man-standing clutch call (multi-feed, whole-team certainty only).
+  lastman: 10_000,
   clock: 25_000,
   // The canned timeout call (LLM-less setups) — once it's been said, the next
   // few freezetimes of the same losing streak don't need it repeated.
@@ -402,6 +406,28 @@ export class CoachEngine {
           { category: "teammate", priority: 1, maxAgeMs: 6_000, supersedes: ["teammate"] },
           event.roundKills >= 4,
         );
+        break;
+
+      case "teammateMultiKill":
+        // A WIRED teammate (their own feed) racked up 3+ this round — named, live
+        // hype, distinct from the grave-spectator line above. Shares the
+        // 'teammate' bucket so it can never out-shout the primary's coaching;
+        // quad/ace bypass the cooldown, and a newer multikill evicts a queued one.
+        this.say(
+          () => lines.teammateMultiKillLine(event.who.name, event.roundKills),
+          { category: "teammate", priority: 1, maxAgeMs: 6_000, supersedes: ["teammate"] },
+          event.roundKills >= 4,
+        );
+        break;
+
+      case "lastManStanding":
+        // Multi-feed clutch call — the roster only emits this with whole-team
+        // certainty (a full, fresh squad), so the line can be confident.
+        this.say(() => lines.lastManStandingLine(event.who.name), {
+          category: "lastman",
+          priority: 3,
+          maxAgeMs: 5_000,
+        });
         break;
 
       case "death":

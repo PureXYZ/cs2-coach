@@ -29,6 +29,8 @@ export interface BotDeps {
     llmModel: string | null;
     /** Cross-session memory size, for the status readout. */
     sessionsOnFile: number;
+    /** How many player feeds (you + friends) are currently wired in. */
+    wiredFeeds: number;
   };
 }
 
@@ -260,6 +262,7 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
         content: [
           `**GSI:** ${gsi}`,
           `**Voice:** ${deps.voice.connected ? "✅ connected" : "❌ not in a channel"} (queue: ${deps.voice.queueLength})`,
+          `**Squad:** ${s.wiredFeeds} player feed${s.wiredFeeds === 1 ? "" : "s"} wired in${s.wiredFeeds > 1 ? " (team coaching live)" : ""}`,
           `**Coach:** ${deps.quiet.get() ? "🔇 muted (`/coach quiet` to unmute)" : "🎙️ speaking"}`,
           `**TTS:** ${s.ttsProviders.join(" → ")}`,
           `**LLM:** ${s.llmModel ?? "disabled (rule-based lines only)"}`,

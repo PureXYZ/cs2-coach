@@ -110,3 +110,67 @@ export interface GsiPayload {
   /** Delta block: fields that newly appeared in this update. */
   added?: unknown;
 }
+
+// --- multi-feed team coaching ------------------------------------------------
+// When several friends each run the coach's GSI cfg, every CS2 client POSTs its
+// OWN-player feed to the same server. The RosterManager demuxes by
+// provider.steamid and fuses the feeds; these shapes describe what it can
+// honestly see — only the teammates actually running the coach, never the whole
+// team unless the squad is fully wired (see TeamContext.rosterComplete).
+
+/**
+ * A teammate whose CS2 client is POSTing GSI to the coach ("wired"). Built
+ * strictly from that feed's OWN-player block — never from spectated/observer
+ * data — so the name is always safe to speak and the liveness is never guessed.
+ */
+export interface TeamMember {
+  /** Steam name from the feed's own player block (persists across the player's death). */
+  name?: string;
+  /** True for the configured primary user (the one who owns session memory/Leetify). */
+  isPrimary: boolean;
+  /**
+   * Own health > 0 on a FRESH self-frame (true), known dead (false), or unknown
+   * because the feed is stale or currently spectating (undefined). Never guessed —
+   * a stalled feed showing stale health is "unknown", not "alive".
+   */
+  alive?: boolean;
+  /** Own money this feed last reported while alive (the buy-time read for drop calls). */
+  money?: number;
+  /** ms since this feed's last payload — the freshness the honesty gates key on. */
+  staleMs: number;
+}
+
+/**
+ * What the coach can see of the squad: ONLY teammates running the coach. A
+ * partial and possibly-stale view, never a whole-team truth unless rosterComplete
+ * is set. Attached to the primary's MatchContext by the RosterManager when two or
+ * more feeds are live; absent for a solo player (behaviour is then single-player).
+ */
+export interface TeamContext {
+  /** Wired feeds currently fresh — drives every "of the players I can see" hedge. */
+  wiredCount: number;
+  /**
+   * True ONLY when COACH_SQUAD_SIZE is set AND that many feeds are currently
+   * fresh. The single thing that licenses whole-team assertions ("you're the last
+   * one alive", "everyone's broke"). Defaults false → the coach always hedges.
+   */
+  rosterComplete: boolean;
+  /** Configured squad size, when set — lets the prompt say "3 of 5". */
+  squadSize?: number;
+  /** One entry per wired feed; names are safe to speak (own-block only). */
+  members: TeamMember[];
+  /**
+   * Wired feeds last seen alive THIS round on a fresh frame. ALWAYS surfaced to
+   * the LLM as "of the players I can see", never as a whole-team count unless
+   * rosterComplete.
+   */
+  aliveWired?: number;
+  /** Which wired teammate is personally carrying the C4 right now (always safe). */
+  bombCarrierName?: string;
+  /**
+   * Buy-money across wired, fresh, alive feeds for the freezetime call — names +
+   * amounts so the coach can sync the buy or name a drop. Present only when team
+   * tactics are enabled; covers only the wired subset.
+   */
+  econ?: { name?: string; money: number; isPrimary: boolean }[];
+}

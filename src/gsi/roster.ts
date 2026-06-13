@@ -1,0 +1,599 @@
+import { GsiTracker, type CoachEvent, type MatchContext } from "./tracker.js";
+import type { GsiPayload, TeamContext, TeamMember } from "./types.js";
+import { config } from "../config.js";
+import { log } from "../log.js";
+
+/**
+ * Multi-feed coordinator. When several friends each run the coach's GSI cfg,
+ * every CS2 client POSTs its OWN-player feed to the same server. This demuxes the
+ * incoming payloads by provider.steamid into one untouched single-player
+ * GsiTracker per feed — so every hard-won per-feed invariant (death-spectate
+ * baseline freezing, nade/clip forensics, bot detection, the midMatchPhase guard)
+ * is preserved exactly — and then FUSES the per-feed output into a single stream
+ * the engine consumes with one handle() call per payload, identical to today.
+ *
+ * Two roles, deliberately separate:
+ *   PRIMARY   — the configured user. Owns session memory, the Leetify recap, and
+ *               the personal half of the coaching context (own HP/money/weapons).
+ *   AUTHORITY — the single live feed whose GLOBAL events (round/bomb/match
+ *               lifecycle + the locally-derived clock) reach the engine, so N
+ *               feeds reporting the same round-end speak ONE line. Sticky and
+ *               prefers the primary; falls to the longest-lived live TEAMMATE feed
+ *               only while the primary's feed is silent.
+ *
+ * MEMBERSHIP / safety: a friend can queue onto the ENEMY team — or play a totally
+ * different match — yet POST to the same shared token. Such feeds must never reach
+ * team econ / alive counts / hype / authority. Membership is judged two ways, both
+ * swap-invariant (so the halftime side flip, which reaches each feed at a slightly
+ * different instant, can't momentarily mis-classify anyone):
+ *   - MAP: a feed must be on the same map as the squad (different lobby = different map).
+ *   - SIDE: a per-feed running tally of "same side as the primary" vs "opposite",
+ *     reset each match. A real teammate is ALWAYS on the primary's side (both swap
+ *     together), an enemy ALWAYS opposite. The vote is only cast while the feed and
+ *     the primary are on the SAME round number — at a side-swap the two cross the
+ *     round boundary a frame apart, so equal-round gating skips exactly the
+ *     out-of-phase frames (within a round, sides never change). We never key
+ *     membership on the instantaneous side, only on this accumulated vote.
+ *
+ * Honesty: the coach never asserts whole-team facts (last man, everyone's broke)
+ * unless the squad is fully wired (COACH_SQUAD_SIZE met and that many CONFIRMED
+ * teammate feeds fresh) — see buildTeam().
+ */
+
+/** A real SteamID64. The local player's id (provider.steamid) is always one of
+ *  these; bots only ever appear as a spectated player.steamid, never as a
+ *  provider, so a non-matching provider is a malformed or stray POST — dropped. */
+const STEAMID64_RE = /^7656\d{13}$/;
+
+/** Match-global events — every feed sees them identically, so only the AUTHORITY
+ *  feed's copy is forwarded; the rest are per-player. */
+const GLOBAL_EVENTS: ReadonlySet<CoachEvent["type"]> = new Set([
+  "matchStart",
+  "freezetime",
+  "roundLive",
+  "roundEnd",
+  "bombPlanted",
+  "bombDefused",
+  "bombExploded",
+  "halftime",
+  "timeout",
+  "matchPoint",
+  "matchEnd",
+]);
+
+interface FeedState {
+  tracker: GsiTracker;
+  /** epoch ms of this feed's first payload — "longest-lived" authority tiebreak. */
+  firstSeen: number;
+  /** epoch ms of this feed's most recent payload — liveness/reaping. */
+  lastSeen: number;
+  /** Cached context() from this feed's latest payload (rebuilt each update); used
+   *  for the per-player team roster (alive/money/bomb are payload-derived and
+   *  don't drift between payloads — the time-derived clock is recomputed live in
+   *  mergedCtx instead). */
+  ctx: MatchContext;
+  /** Swap-invariant side membership: observations this feed was on the primary's
+   *  side vs the opposite side (reset each match). Majority decides teammate-vs-enemy. */
+  sameSide: number;
+  oppSide: number;
+}
+
+export interface RosterUpdate {
+  events: CoachEvent[];
+  ctx: MatchContext;
+}
+
+const EMPTY_CTX: MatchContext = { playerIsSelf: false };
+
+export class RosterManager {
+  private feeds = new Map<string, FeedState>();
+  /** Sticky authority feed (supplies global events + the clock context). */
+  private authorityId: string | null = null;
+  /** First feed seen, pinned as primary when none is configured (solo fallback). */
+  private adoptedPrimary: string | null = null;
+  /** The map the primary feed last reported a game on — the reference the delayed
+   *  Leetify recap uses to decide which feeds' live games may veto it, even after
+   *  the primary has returned to the menu (its own map then reads undefined). */
+  private lastPrimaryMap: string | undefined;
+  /** Seam de-dup: last epoch ms each global event type was forwarded. */
+  private lastGlobalAt = new Map<CoachEvent["type"], number>();
+  /** Round number a last-man-standing call last fired for (once per round). */
+  private lastManRound: number | null = null;
+
+  constructor(private readonly configuredPrimary = config.coach.primarySteam64) {}
+
+  /** Feed one GSI payload (from any friend's client); returns the fused events
+   *  the engine should react to plus the merged match context. */
+  update(payload: GsiPayload): RosterUpdate {
+    const now = Date.now();
+    const steamid = payload.provider?.steamid;
+    if (!steamid || !STEAMID64_RE.test(steamid)) {
+      // Not a valid local-player feed — ignore it, but hand back coherent context.
+      return { events: [], ctx: this.mergedCtx(this.buildTeam(now)) };
+    }
+
+    let feed = this.feeds.get(steamid);
+    if (!feed) {
+      feed = { tracker: new GsiTracker(), firstSeen: now, lastSeen: now, ctx: EMPTY_CTX, sameSide: 0, oppSide: 0 };
+      this.feeds.set(steamid, feed);
+      log.info("roster", `Feed joined ${this.shortId(steamid)} — ${this.feeds.size} wired`);
+    }
+    feed.lastSeen = now;
+
+    // Per-feed tracking is the unchanged single-player logic.
+    const rawEvents = feed.tracker.update(payload);
+    feed.ctx = feed.tracker.context();
+
+    this.reap(now);
+    this.adoptPrimaryIfNeeded(steamid);
+    const isPrimary = this.isPrimary(steamid);
+
+    // A new match for THIS feed (its own tracker says so, even when the global
+    // matchStart was suppressed because the previous match was abandoned without a
+    // gameover): its side votes from the previous match no longer apply.
+    if (rawEvents.some((e) => e.type === "matchStart")) {
+      feed.sameSide = 0;
+      feed.oppSide = 0;
+    }
+
+    // Record this feed's side membership against the primary anchor, and remember
+    // the primary's current map for the recap's quiet-moment check.
+    if (isPrimary) {
+      if (feed.ctx.map) this.lastPrimaryMap = feed.ctx.map;
+    } else {
+      // Vote ONLY when this feed and the primary are on the SAME round. At a
+      // side-swap (half/OT boundary) the two feeds cross the round one frame apart,
+      // so their sides are briefly out of phase and a naive comparison would
+      // mis-classify (an enemy momentarily looks same-side, a teammate opposite).
+      // Within a single round sides never change, so requiring an equal round
+      // number skips exactly those transition frames — no special-casing the swap,
+      // and a brand-new feed seen only during the seam casts no vote at all.
+      const primary = this.primaryFeed();
+      const primarySide = primary?.tracker.ownSide();
+      const side = feed.tracker.ownSide();
+      if (
+        primary &&
+        primarySide &&
+        side &&
+        feed.ctx.round !== undefined &&
+        feed.ctx.round === primary.ctx.round
+      ) {
+        if (side === primarySide) feed.sameSide++;
+        else feed.oppSide++;
+      }
+    }
+
+    const refMap = this.refMap(now);
+    this.electAuthority(now, refMap);
+    const isAuthority = this.authorityId === steamid;
+
+    const out: CoachEvent[] = [];
+    for (const ev of rawEvents) {
+      const fused = GLOBAL_EVENTS.has(ev.type)
+        ? this.forwardGlobal(ev, isAuthority, now)
+        : this.fusePersonal(ev, steamid, feed, isPrimary, now, refMap);
+      if (fused) out.push(fused);
+    }
+
+    const team = this.buildTeam(now, refMap);
+    const lastMan = this.deriveLastMan(team);
+    if (lastMan) out.push(lastMan);
+
+    return { events: out, ctx: this.mergedCtx(team) };
+  }
+
+  // --- routing / identity ----------------------------------------------------
+
+  private adoptPrimaryIfNeeded(steamid: string): void {
+    if (this.configuredPrimary || this.adoptedPrimary) return;
+    this.adoptedPrimary = steamid;
+    log.info(
+      "roster",
+      `No COACH_PRIMARY_STEAM64 set — adopting ${this.shortId(steamid)} as primary for this session`,
+    );
+  }
+
+  private primaryId(): string | null {
+    return this.configuredPrimary ?? this.adoptedPrimary;
+  }
+
+  private isPrimary(steamid: string): boolean {
+    return steamid === this.primaryId();
+  }
+
+  private primaryFeed(): FeedState | undefined {
+    const id = this.primaryId();
+    return id ? this.feeds.get(id) : undefined;
+  }
+
+  private authorityFeed(): FeedState | undefined {
+    return this.authorityId ? this.feeds.get(this.authorityId) : undefined;
+  }
+
+  private isFresh(feed: FeedState | undefined, now: number): boolean {
+    return feed !== undefined && now - feed.lastSeen <= config.gsi.feedStaleMs;
+  }
+
+  /** The map the squad is on: the primary feed's when it's live, otherwise the
+   *  plurality among fresh feeds (a single different-lobby feed can't outvote the
+   *  real squad). Map is side-independent, so it's safe across the halftime swap. */
+  private refMap(now: number): string | undefined {
+    const primary = this.primaryFeed();
+    if (primary && this.isFresh(primary, now) && primary.ctx.map) return primary.ctx.map;
+    const maps = new Map<string, number>();
+    for (const f of this.feeds.values()) {
+      if (this.isFresh(f, now) && f.ctx.map) maps.set(f.ctx.map, (maps.get(f.ctx.map) ?? 0) + 1);
+    }
+    return plurality(maps);
+  }
+
+  private onRefMap(feed: FeedState, refMap: string | undefined): boolean {
+    return !refMap || !feed.ctx.map || feed.ctx.map === refMap;
+  }
+
+  /** A CONFIRMED member of our squad: the primary itself, or a feed whose
+   *  side-membership vote leans same-side as the primary. Used for the
+   *  honesty-sensitive surfaces (team block, hype, bot gate) — strict: an
+   *  unconfirmed feed (no votes yet, or leaning opposite) is excluded. */
+  private isTeammate(feed: FeedState, id: string, now: number, refMap: string | undefined): boolean {
+    if (!this.isFresh(feed, now)) return false;
+    if (!this.onRefMap(feed, refMap)) return false;
+    return id === this.primaryId() || feed.sameSide > feed.oppSide;
+  }
+
+  /** Drop feeds that have gone silent (friend closed CS2 / disconnected). */
+  private reap(now: number): void {
+    for (const [id, feed] of this.feeds) {
+      if (now - feed.lastSeen <= config.gsi.feedIdleMs) continue;
+      this.feeds.delete(id);
+      if (this.authorityId === id) this.authorityId = null;
+      log.info("roster", `Feed dropped ${this.shortId(id)} (idle) — ${this.feeds.size} wired`);
+    }
+  }
+
+  /** Sticky-prefers-primary: the primary feed is authority whenever it's live;
+   *  otherwise keep the current authority while it's still eligible, else elect the
+   *  longest-lived fresh, same-map CONFIRMED teammate. Global state (round/bomb and
+   *  especially side-relative scores) must come from one of OUR players, never an
+   *  opponent's or an unconfirmed feed — so eligibility requires positive
+   *  teammate confirmation, not merely "not a known enemy". */
+  private electAuthority(now: number, refMap: string | undefined): void {
+    const primary = this.primaryId();
+    if (primary && this.isFresh(this.feeds.get(primary), now)) {
+      this.setAuthority(primary);
+      return;
+    }
+    const eligible = (id: string, f: FeedState) =>
+      this.isFresh(f, now) && this.onRefMap(f, refMap) && (id === this.primaryId() || f.sameSide > f.oppSide);
+
+    if (this.authorityId) {
+      const cur = this.feeds.get(this.authorityId);
+      if (cur && eligible(this.authorityId, cur)) return;
+    }
+
+    let pick: string | null = null;
+    let pickSince = Infinity;
+    for (const [id, feed] of this.feeds) {
+      if (!eligible(id, feed)) continue;
+      if (feed.firstSeen < pickSince) {
+        pick = id;
+        pickSince = feed.firstSeen;
+      }
+    }
+    this.setAuthority(pick);
+  }
+
+  private setAuthority(id: string | null): void {
+    if (this.authorityId === id) return;
+    this.authorityId = id;
+    if (id) log.info("roster", `Authority → ${this.shortId(id)}`);
+  }
+
+  // --- event fusion ----------------------------------------------------------
+
+  private forwardGlobal(ev: CoachEvent, isAuthority: boolean, now: number): CoachEvent | null {
+    if (!isAuthority) return null; // a non-authority feed's duplicate of a global moment
+
+    // A new match: reset the once-per-round last-man latch. (Per-feed side votes
+    // are reset in update() off each feed's OWN matchStart, which is robust to an
+    // abandon that suppresses this global one. matchStart/matchEnd are NOT gated on
+    // a roster-level inMatch flag — the per-feed tracker already emits each exactly
+    // once per match, including re-announcing a fresh match after an abandon; the
+    // seam window below collapses the re-election overlap.)
+    if (ev.type === "matchStart") this.lastManRound = null;
+
+    // Absorb the authority-re-election seam: the same transition emitted twice
+    // within a few seconds by two feeds collapses to one.
+    const last = this.lastGlobalAt.get(ev.type) ?? 0;
+    if (config.gsi.globalSeamMs > 0 && now - last < config.gsi.globalSeamMs) return null;
+    this.lastGlobalAt.set(ev.type, now);
+    return ev;
+  }
+
+  private fusePersonal(
+    ev: CoachEvent,
+    steamid: string,
+    feed: FeedState,
+    isPrimary: boolean,
+    now: number,
+    refMap: string | undefined,
+  ): CoachEvent | null {
+    if (isPrimary) {
+      // The primary's own events flow exactly as single-player — EXCEPT a
+      // spectate-narration of a teammate who is themselves a wired feed: that
+      // teammate reports the kill first-hand via their own feed, so drop the
+      // duplicate (the dead-spectate double-count fix). Keyed on the steamid being
+      // a known roster feed at all (not just fresh) so a momentarily-stale wired
+      // teammate isn't double-narrated — they'll report it when they catch up.
+      if (ev.type === "teammateKill" && ev.spectatedSteamid && this.feeds.has(ev.spectatedSteamid)) {
+        return null;
+      }
+      return ev;
+    }
+
+    // A non-primary feed: collapse to the few team-level signals, drop the rest.
+    // Narrating every friend's every kill/death/MVP is exactly the N× chatter the
+    // quiet persona forbids — aggregate, don't multiply. And only a CONFIRMED
+    // teammate is ever hyped: an enemy friend on the shared token who triples must
+    // NOT get a "teammate's doing the job" line.
+    if (ev.type === "kill" && ev.roundKills >= 3 && this.isTeammate(feed, steamid, now, refMap)) {
+      return { type: "teammateMultiKill", who: { steamid, name: feed.tracker.ownName() }, roundKills: ev.roundKills };
+    }
+    return null;
+  }
+
+  // --- team context ----------------------------------------------------------
+
+  private buildTeam(now: number, refMap: string | undefined = this.refMap(now)): TeamContext | undefined {
+    const live: Array<[string, FeedState]> = [];
+    for (const [id, f] of this.feeds) if (this.isTeammate(f, id, now, refMap)) live.push([id, f]);
+    if (live.length < 2) return undefined; // solo / only-primary → no team block (single-player behaviour)
+
+    // The current round, from the authority's live context — used to tell a feed
+    // that's caught up from one still showing last round's (dead) state.
+    const currentRound = this.authorityFeed()?.tracker.context().round;
+    const primaryId = this.primaryId();
+    const members: TeamMember[] = live.map(([id, f]) => {
+      const c = f.ctx;
+      // Trust alive/dead ONLY when this feed has posted a frame for the CURRENT
+      // round. A teammate who died last round but hasn't updated into this one yet
+      // still has a "dead" cached frame — counting that as dead would fire a false
+      // last-man at round start. Treat it as unknown instead.
+      const caughtUp = c.round !== undefined && currentRound !== undefined && c.round >= currentRound;
+      const alive = !caughtUp ? undefined : c.playerIsSelf ? (c.health ?? 0) > 0 : false;
+      return {
+        name: f.tracker.ownName(),
+        isPrimary: id === primaryId,
+        alive,
+        money: c.playerIsSelf ? c.money : undefined,
+        staleMs: now - f.lastSeen,
+      };
+    });
+
+    const squadSize = config.coach.squadSize;
+    const rosterComplete = squadSize !== undefined && live.length >= squadSize;
+    // A whole-team alive COUNT is only honest when we can see the whole team AND
+    // every member's status is known. Otherwise expose per-player alive (for
+    // naming) but no aggregate the LLM could misread as a whole-team fact.
+    const aliveWired =
+      rosterComplete && members.every((m) => m.alive !== undefined)
+        ? members.filter((m) => m.alive === true).length
+        : undefined;
+
+    const carrier = live.find(([, f]) => f.ctx.hasBomb === true);
+    const bombCarrierName = carrier?.[1].tracker.ownName();
+
+    let econ: TeamContext["econ"];
+    if (config.coach.teamTactics) {
+      const withMoney = members
+        .filter((m) => m.money !== undefined)
+        .map((m) => ({ name: m.name, money: m.money as number, isPrimary: m.isPrimary }));
+      if (withMoney.length > 0) econ = withMoney;
+    }
+
+    return { wiredCount: live.length, rosterComplete, squadSize, members, aliveWired, bombCarrierName, econ };
+  }
+
+  /** "Last one alive" — only with whole-team certainty (rosterComplete), every
+   *  member's status known, and exactly one alive. In always-hedge mode (no squad
+   *  size) the coach can't know un-wired teammates are dead, so it stays silent. */
+  private deriveLastMan(team: TeamContext | undefined): CoachEvent | null {
+    if (!config.coach.teamTactics || !team || !team.rosterComplete) return null;
+    if (team.members.some((m) => m.alive === undefined)) return null; // a feed behind the round → unsure
+    const alive = team.members.filter((m) => m.alive === true);
+    if (alive.length !== 1) return null;
+    // The lone survivor must be TIGHTLY fresh — an actively-clutching player posts
+    // sub-second, so a feed that last reported "alive" several seconds ago (and may
+    // have since died without us seeing the death frame) must not be named the last
+    // man. Half the connection window is well under the 10s heartbeat yet far above
+    // a live player's update rate.
+    if (alive[0].staleMs > config.gsi.feedStaleMs / 2) return null;
+    const ctx = this.mergedCtx(team);
+    if (ctx.roundPhase !== "live") return null;
+    if (this.lastManRound === (ctx.round ?? null)) return null;
+    this.lastManRound = ctx.round ?? null;
+    const survivor = alive[0];
+    // The primary survivor is addressed in the second person ("you're the last
+    // one up"); a teammate survivor is named.
+    return { type: "lastManStanding", who: { name: survivor.isPrimary ? undefined : survivor.name }, rosterComplete: true };
+  }
+
+  /** Merged context for the engine and LLM: global half from the AUTHORITY feed,
+   *  personal half from the PRIMARY feed (only when the primary is its own self —
+   *  a dead primary contributes no gear, exactly as single-player today), plus the
+   *  team block. The primary/authority tracker contexts are recomputed LIVE here
+   *  so the locally-derived clock (round/bomb timers, lastKillSecondsAgo) is
+   *  current even on the async getCtx() timer path, not frozen at the last payload. */
+  private mergedCtx(team: TeamContext | undefined): MatchContext {
+    const primary = this.primaryFeed();
+    const authority = this.authorityFeed();
+    const p = primary?.tracker.context();
+    const a = authority ? authority.tracker.context() : p;
+    if (!a) return { ...EMPTY_CTX, team };
+
+    // Personal fields only when the primary feed is describing the user (alive,
+    // own block). Otherwise they're absent and the engine treats it as "dead",
+    // never borrowing a teammate's gear.
+    const self = p?.playerIsSelf ? p : undefined;
+    const mem = p ?? a; // match memory follows the primary; fall back to authority pre-primary
+
+    return {
+      // global (authority)
+      map: a.map,
+      mode: a.mode,
+      round: a.round,
+      roundKind: a.roundKind,
+      roundPhase: a.roundPhase,
+      bomb: a.bomb,
+      roundTimeLeftSec: a.roundTimeLeftSec,
+      bombTimeLeftSec: a.bombTimeLeftSec,
+      ourSide: a.ourSide,
+      ourScore: a.ourScore,
+      theirScore: a.theirScore,
+      ourLossStreak: a.ourLossStreak,
+      theirLossStreak: a.theirLossStreak,
+      ourTimeoutsLeft: a.ourTimeoutsLeft,
+      matchPoint: a.matchPoint,
+      moneyResetsNextRound: a.moneyResetsNextRound,
+      recentRoundWins: a.recentRoundWins,
+      // personal (primary, self-only)
+      playerName: p?.playerName,
+      health: self?.health,
+      armor: self?.armor,
+      helmet: self?.helmet,
+      money: self?.money,
+      equipValue: self?.equipValue,
+      defuseKit: self?.defuseKit,
+      hasBomb: self?.hasBomb,
+      weapons: self?.weapons,
+      kills: self?.kills,
+      assists: self?.assists,
+      deaths: self?.deaths,
+      mvps: self?.mvps,
+      lastKillSecondsAgo: p?.lastKillSecondsAgo,
+      earlyDeaths: p?.earlyDeaths,
+      spectating: p?.spectating,
+      // match memory (primary's)
+      history: mem.history,
+      notables: mem.notables,
+      pistolRounds: mem.pistolRounds,
+      streak: mem.streak,
+      playerIsSelf: p?.playerIsSelf ?? false,
+      team,
+    };
+  }
+
+  // --- public surface mirroring GsiTracker, for index.ts EngineDeps ----------
+
+  /** How many CONFIRMED teammate feeds (same match + side) are currently
+   *  connected — for /coach status. A stray enemy/other-lobby feed isn't counted. */
+  wiredCount(): number {
+    const now = Date.now();
+    const refMap = this.refMap(now);
+    let n = 0;
+    for (const [id, f] of this.feeds) if (this.isTeammate(f, id, now, refMap)) n++;
+    return n;
+  }
+
+  /** Merged context snapshot (timer callouts + status), recomputed live. */
+  context(): MatchContext {
+    return this.mergedCtx(this.buildTeam(Date.now()));
+  }
+
+  /** Freshest feed's payload age (is the game live at all?), or null if none. */
+  lastUpdateAgeMs(): number | null {
+    const now = Date.now();
+    let min: number | null = null;
+    for (const f of this.feeds.values()) {
+      const age = now - f.lastSeen;
+      if (min === null || age < min) min = age;
+    }
+    return min;
+  }
+
+  /** The primary's exact last-own-kill timestamp (kill-hype staleness checks). */
+  lastOwnKillAtMs(): number | null {
+    return this.primaryFeed()?.tracker.lastOwnKillAtMs() ?? null;
+  }
+
+  /** The primary's current own round-kill count (null while dead/no primary). */
+  ownRoundKillsNow(): number | null {
+    return this.primaryFeed()?.tracker.ownRoundKillsNow() ?? null;
+  }
+
+  /** The primary's unabridged round history (storytelling moments). */
+  fullHistory(): string[] {
+    return this.primaryFeed()?.tracker.fullHistory() ?? [];
+  }
+
+  /** The primary's match report, with botsDetected OR'd across CONFIRMED teammate
+   *  feeds in THIS match — any teammate spotting a bot marks the whole match as
+   *  practice (so it isn't recorded to the user's session history or polled on
+   *  Leetify). A stray feed from an unrelated lobby can't condemn the primary's game. */
+  matchReport(): ReturnType<GsiTracker["matchReport"]> {
+    const primary = this.primaryFeed();
+    const base: ReturnType<GsiTracker["matchReport"]> = primary
+      ? primary.tracker.matchReport()
+      : { rounds: [], pistols: {}, earlyDeaths: 0, notables: [], stats: undefined, botsDetected: false };
+    return { ...base, botsDetected: base.botsDetected || this.anyTeammateBotsDetected() };
+  }
+
+  private anyTeammateBotsDetected(): boolean {
+    const now = Date.now();
+    const refMap = this.refMap(now);
+    for (const [id, f] of this.feeds) {
+      if (!this.isTeammate(f, id, now, refMap)) continue;
+      if (f.tracker.matchReport().botsDetected) return true;
+    }
+    return false;
+  }
+
+  /** The primary user's SteamID64 (for the Leetify lookup). undefined when the
+   *  configured primary hasn't connected a feed yet — Leetify is then skipped. */
+  steamId(): string | undefined {
+    return this.primaryFeed()?.tracker.steamId();
+  }
+
+  /** Quiet unless the primary — or a teammate in the SAME match — is still
+   *  mid-game. The delayed Leetify recap must not talk over anyone's live game in
+   *  the shared channel, but an unrelated lobby's feed must NOT veto it. The match
+   *  is identified by the primary's last-played map (lastPrimaryMap), which
+   *  survives the primary returning to the menu, so a different-lobby friend never
+   *  blocks the recap. Staleness is judged by each tracker's own
+   *  quietMomentForSpeech (it handles the 2-min / menu / between-games logic). */
+  quietMomentForSpeech(): boolean {
+    const primary = this.primaryFeed();
+    if (primary && !primary.tracker.quietMomentForSpeech()) return false;
+    const refMap = this.lastPrimaryMap;
+    if (refMap) {
+      for (const [, f] of this.feeds) {
+        if (f === primary) continue;
+        if (f.ctx.map !== refMap) continue; // a different lobby's game must not gate our recap
+        if (!f.tracker.quietMomentForSpeech()) return false;
+      }
+    }
+    return true;
+  }
+
+  private shortId(steamid: string): string {
+    return `…${steamid.slice(-5)}`;
+  }
+}
+
+/** The key with the highest count in a tally, or undefined for an empty tally or
+ *  an exact tie (an arbitrary winner could endorse the wrong half). */
+function plurality<K>(counts: Map<K, number>): K | undefined {
+  let best: K | undefined;
+  let bestN = 0;
+  let tied = false;
+  for (const [k, n] of counts) {
+    if (n > bestN) {
+      best = k;
+      bestN = n;
+      tied = false;
+    } else if (n === bestN) {
+      tied = true;
+    }
+  }
+  return tied ? undefined : best;
+}

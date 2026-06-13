@@ -4,7 +4,8 @@ import { config } from "./config.js";
 import { log } from "./log.js";
 import { startGsiServer } from "./gsi/server.js";
 import { GsiPayloadLog } from "./gsi/payload-log.js";
-import { GsiTracker, type CoachEvent, type MatchContext } from "./gsi/tracker.js";
+import type { CoachEvent, MatchContext } from "./gsi/tracker.js";
+import { RosterManager } from "./gsi/roster.js";
 import { CoachEngine } from "./coach/engine.js";
 import { LlmCoach } from "./coach/llm.js";
 import { SessionStore } from "./coach/session-store.js";
@@ -51,7 +52,10 @@ async function main(): Promise<void> {
       : "LLM coach disabled — rule-based lines only",
   );
 
-  const tracker = new GsiTracker();
+  // Multi-feed coordinator: demuxes every friend's GSI by Steam ID into one
+  // per-feed tracker and fuses them. Solo, it behaves exactly like the old
+  // single tracker (no team block until a second feed connects).
+  const roster = new RosterManager();
 
   // Cross-session match history (state/ volume) — what lets the coach remember
   // last night's pistols. Written at every matchEnd, read into smart prompts.
@@ -62,11 +66,12 @@ async function main(): Promise<void> {
   // spend); the bot toggles it and flushes anything already queued or speaking.
   const quiet = { on: false };
 
-  // Tracker context + the preferred spoken name for the player.
-  const fullContext = () => {
-    const ctx = tracker.context();
-    return { ...ctx, playerName: config.coach.playerNickname ?? ctx.playerName };
-  };
+  // Apply the preferred spoken name for the (primary) player to a context.
+  const withNickname = (ctx: MatchContext): MatchContext => ({
+    ...ctx,
+    playerName: config.coach.playerNickname ?? ctx.playerName,
+  });
+  const fullContext = () => withNickname(roster.context());
 
   // Only the newest match's recap may speak — back-to-back games would
   // otherwise stack hour-long holds that all fire into the same quiet moment.
@@ -79,13 +84,30 @@ async function main(): Promise<void> {
     // against this instant (±10 min) to identify the right game.
     const endedAt = Date.now();
     const recapToken = ++recapSeq;
-    const report = tracker.matchReport();
+    const report = roster.matchReport();
+
+    // Friend-only match (the primary user never played this one): nothing of the
+    // user's to record, and the Leetify lookup would key on the wrong account.
+    if (report.rounds.length === 0) {
+      if (config.coach.primarySteam64) {
+        // A configured primary that never produced a round is almost always a
+        // misconfig (wrong SteamID64) rather than a genuine friend-only match —
+        // surface it loudly so it's noticed.
+        log.warn(
+          "sessions",
+          `Match ended but the configured primary (COACH_PRIMARY_STEAM64=${config.coach.primarySteam64}) never played a round — check the ID. Not recording.`,
+        );
+      } else {
+        log.info("sessions", "Primary player didn't play this match — not recording it");
+      }
+      return;
+    }
 
     // Only real matchmaking games belong in the cross-session history the
     // recap lines are built from. Premier and competitive both report mode
     // "competitive" — and so do bot matches, which is what the spectated-bot
-    // flag is for. Practice games also never reach Leetify (no demo), so the
-    // recap poll is skipped along with the record.
+    // flag is for (now OR'd across every wired feed). Practice games also never
+    // reach Leetify (no demo), so the recap poll is skipped along with the record.
     if (report.botsDetected || ctx.mode !== "competitive") {
       const why = report.botsDetected ? "bots detected" : `mode ${ctx.mode ?? "unknown"}`;
       log.info("sessions", `Practice match (${why}) — not recording it`);
@@ -94,7 +116,7 @@ async function main(): Promise<void> {
     const record = buildMatchRecord(event, ctx, report);
     sessions.record(record);
 
-    const steam64 = tracker.steamId();
+    const steam64 = roster.steamId();
     if (!config.leetify.enabled || !steam64) return;
     const stats = await pollForLeetifyStats(new LeetifyClient(config.leetify.apiKey), steam64, endedAt, ctx.map);
     if (!stats) return;
@@ -106,7 +128,7 @@ async function main(): Promise<void> {
     // re-verified right before synthesis AND right before playback.
     const deadline = Date.now() + 60 * 60_000;
     const canSpeak = () =>
-      !quiet.on && voice.connected && tracker.quietMomentForSpeech() && recapToken === recapSeq;
+      !quiet.on && voice.connected && roster.quietMomentForSpeech() && recapToken === recapSeq;
     const hold = async () => {
       while (!canSpeak() && recapToken === recapSeq && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 30_000));
@@ -150,12 +172,12 @@ async function main(): Promise<void> {
 
   const engine = new CoachEngine((req) => voice.say(req), llm, {
     getCtx: fullContext,
-    payloadAgeMs: () => tracker.lastUpdateAgeMs(),
-    lastOwnKillAt: () => tracker.lastOwnKillAtMs(),
-    ownRoundKills: () => tracker.ownRoundKillsNow(),
-    fullHistory: () => tracker.fullHistory(),
-    recentForm: () => sessions.recentForm(tracker.context().map),
-    finalStats: () => tracker.matchReport().stats,
+    payloadAgeMs: () => roster.lastUpdateAgeMs(),
+    lastOwnKillAt: () => roster.lastOwnKillAtMs(),
+    ownRoundKills: () => roster.ownRoundKillsNow(),
+    fullHistory: () => roster.fullHistory(),
+    recentForm: () => sessions.recentForm(roster.context().map),
+    finalStats: () => roster.matchReport().stats,
     isQuiet: () => quiet.on,
     onMatchEnd: (event, ctx) => {
       handleMatchEnd(event, ctx).catch((err) => log.error("coach", "Post-match handling failed", err));
@@ -170,11 +192,14 @@ async function main(): Promise<void> {
     port: config.gsi.port,
     token: config.gsi.token,
     onPayload: (payload) => {
-      const events = tracker.update(payload);
+      // Demux + fuse: one handle() call per payload (same-batch suppression
+      // semantics preserved), with the merged primary-personal + authority-global
+      // + team context.
+      const { events, ctx } = roster.update(payload);
       payloadLog?.write(payload, events);
       if (events.length > 0) {
         log.info("gsi", `Events: ${events.map((e) => e.type).join(", ")}`);
-        engine.handle(events, fullContext());
+        engine.handle(events, withNickname(ctx));
       }
     },
   });
@@ -198,6 +223,7 @@ async function main(): Promise<void> {
       ttsProviders: tts.activeNames,
       llmModel: llm ? `${config.llm.model} (mid-round: ${config.llm.fastModel})` : null,
       sessionsOnFile: sessions.count,
+      wiredFeeds: roster.wiredCount(),
     }),
   });
 

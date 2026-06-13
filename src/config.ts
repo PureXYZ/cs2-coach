@@ -43,6 +43,25 @@ export const config = {
     token: optional("GSI_TOKEN"),
     // Append every payload (+ derived events) to logs/gsi-*.ndjson for offline analysis.
     logPayloads: optional("GSI_LOG_PAYLOADS", "true") !== "false",
+    // Multi-feed: a teammate's feed counts as "connected/fresh" (toward alive
+    // counts, team economy and the whole-team-certainty gate) only within this
+    // many ms of its last payload. Must sit ABOVE the 10s cfg heartbeat — an
+    // alive-but-idle player can go ~10s between payloads, and a tighter window
+    // would falsely mark them gone (and could mis-fire a last-man call). 15s
+    // matches the engine's own PAYLOAD_FRESH_MS, sized off captured 11s gaps.
+    // (Death itself is detected from the player block, not from this timeout.)
+    feedStaleMs: intEnv("GSI_FEED_STALE_MS", 15000),
+    // A feed silent this long is reaped (the friend closed CS2 / left): its
+    // per-feed tracker and roster entry are dropped. Well above the 10s cfg
+    // heartbeat so a normal between-rounds lull never evicts a live player.
+    feedIdleMs: intEnv("GSI_FEED_IDLE_MS", 60000),
+    // Multi-feed: when the global-event authority is re-elected (the active feed
+    // went silent), two feeds can briefly emit the same round/bomb transition.
+    // A second copy of the same global type within this window is dropped. Real
+    // matches never repeat a global this fast, so the only effect is collapsing
+    // that re-election overlap. (The sim sets this to 0 to test back-to-back
+    // matches in compressed time.)
+    globalSeamMs: intEnv("GSI_GLOBAL_SEAM_MS", 4000),
   },
 
   discord: {
@@ -108,6 +127,22 @@ export const config = {
   coach: {
     // Spoken name the coach uses for the player ("Nice one, Andy!"). Defaults to Steam name.
     playerNickname: optional("PLAYER_NICKNAME") || undefined,
+
+    // --- multi-feed team coaching (friends running the same GSI cfg) ---
+    // The PRIMARY feed is the user whose Steam account owns cross-session memory
+    // and the Leetify recap. Set it to your SteamID64 so those bind to YOUR
+    // account even if a friend's CS2 connects to the coach first. Unset = adopt
+    // the first feed seen and pin it for the session (correct when you run solo).
+    primarySteam64: optional("COACH_PRIMARY_STEAM64") || undefined,
+    // How many of you run the coach. Setting this is the ONLY thing that lets the
+    // coach speak with whole-team certainty ("you're the last one alive",
+    // "everyone's broke"). Leave it unset and the coach always hedges to "the
+    // players I can see" — safe even when someone forgets to launch the cfg.
+    squadSize: intEnv("COACH_SQUAD_SIZE", 0) || undefined,
+    // Team-economy tactics: buy-sync calls and named drop suggestions at
+    // freezetime, plus last-man framing. On by default; set false to keep the
+    // coach focused on the primary player and skip the team-econ calls.
+    teamTactics: optional("COACH_TEAM_TACTICS", "true") !== "false",
   },
 
   leetify: {

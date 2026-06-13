@@ -14,8 +14,17 @@ process.env.DISCORD_TOKEN ||= "simulator";
 process.env.ROUND_SECONDS = "2"; // shrink the clocks so timer callouts fire in ms
 process.env.BOMB_SECONDS = "13";
 process.env.FREEZETIME_SECONDS = "1";
+// Multi-feed: a squad of 3 lets the roster tests exercise BOTH the honest-partial
+// path (2 of 3 wired → rosterComplete false, always hedge) and the whole-team
+// certainty path (all 3 wired → rosterComplete true, last-man calls unlock).
+process.env.COACH_SQUAD_SIZE = "3";
+// Disable the global-event re-election seam: the sim runs synchronously, so
+// back-to-back matches fire microseconds apart and a wall-clock seam would
+// wrongly collapse them (in production they're minutes apart).
+process.env.GSI_GLOBAL_SEAM_MS = "0";
 
 const { GsiTracker } = await import("../src/gsi/tracker.js");
+const { RosterManager } = await import("../src/gsi/roster.js");
 const { CoachEngine } = await import("../src/coach/engine.js");
 const { config } = await import("../src/config.js");
 const { retakeDecisionLine, economyLine, lateRoundLine, ourTimeoutSpeechLine } = await import("../src/coach/lines.js");
@@ -52,6 +61,10 @@ function payload(opts: {
   ctLosses?: number;
   tLosses?: number;
   steamid?: string;
+  /** Multi-feed: which client is POSTing (provider.steamid). Defaults to ME. */
+  provider?: string;
+  /** Override the player-block name (defaults to the ME/MATE pair). */
+  name?: string;
   team?: "T" | "CT";
   state?: PlayerState;
   kills?: number;
@@ -59,7 +72,7 @@ function payload(opts: {
   weapons?: Record<string, Partial<GsiWeapon>>;
 }): GsiPayload {
   return {
-    provider: { name: "cs2", appid: 730, version: 1, steamid: ME, timestamp: 0 },
+    provider: { name: "cs2", appid: 730, version: 1, steamid: opts.provider ?? ME, timestamp: 0 },
     map: {
       mode: "competitive",
       name: "de_mirage",
@@ -71,8 +84,8 @@ function payload(opts: {
     },
     round: opts.roundPhase ? { phase: opts.roundPhase, bomb: opts.bomb, win_team: opts.winTeam } : undefined,
     player: {
-      steamid: opts.steamid ?? ME,
-      name: opts.steamid === MATE ? "BobTheFriend" : "Andy",
+      steamid: opts.steamid ?? opts.provider ?? ME,
+      name: opts.name ?? (opts.steamid === MATE ? "BobTheFriend" : "Andy"),
       team: opts.team ?? "CT",
       state: {
         health: 100,
@@ -946,6 +959,244 @@ console.log("\n=== scenario: the Leetify recap waits for a quiet moment ===");
   expect(kdOnly === "K D ratio 0.68", `K/D fallback avoids the slash for TTS ("${kdOnly}")`);
   const recap = leetifyRecapLine("de_mirage", sentence!);
   expect(recap.includes("Mirage") && recap.includes("ADR 67.09") && /leetify/i.test(recap), `canned recap credits Leetify and reads the numbers ("${recap.slice(0, 70)}...")`);
+}
+
+// ===========================================================================
+// MULTI-FEED: friends also running the GSI cfg. These exercise the RosterManager
+// (demux by provider.steamid → one tracker per feed → fused output), which the
+// scenarios above never touch (they feed a single GsiTracker directly). Real
+// SteamID64s here (17 digits) — the roster validates the shape and drops junk.
+// ===========================================================================
+const P1 = "76561198000000001"; // primary user ("Andy")
+const P2 = "76561198000000002"; // friend ("Mouse")
+const P3 = "76561198000000003"; // friend ("Cadian")
+
+function rosterRig(primary: string): {
+  r: InstanceType<typeof RosterManager>;
+  out: SpeakRequest[];
+  run: (label: string, p: GsiPayload) => CoachEvent[];
+} {
+  const out: SpeakRequest[] = [];
+  const r = new RosterManager(primary);
+  const e = new CoachEngine((req) => out.push(req), null, { getCtx: () => r.context() });
+  const run = (label: string, p: GsiPayload): CoachEvent[] => {
+    const { events, ctx } = r.update(p);
+    if (events.length > 0) {
+      console.log(`  ${label}: ${events.map((x) => x.type).join(", ")}`);
+      e.handle(events, ctx);
+    }
+    return events;
+  };
+  return { r, out, run };
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: multi-feed — demux, global-event dedup, named teammate triple ===");
+{
+  const { out, run } = rosterRig(P1);
+  run("P1 warmup", payload({ provider: P1, mapPhase: "warmup" }));
+  const start = run("P1 r1 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 0 }));
+  expect(start.some((e) => e.type === "matchStart"), "primary feed drives matchStart");
+  run("P1 r1 live", payload({ provider: P1, roundPhase: "live", round: 0 }));
+
+  // A friend joins and catches up — its duplicate global events are dropped
+  // (P1 is the authority), so the channel never hears "match found" twice.
+  run("P2 warmup", payload({ provider: P2, mapPhase: "warmup", name: "Mouse" }));
+  const dup = run("P2 r1 freeze", payload({ provider: P2, roundPhase: "freezetime", round: 0, name: "Mouse" }));
+  expect(!dup.some((e) => e.type === "matchStart" || e.type === "freezetime"), "friend feed's duplicate global events are dropped");
+  run("P2 r1 live", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse" }));
+
+  // Singles/doubles from a teammate stay silent (aggregate, don't multiply); the
+  // triple becomes a NAMED teammateMultiKill.
+  const k1 = run("P2 kill 1", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse", state: { round_kills: 1 }, kills: 1 }));
+  expect(k1.length === 0, "a teammate's single kill stays silent");
+  run("P2 kill 2", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse", state: { round_kills: 2 }, kills: 2 }));
+  const triple = run("P2 triple", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse", state: { round_kills: 3 }, kills: 3 }));
+  const tmk = triple.find((e) => e.type === "teammateMultiKill") as Extract<CoachEvent, { type: "teammateMultiKill" }> | undefined;
+  expect(tmk?.roundKills === 3, "a teammate's triple becomes a teammateMultiKill");
+  expect(tmk?.who.name === "Mouse", "teammateMultiKill carries the friend's own-feed name");
+  expect(out.some((s) => s.category === "teammate" && s.text.includes("Mouse")), "teammate hype spoken by name");
+
+  // Both feeds cross the round end; only the authority's reaches the engine.
+  const p1End = run("P1 r1 over", payload({ provider: P1, roundPhase: "over", round: 1, winTeam: "CT", ctScore: 1, roundWins: { "1": "ct_win_elimination" } }));
+  expect(p1End.filter((e) => e.type === "roundEnd").length === 1, "authority feed emits the single roundEnd");
+  const p2End = run("P2 r1 over", payload({ provider: P2, roundPhase: "over", round: 1, winTeam: "CT", ctScore: 1, name: "Mouse", roundWins: { "1": "ct_win_elimination" } }));
+  expect(!p2End.some((e) => e.type === "roundEnd"), "friend feed's duplicate roundEnd is dropped");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: multi-feed — dead-spectate of a wired teammate is de-duplicated ===");
+{
+  const { run } = rosterRig(P1);
+  run("P1 warmup", payload({ provider: P1, mapPhase: "warmup" }));
+  run("P1 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 0 }));
+  run("P1 live", payload({ provider: P1, roundPhase: "live", round: 0 }));
+  run("P2 live", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse" }));
+  // P1 dies and spectates P2 (a wired, live feed). P1's tracker emits teammateKill,
+  // but P2 reports its own kills first-hand — so the roster drops the duplicate.
+  run("P1 death", payload({ provider: P1, roundPhase: "live", round: 0, state: { health: 0 }, weapons: {} }));
+  run("P1 spectates P2 (baseline)", payload({ provider: P1, roundPhase: "live", round: 0, steamid: P2, name: "Mouse", state: { round_kills: 1 }, kills: 3 }));
+  const spec = run("P1 sees P2 frag (spectated)", payload({ provider: P1, roundPhase: "live", round: 0, steamid: P2, name: "Mouse", state: { round_kills: 2 }, kills: 3 }));
+  expect(!spec.some((e) => e.type === "teammateKill"), "spectated kill of a WIRED teammate is dropped (reported first-hand)");
+
+  // Spectating an UN-wired teammate (never POSTed a feed) still narrates — today's behavior.
+  const UNWIRED = "76561198000000009";
+  run("P1 spectates unwired (baseline)", payload({ provider: P1, roundPhase: "live", round: 0, steamid: UNWIRED, name: "RandoMM", state: { round_kills: 0 }, kills: 1 }));
+  const un = run("P1 sees unwired frag", payload({ provider: P1, roundPhase: "live", round: 0, steamid: UNWIRED, name: "RandoMM", state: { round_kills: 1 }, kills: 1 }));
+  expect(un.some((e) => e.type === "teammateKill"), "spectated kill of an UN-wired teammate still narrates");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: multi-feed — partial roster stays honest (2 of a 3-stack) ===");
+{
+  const { r, run } = rosterRig(P1);
+  run("P1 warmup", payload({ provider: P1, mapPhase: "warmup" }));
+  run("P1 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 0, state: { money: 4000 } }));
+  run("P2 freeze", payload({ provider: P2, roundPhase: "freezetime", round: 0, name: "Mouse", state: { money: 800 } }));
+  const ctx = r.context();
+  expect(ctx.team !== undefined, "team block present with 2+ feeds");
+  expect(ctx.team?.wiredCount === 2, `wiredCount counts fresh feeds (got ${ctx.team?.wiredCount})`);
+  expect(ctx.team?.rosterComplete === false, "2 of a 3-person squad is NOT roster-complete — coach must hedge");
+  expect(ctx.team?.members.some((m) => m.name === "Mouse") === true, "teammate named from their own feed");
+  expect(ctx.team?.members.some((m) => m.isPrimary) === true, "primary flagged in the roster");
+  expect(ctx.team?.econ?.length === 2, "team econ carries both wired players' money for the buy call");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: multi-feed — full squad unlocks the last-man call (named survivor) ===");
+{
+  const { run } = rosterRig(P1);
+  run("P1 warmup", payload({ provider: P1, mapPhase: "warmup" }));
+  run("P1 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 0 }));
+  run("P1 live", payload({ provider: P1, roundPhase: "live", round: 0 }));
+  run("P2 live", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse" }));
+  run("P3 live", payload({ provider: P3, roundPhase: "live", round: 0, name: "Cadian" }));
+  // Drop to two alive: no last-man call yet.
+  const twoLeft = run("P2 dies", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse", state: { health: 0 }, weapons: {} }));
+  expect(!twoLeft.some((e) => e.type === "lastManStanding"), "no last-man call with two still alive");
+  // Primary dies too → the lone survivor is friend P3, named in the third person.
+  const lastMan = run("P1 dies", payload({ provider: P1, roundPhase: "live", round: 0, state: { health: 0 }, weapons: {} }));
+  const lm = lastMan.find((e) => e.type === "lastManStanding") as Extract<CoachEvent, { type: "lastManStanding" }> | undefined;
+  expect(lm !== undefined, "last-man-standing fires when the full squad is down to one");
+  expect(lm?.who.name === "Cadian", `last-man call names the surviving friend (got ${lm?.who.name})`);
+  expect(lm?.rosterComplete === true, "last-man only fires with whole-team certainty");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: multi-feed — an ENEMY-team friend on the shared token is quarantined ===");
+{
+  const ENEMY = "76561198000000007";
+  const { r, run } = rosterRig(P1);
+  run("P1 warmup", payload({ provider: P1, mapPhase: "warmup", team: "CT" }));
+  run("P1 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 0, team: "CT" }));
+  run("P1 live", payload({ provider: P1, roundPhase: "live", round: 0, team: "CT" }));
+  run("P2 live (CT)", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse", team: "CT" }));
+  // A friend queued onto the enemy T side, POSTing to the same token.
+  run("ENEMY live (T)", payload({ provider: ENEMY, roundPhase: "live", round: 0, name: "Traitor", team: "T" }));
+  const ctx = r.context();
+  expect(ctx.team?.wiredCount === 2, `enemy feed excluded from wiredCount (got ${ctx.team?.wiredCount})`);
+  expect(!ctx.team?.members.some((m) => m.name === "Traitor"), "enemy feed is NOT a roster member");
+  // The enemy triples — must NOT be hyped as a teammate.
+  run("ENEMY kill 1", payload({ provider: ENEMY, roundPhase: "live", round: 0, name: "Traitor", team: "T", state: { round_kills: 1 }, kills: 1 }));
+  run("ENEMY kill 2", payload({ provider: ENEMY, roundPhase: "live", round: 0, name: "Traitor", team: "T", state: { round_kills: 2 }, kills: 2 }));
+  const enemyTriple = run("ENEMY triple", payload({ provider: ENEMY, roundPhase: "live", round: 0, name: "Traitor", team: "T", state: { round_kills: 3 }, kills: 3 }));
+  expect(!enemyTriple.some((e) => e.type === "teammateMultiKill"), "an enemy's triple is never hyped as a teammate");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: multi-feed — halftime side-swap can't sneak an enemy friend into the squad ===");
+{
+  const ENEMY = "76561198000000008";
+  const { r, run } = rosterRig(P1);
+  run("P1 r1 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 0, team: "CT" }));
+  run("P1 r1 live", payload({ provider: P1, roundPhase: "live", round: 0, team: "CT" }));
+  run("P2 r1 live (CT)", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse", team: "CT" }));
+  // An enemy-team friend on T posts several frames → opposite-side votes pile up.
+  run("E1 f1 (T)", payload({ provider: ENEMY, roundPhase: "live", round: 0, name: "Traitor", team: "T" }));
+  run("E1 f2 (T)", payload({ provider: ENEMY, roundPhase: "live", round: 0, name: "Traitor", team: "T" }));
+  run("E1 f3 (T)", payload({ provider: ENEMY, roundPhase: "live", round: 0, name: "Traitor", team: "T" }));
+  // HALFTIME SWAP: the primary flips to T first; the enemy hasn't posted its
+  // post-swap (CT) frame yet, so it still shows T — momentarily the SAME side as
+  // the just-swapped primary. The accumulated opposite-side vote must keep it out.
+  run("P1 swapped to T", payload({ provider: P1, roundPhase: "freezetime", round: 12, team: "T", ctScore: 6, tScore: 6 }));
+  const enemyTriple = run("E1 triple (stale T)", payload({ provider: ENEMY, roundPhase: "live", round: 12, name: "Traitor", team: "T", state: { round_kills: 3 }, kills: 3, ctScore: 6, tScore: 6 }));
+  expect(!enemyTriple.some((e) => e.type === "teammateMultiKill"), "halftime side coincidence does NOT hype the enemy as a teammate");
+  // The real teammate P2 also swaps to T and must STAY in the squad.
+  run("P2 swapped to T", payload({ provider: P2, roundPhase: "freezetime", round: 12, name: "Mouse", team: "T", ctScore: 6, tScore: 6 }));
+  const ctx = r.context();
+  expect(ctx.team?.members.some((m) => m.name === "Mouse") === true, "real teammate stays wired through the side swap");
+  expect(!ctx.team?.members.some((m) => m.name === "Traitor"), "enemy stays quarantined across the swap");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: multi-feed — a brand-new feed seen only during the swap seam can't be voted in ===");
+{
+  const SNEAK = "76561198000000010";
+  const { run } = rosterRig(P1);
+  run("P1 r1 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 0, team: "CT" }));
+  run("P1 r1 live", payload({ provider: P1, roundPhase: "live", round: 0, team: "CT" }));
+  run("P2 r1 live", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse", team: "CT" }));
+  // The primary has crossed the swap to round 13 (T). A fresh enemy connects but
+  // is a round behind (still round 12) — out of phase, so its side is never voted
+  // against the primary's, even though its stale T momentarily matches the primary's new T.
+  run("P1 r13 freeze (T)", payload({ provider: P1, roundPhase: "freezetime", round: 12, team: "T", ctScore: 6, tScore: 6 }));
+  run("Sneak baseline (r12, T)", payload({ provider: SNEAK, roundPhase: "live", round: 11, name: "Sneak", team: "T", ctScore: 6, tScore: 6 }));
+  const seam = run("Sneak triple (r12 while primary on r13)", payload({ provider: SNEAK, roundPhase: "live", round: 11, name: "Sneak", team: "T", state: { round_kills: 3 }, kills: 3, ctScore: 6, tScore: 6 }));
+  expect(!seam.some((e) => e.type === "teammateMultiKill"), "a feed a round out of phase casts no vote and isn't hyped");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: multi-feed — side votes reset between matches (former teammate, now an enemy) ===");
+{
+  const { r, run } = rosterRig(P1);
+  // Match A: P1 + P2 both CT — P2 becomes a confirmed teammate.
+  run("A P1 live", payload({ provider: P1, roundPhase: "live", round: 0, team: "CT" }));
+  run("A P2 live", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse", team: "CT" }));
+  run("A P2 live 2", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse", team: "CT" }));
+  expect(r.context().team?.members.some((m) => m.name === "Mouse") === true, "P2 is a teammate in match A");
+  // Match B begins (both clients re-matchStart through warmup). P2 is now an enemy.
+  run("B P1 warmup", payload({ provider: P1, mapPhase: "warmup", team: "CT" }));
+  run("B P1 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 0, team: "CT" }));
+  run("B P1 live", payload({ provider: P1, roundPhase: "live", round: 0, team: "CT" }));
+  run("B P2 warmup", payload({ provider: P2, mapPhase: "warmup", name: "Mouse", team: "T" }));
+  run("B P2 enemy live", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse", team: "T" }));
+  run("B P2 enemy live 2", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse", team: "T" }));
+  expect(!r.context().team?.members.some((m) => m.name === "Mouse"), "P2's match-A votes reset; now correctly an enemy, out of the squad");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: multi-feed — abandoning a match still announces the NEXT one ===");
+{
+  const { run } = rosterRig(P1);
+  run("warmup", payload({ provider: P1, mapPhase: "warmup" }));
+  run("match A freeze", payload({ provider: P1, roundPhase: "freezetime", round: 0 }));
+  run("match A live", payload({ provider: P1, roundPhase: "live", round: 0 }));
+  // Abandon: client drops to the menu (payloads with no map block), no gameover.
+  run("menu", { provider: { name: "cs2", appid: 730, version: 1, steamid: P1, timestamp: 0 } } as GsiPayload);
+  // New match queued — its matchStart MUST still fire (the old inMatch latch ate it).
+  const matchB = run("match B live", payload({ provider: P1, roundPhase: "freezetime", round: 0 }));
+  expect(matchB.some((e) => e.type === "matchStart"), "the next match is announced after an abandon");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: multi-feed — no false last-man at round start (stale dead frames) ===");
+{
+  const { run } = rosterRig(P1);
+  run("P1 warmup", payload({ provider: P1, mapPhase: "warmup" }));
+  run("P1 r1 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 0 }));
+  run("P1 r1 live", payload({ provider: P1, roundPhase: "live", round: 0 }));
+  run("P2 r1 live", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse" }));
+  run("P3 r1 live", payload({ provider: P3, roundPhase: "live", round: 0, name: "Cadian" }));
+  // Round 1: friends die, P1 wins it. (Their last frames now show dead, round 1.)
+  run("P2 dies r1", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse", state: { health: 0 }, weapons: {} }));
+  run("P3 dies r1", payload({ provider: P3, roundPhase: "live", round: 0, name: "Cadian", state: { health: 0 }, weapons: {} }));
+  run("P1 r1 over", payload({ provider: P1, roundPhase: "over", round: 1, winTeam: "CT", ctScore: 1, roundWins: { "1": "ct_win_elimination" } }));
+  // Round 2 goes live for the PRIMARY only — the friends' feeds haven't posted a
+  // round-2 frame yet, so their cached frames still read "dead from round 1".
+  // That must NOT be read as a 1-alive clutch.
+  run("P1 r2 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 1, ctScore: 1 }));
+  const r2Live = run("P1 r2 live", payload({ provider: P1, roundPhase: "live", round: 1, ctScore: 1 }));
+  expect(!r2Live.some((e) => e.type === "lastManStanding"), "no false last-man at round start while teammates' feeds are behind");
 }
 
 // ---------------------------------------------------------------------------

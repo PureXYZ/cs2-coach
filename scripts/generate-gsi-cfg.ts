@@ -11,6 +11,13 @@
  * Copy the generated file to the GAMING PC at:
  *   <Steam>\steamapps\common\Counter-Strike Global Offensive\game\csgo\cfg\
  * then restart CS2 (the cfg is only read at launch).
+ *
+ * PLAYING WITH FRIENDS: the coach reads multiple players at once. Every friend
+ * uses the SAME generated cfg (same host, same token) — each CS2 client tags its
+ * own SteamID64 in the payload, so the coach demuxes the feeds automatically.
+ * There is nothing per-friend to customize: just share this one file, they drop
+ * it in their csgo\cfg\ folder and restart CS2. (Set COACH_PRIMARY_STEAM64 in the
+ * coach's .env to YOUR SteamID64 so session memory + the Leetify recap stay yours.)
  */
 import "dotenv/config";
 import { networkInterfaces } from "node:os";
@@ -89,3 +96,7 @@ console.log("");
 console.log("Next: copy the file to the gaming PC at");
 console.log("  C:\\Program Files (x86)\\Steam\\steamapps\\common\\Counter-Strike Global Offensive\\game\\csgo\\cfg\\");
 console.log("and restart CS2.");
+console.log("");
+console.log("Playing with friends? Send them this exact same file — they drop it in the");
+console.log("same cfg folder and restart CS2. The coach reads everyone at once (each client");
+console.log("identifies itself by Steam ID). No per-friend setup.");
