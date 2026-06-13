@@ -33,6 +33,12 @@ export interface SpeakRequest {
    * from third-party API data the project must not persist (Leetify).
    */
   redactText?: boolean;
+  /**
+   * One-off ElevenLabs voice override for this line only (the `/coach say voice:`
+   * option). Unset = the current `/coach voice` selection. Ignored by the
+   * non-ElevenLabs providers.
+   */
+  voiceId?: string;
 }
 
 export type Speak = (req: SpeakRequest) => void;

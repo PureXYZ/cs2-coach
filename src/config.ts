@@ -41,6 +41,68 @@ function floatEnv(name: string, fallback: number, min?: number, max?: number): n
 
 export type TtsProviderName = "deepgram" | "elevenlabs" | "edge";
 
+/** A selectable ElevenLabs coach voice (the choices behind `/coach voice`). */
+export interface CoachVoice {
+  /** Stable slug — the Discord choice value and the key persisted on switch. */
+  key: string;
+  /** Human label shown in Discord (e.g. "Coach"). */
+  label: string;
+  /** The ElevenLabs voice id this speaks with. */
+  voiceId: string;
+}
+
+/** label → stable slug for the Discord choice value / persisted selection. */
+function voiceKey(label: string): string {
+  return label
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/**
+ * Parse ELEVENLABS_VOICES — a comma-separated list of `Label:voiceId` pairs, the
+ * first of which is the default switchable voice. When it's unset there's a
+ * single unnamed voice using `fallbackVoiceId` (ELEVENLABS_VOICE_ID), so the app
+ * works with no voice list configured. Throws on a malformed list rather than
+ * silently shipping a broken voice id. (Voice ids/names are deployment config —
+ * they live in the env, never hard-coded here.)
+ */
+function parseVoices(raw: string, fallbackVoiceId: string): CoachVoice[] {
+  if (!raw.trim()) return [{ key: "default", label: "Default", voiceId: fallbackVoiceId }];
+  const voices: CoachVoice[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw.split(",").map((s) => s.trim()).filter(Boolean)) {
+    // Split on the LAST colon: a voiceId never contains one, but a label might.
+    const sep = entry.lastIndexOf(":");
+    const label = sep > 0 ? entry.slice(0, sep).trim() : "";
+    const voiceId = sep > 0 ? entry.slice(sep + 1).trim() : "";
+    if (!label || !voiceId) {
+      throw new Error(`ELEVENLABS_VOICES entry "${entry}" must be "Label:voiceId"`);
+    }
+    // Discord caps a slash-command choice name at 100 chars — fail loudly here
+    // rather than letting addChoices() throw opaquely and break registration of
+    // every command.
+    if (label.length > 100) {
+      throw new Error(`ELEVENLABS_VOICES label "${label}" exceeds Discord's 100-character limit`);
+    }
+    // ElevenLabs voice ids are alphanumeric. Reject a typo at startup instead of
+    // shipping it into the request URL and getting a per-line 4xx that silently
+    // demotes the provider mid-match (same reasoning as intEnv/floatEnv above).
+    if (!/^[A-Za-z0-9]+$/.test(voiceId)) {
+      throw new Error(`ELEVENLABS_VOICES entry "${entry}" has an invalid voiceId "${voiceId}"`);
+    }
+    // Disambiguate colliding/empty slugs so every choice value stays unique.
+    const base = voiceKey(label) || `voice-${voices.length + 1}`;
+    let key = base;
+    for (let n = 2; seen.has(key); n++) key = `${base}-${n}`;
+    seen.add(key);
+    voices.push({ key, label, voiceId });
+  }
+  if (voices.length === 0) throw new Error("ELEVENLABS_VOICES is set but contains no valid voices");
+  return voices;
+}
+
 // A valid SteamID64 is the literal 7656 prefix + 13 digits (17 digits total).
 // Shared so config validation and the multi-feed roster agree on what binds.
 export const STEAMID64_RE = /^7656\d{13}$/;
@@ -116,7 +178,12 @@ export const config = {
     },
     elevenlabs: {
       apiKey: optional("ELEVENLABS_API_KEY") || undefined,
-      voiceId: optional("ELEVENLABS_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb"),
+      // The switchable coach voices (first = default). From ELEVENLABS_VOICES (a
+      // named list) when set; otherwise a single voice using ELEVENLABS_VOICE_ID.
+      voices: parseVoices(
+        optional("ELEVENLABS_VOICES"),
+        optional("ELEVENLABS_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb"),
+      ),
       modelId: optional("ELEVENLABS_MODEL_ID", "eleven_flash_v2_5"),
       // 0–1 scale (the dashboard shows these as percentages).
       stability: floatEnv("ELEVENLABS_STABILITY", 0.3, 0, 1),
