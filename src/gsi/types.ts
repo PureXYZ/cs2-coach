@@ -146,6 +146,14 @@ export interface TeamMember {
   tier: "fresh" | "lagging";
   /** ms since this feed's last payload — the freshness the honesty gates key on. */
   staleMs: number;
+  /**
+   * A short, NUMBER-FREE qualitative debrief tag synthesized from this feed's own
+   * match so far ("kept dying early on the entry", "dropped an ace this match") —
+   * the per-friend coaching hook for the break-moment jab and the wrap-up. Never a
+   * raw stat: a teammate number here would violate the matchEnd K/D guardrail.
+   * Present only for fresh members (the stale appendees carry no note).
+   */
+  note?: string;
 }
 
 /**
@@ -185,8 +193,10 @@ export interface TeamContext {
   econ?: { name?: string; money: number; isPrimary: boolean; equipValue?: number; alive?: boolean }[];
   /**
    * Cross-round buy-sync read for a coordinating squad — e.g. "Andy full-bought
-   * while Mouse and Cadian saved". Present only when rosterComplete; the
-   * freezetime/halftime line may fold it in. No cooldown of its own.
+   * while Mouse and Cadian saved". Present whenever 2+ wired buyers are visible at
+   * freezetime — it speaks only about the wired crew (never the whole team), so it
+   * needs no rosterComplete license. The freezetime/halftime line may fold it in.
+   * No cooldown of its own.
    */
   buySyncNote?: string;
   /**

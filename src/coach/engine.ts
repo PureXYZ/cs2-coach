@@ -58,6 +58,9 @@ const COOLDOWNS_MS: Record<string, number> = {
   teammate: 12_000,
   // Last-man-standing clutch call (multi-feed, whole-team certainty only).
   lastman: 10_000,
+  // C3 squad weak-link nudge — long gap so two offenders can't be called back to
+  // back; the roster's per-offender latch already caps it to once each per match.
+  weakLink: 60_000,
   clock: 25_000,
   // The canned timeout call (LLM-less setups) — once it's been said, the next
   // few freezetimes of the same losing streak don't need it repeated.
@@ -126,6 +129,9 @@ export class CoachEngine {
    *  in the same beat merge instead of stepping on each other. */
   private multiKillBuf = new Map<string, { kills: number; name?: string }>();
   private multiKillTimer: NodeJS.Timeout | null = null;
+  /** B6: broke friends already named for a drop THIS match — latches the LLM-off
+   *  drop coda to once per recipient so it can't re-name the same friend each freeze. */
+  private droppedTo = new Set<string>();
 
   constructor(
     private readonly speak: Speak,
@@ -190,13 +196,14 @@ export class CoachEngine {
     switch (event.type) {
       case "matchStart": {
         this.cancelTimers();
+        this.droppedTo.clear(); // B6: re-arm the per-recipient drop latch each match
         // Smart tier so the greeting can call back to past sessions (recentForm).
         // When the round-1 freezetime rides in the same GSI frame (the usual
         // case), that event is suppressed and THIS line carries the pistol
         // call too — one moment, one line.
         const fallback = () => {
           const greet = lines.matchStartLine(event.map);
-          const eco = ctx.roundPhase === "freezetime" ? lines.economyLine(ctx) : null;
+          const eco = ctx.roundPhase === "freezetime" ? lines.economyLine(ctx, this.droppedTo) : null;
           return eco ? `${greet} ${eco}` : greet;
         };
         this.tacticalMoment(event, ctx, fallback, "match", 15_000, "smart", 2);
@@ -221,7 +228,7 @@ export class CoachEngine {
         this.tacticalMoment(
           event,
           ftCtx,
-          () => lines.economyLine(ctx),
+          () => lines.economyLine(ctx, this.droppedTo),
           "economy",
           12_000,
           "smart",
@@ -472,6 +479,16 @@ export class CoachEngine {
           category: "lastman",
           priority: 3,
           maxAgeMs: 5_000,
+        });
+        break;
+
+      case "weakLink":
+        // C3: the roster code-gates this (once per offender per match, freezetime
+        // only), so the line can name the friend — framed as a team trade problem.
+        this.say(() => lines.squadOpeningDeathsLine(event.who.name), {
+          category: "weakLink",
+          priority: 1,
+          maxAgeMs: 12_000,
         });
         break;
 

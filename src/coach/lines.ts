@@ -100,8 +100,40 @@ export function matchStartLine(rawMap: string): string {
   ]);
 }
 
-/** Economy advice for freezetime, from own money/equipment + team loss streak. */
-export function economyLine(ctx: MatchContext): string | null {
+/** B6 — append a named-drop coda to a buy line when the primary is already kitted
+ *  with spare cash and a wired teammate is broke and ALIVE. Keyed on MONEY only (a
+ *  friend's equipValue is never reported — only the primary's own gear is readable),
+ *  beneficiary-framed. LLM-off parity with the freezetime prompt's drop logic;
+ *  returns the line unchanged when there's no clean drop to call. */
+function appendDrop(line: string, ctx: MatchContext, droppedTo?: Set<string>): string {
+  if (ctx.roundKind === "pistol") return line; // pistols: everyone's at 800, no drops
+  const econ = ctx.team?.econ;
+  if (!econ || econ.length < 2) return line;
+  // The donor must be the PRIMARY (their own gear is the only readable gear),
+  // already kitted (won't spend the cash on themselves) with enough to spare a rifle.
+  const me = econ.find((e) => e.isPrimary);
+  if (!me || (me.equipValue ?? 0) < 3500 || (me.money ?? 0) < 2700) return line;
+  const broke = econ
+    .filter((e) => !e.isPrimary && e.alive !== false && typeof e.money === "number" && e.money < 2000 && e.name)
+    .sort((a, b) => (a.money as number) - (b.money as number))[0];
+  if (!broke) return line;
+  const who = broke.name as string;
+  // Anti-repeat: the economy cooldown is shorter than a round, so without a latch
+  // this would re-name the same broke friend freezetime after freezetime. The caller
+  // owns the per-match set (cleared at matchStart), mirroring weakLinkCalled.
+  if (droppedTo?.has(who)) return line;
+  droppedTo?.add(who);
+  return `${line} ${pick("dropCoda", [
+    `And ${who}'s broke — sling them a rifle, you can afford it.`,
+    `${who}'s got nothing. Drop them a gun, quit hoarding.`,
+    `You're loaded, ${who} isn't. Drop them something that shoots.`,
+  ])}`;
+}
+
+/** Economy advice for freezetime, from own money/equipment + team loss streak.
+ *  `droppedTo` (optional, owned by the engine, cleared at matchStart) latches the
+ *  named-drop coda to once per recipient per match. */
+export function economyLine(ctx: MatchContext, droppedTo?: Set<string>): string | null {
   const money = ctx.money;
   if (money === undefined) return null;
   const equip = ctx.equipValue ?? 0;
@@ -148,7 +180,7 @@ export function economyLine(ctx: MatchContext): string | null {
   }
 
   if (equip >= 3500) {
-    return pick("ecoKitted", [
+    return appendDrop(pick("ecoKitted", [
       "Wallet stays shut, you've got everything. Bring that rifle home alive.",
       "Nothing to buy. Keep the gun. That's it. That's the whole damn speech.",
       "Kitted. Zero shopping. Try dying less, it's free.",
@@ -159,7 +191,7 @@ export function economyLine(ctx: MatchContext): string | null {
       "Fully equipped. Per my last timeout, we do not hand out free rifles to strangers.",
       "You're loaded already. Donating rifles to their broke asses is not a strat.",
       "All set. Spend zero. A dry peek right now is a yard sale.",
-    ]);
+    ]), ctx, droppedTo);
   }
   if (money >= 4700) {
     return pick("ecoFullBuy", [
@@ -830,14 +862,19 @@ export function theirTimeoutLine(): string {
 
 /**
  * Wrapper for the spoken Leetify recap — the canned fallback when the LLM is
- * off. The {stats} slot takes a comma-separated numbers sentence verbatim.
+ * off. The {stats} slot takes a comma-separated numbers sentence verbatim; an
+ * optional squad sentence (the crew comparison) is appended verbatim too.
  */
-export function leetifyRecapLine(map: string | undefined, statsSentence: string): string {
+export function leetifyRecapLine(
+  map: string | undefined,
+  statsSentence: string,
+  squadSentence?: string,
+): string {
   const where = map ? mapDisplayName(map) : "that last one";
   // Result-agnostic on purpose: the wrapper doesn't know if the numbers are
   // good or bad, so no loss-coded verdicts and no claims about what the
   // player's been doing while Leetify chewed on the demo.
-  return pick("leetifyRecap", [
+  const base = pick("leetifyRecap", [
     "Match report time — Leetify scored {map} for us. {stats}. Now everybody give me a damn lap.",
     "Leetify finished chewing through the {map} demo. {stats}. Brave little website.",
     "Verdict's in from Leetify on {map}. {stats}. Numbers don't give a shit about feelings.",
@@ -847,6 +884,7 @@ export function leetifyRecapLine(map: string | undefined, statsSentence: string)
   ])
     .replace("{map}", where)
     .replace("{stats}", statsSentence);
+  return squadSentence ? `${base} And the crew: ${squadSentence}.` : base;
 }
 
 /**
@@ -919,6 +957,24 @@ export function retakeDecisionLine(ctx: MatchContext): string {
       "We've got the bodies. Coordinate the hit, trade hard. Can't see them, but the numbers are ours.",
     ]);
   }
+  // Events ITEM 8 (partial): NOT roster-complete, but some wired teammates' OWN
+  // alive state is visible — name the fresh-alive ones for a hedged minimum-bodies
+  // call. Read from members[] directly (aliveWired is undefined without
+  // rosterComplete), so this never asserts a whole-team count.
+  if (team && !team.rosterComplete) {
+    const up = team.members.filter((m) => m.alive === true && m.tier === "fresh" && !m.isPrimary && m.name);
+    if (up.length > 0) {
+      const names =
+        up.length === 1
+          ? (up[0].name as string)
+          : `${up.slice(0, -1).map((m) => m.name).join(", ")} and ${up[up.length - 1].name}`;
+      return pick("retakePartial", [
+        `At least you and ${names} are up — pair the swing, trade hard, can't see the rest of us so don't overcommit.`,
+        `You've got ${names} with you for sure. Same fight, refrag clean. Dunno about the others, so bail if it's not there.`,
+        `You and ${names} for certain — take the site together, no solo entries. No read on the rest, play it safe if it stalls.`,
+      ]);
+    }
+  }
   const thinGear = (ctx.armor ?? 0) === 0 || (ctx.equipValue ?? 0) < 1500 || (ctx.health ?? 100) < 40;
   if (ctx.defuseKit) {
     return pick("retakeKit", [
@@ -945,6 +1001,22 @@ export function retakeDecisionLine(ctx: MatchContext): string {
     "You're geared. Walk in with friends. Nobody dies for free.",
     "Retake time. Buddy system. Anyone entering alone gets benched.",
     "Full kit, no excuses. Hit the site as a unit.",
+  ]);
+}
+
+/**
+ * C3 — the squad's entry-trade weak link: a wired teammate who keeps dying on the
+ * opening. The roster code-gates this (once per offender per match, at freezetime),
+ * so the line names them directly and roasts the habit (friends are fair game) while
+ * staying number-free (no teammate count, per the K/D guardrail).
+ */
+export function squadOpeningDeathsLine(name: string): string {
+  return pick("squadOpeningDeaths", [
+    `${name}'s been first to die a few rounds running. Trade them, or ${name}, quit swinging first.`,
+    `We keep losing ${name} on the opening. Refrag them this round, or rethink who's entrying.`,
+    `${name}, you're getting picked the second the round starts. Wait for a trade or let someone else open.`,
+    `Somebody babysit ${name} on entry — they keep going in alone and dying. That's free rounds we're gifting.`,
+    `${name} keeps running in and dying first like it's the assigned role. Trade the poor bastard or stop ego-peeking.`,
   ]);
 }
 

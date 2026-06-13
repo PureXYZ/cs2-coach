@@ -12,7 +12,13 @@ import { SessionStore } from "./coach/session-store.js";
 import { DecisionLog } from "./coach/decision-log.js";
 import { buildMatchRecord } from "./coach/debrief.js";
 import { leetifyRecapLine } from "./coach/lines.js";
-import { LeetifyClient, pollForLeetifyStats, spokenStatsSentence } from "./leetify.js";
+import {
+  LeetifyClient,
+  pollForLeetifyStats,
+  pollForSquadLeetifyStats,
+  spokenStatsSentence,
+  spokenSquadSentence,
+} from "./leetify.js";
 import { TtsChain } from "./tts/index.js";
 import { VoiceCoach } from "./discord/voice.js";
 import { startBot } from "./discord/bot.js";
@@ -95,6 +101,11 @@ async function main(): Promise<void> {
     const endedAt = Date.now();
     const recapToken = ++recapSeq;
     const report = roster.matchReport();
+    // The confirmed wired crew, snapshotted SYNCHRONOUSLY now — confirmedEver is
+    // wiped by the next match's start and feeds idle out during the long Leetify
+    // poll below. Feeds both the session squad-tag and the squad recap.
+    const squad = roster.confirmedSquad();
+    const friendNames = squad.filter((m) => !m.isPrimary && m.name).map((m) => m.name as string);
 
     // Friend-only match (the primary user never played this one): nothing of the
     // user's to record, and the Leetify lookup would key on the wrong account.
@@ -123,13 +134,23 @@ async function main(): Promise<void> {
       log.info("sessions", `Practice match (${why}) — not recording it`);
       return;
     }
-    const record = buildMatchRecord(event, ctx, report);
+    const record = buildMatchRecord(event, ctx, report, friendNames);
     sessions.record(record);
 
     const steam64 = roster.steamId();
     if (!config.leetify.enabled || !steam64) return;
-    const stats = await pollForLeetifyStats(new LeetifyClient(config.leetify.apiKey), steam64, endedAt, ctx.map);
-    if (!stats) return;
+
+    // Squad recap: when friends are wired and team tactics are on, keep the
+    // per-match rows Leetify already returns for the whole crew (squad captured
+    // synchronously above).
+    const wantSquad =
+      config.leetify.squadRecap !== "off" && config.coach.teamTactics && squad.some((m) => !m.isPrimary);
+    const client = new LeetifyClient(config.leetify.apiKey);
+    const squadStats = wantSquad ? await pollForSquadLeetifyStats(client, squad, endedAt, ctx.map) : null;
+    // Solo path is the default; a squad match-find failing means the primary's
+    // match never appeared, so don't re-poll the solo lookup for another hour.
+    const soloStats = wantSquad ? null : await pollForLeetifyStats(client, steam64, endedAt, ctx.map);
+    if (!squadStats && !soloStats) return;
 
     // NEVER talk over play: the numbers land 5-15+ minutes after the match,
     // which can be mid-way through the next one. Hold for a quiet moment
@@ -150,8 +171,12 @@ async function main(): Promise<void> {
       return;
     }
 
+    const stats = squadStats ? squadStats.me : soloStats!;
     const statsSentence = spokenStatsSentence(stats);
     if (!statsSentence) return;
+    const squadSentence = squadStats
+      ? spokenSquadSentence(squadStats, config.leetify.squadRecap === "full" ? "full" : "leaders") ?? undefined
+      : undefined;
     const text =
       (llm
         ? await llm.leetifyLine({
@@ -160,14 +185,15 @@ async function main(): Promise<void> {
             ourScore: event.ourScore,
             theirScore: event.theirScore,
             statsSentence,
+            squadSentence,
             // Qualitative multi-match direction (no numbers) — speakable as-is and
             // safe to pass: it quotes no altered Leetify value (see leetify.ts).
             trend: stats.trend,
           })
         : null) ??
-      // Canned fallback gets the trend tacked on too, so an LLM-less setup still
-      // mentions the multi-match direction when Leetify gave us one.
-      leetifyRecapLine(ctx.map, statsSentence) + (stats.trend ? " " + stats.trend : "");
+      // Canned fallback gets the squad comparison AND the trend tacked on too, so an
+      // LLM-less setup still covers the crew and the multi-match direction.
+      leetifyRecapLine(ctx.map, statsSentence, squadSentence) + (stats.trend ? " " + stats.trend : "");
     // The LLM call can take 20+ seconds — the next match may have gone live.
     if (!(await hold())) {
       log.info("leetify", "Quiet moment passed while writing the recap — dropping it");
