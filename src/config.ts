@@ -14,11 +14,16 @@ function optional(name: string, fallback = ""): string {
   return process.env[name] ?? fallback;
 }
 
-function intEnv(name: string, fallback: number): number {
+function intEnv(name: string, fallback: number, min?: number, max?: number): number {
   const raw = process.env[name];
   if (!raw) return fallback;
+  // Reject trailing garbage ("3000abc") and decimals — parseInt would silently truncate.
+  if (!/^-?\d+$/.test(raw.trim())) throw new Error(`${name} must be an integer, got "${raw}"`);
   const n = Number.parseInt(raw, 10);
-  if (Number.isNaN(n)) throw new Error(`${name} must be an integer, got "${raw}"`);
+  // Fail at startup, not as a silent per-request 422 that demotes the provider.
+  if ((min !== undefined && n < min) || (max !== undefined && n > max)) {
+    throw new Error(`${name} must be between ${min} and ${max}, got "${raw}"`);
+  }
   return n;
 }
 
@@ -54,7 +59,7 @@ function steamId64Env(name: string): string | undefined {
 
 export const config = {
   gsi: {
-    port: intEnv("GSI_PORT", 3000),
+    port: intEnv("GSI_PORT", 3000, 1, 65535),
     // Echoed by CS2 in every payload (from the cfg's auth block). Empty = accept all.
     token: optional("GSI_TOKEN"),
     // Append every payload (+ derived events) to logs/gsi-*.ndjson for offline analysis.

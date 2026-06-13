@@ -183,9 +183,10 @@ export class RosterManager {
     // Record this feed's side membership against the primary anchor, and remember
     // the primary's current map for the recap's quiet-moment check.
     if (isPrimary) {
-      // Ops ITEM 14: the CONFIGURED primary actually showed up this match (clears the
-      // 'never connected' warning). Keyed on the configured id, not the adopted fallback.
-      if (this.configuredPrimary && steamid === this.configuredPrimary) this.primaryEverSeen = true;
+      // Ops ITEM 14: the CONFIGURED primary showing up this match (clears the 'never
+      // connected' warning) is set at the END of update() — Finding #21: forwardGlobal
+      // resets primaryEverSeen on the primary's own matchStart frame, so a set HERE would
+      // be clobbered within the same call. Setting it post-loop lets the set win.
       if (feed.ctx.map) this.lastPrimaryMap = feed.ctx.map;
     } else {
       // Vote ONLY when this feed and the primary are on the SAME round. At a
@@ -221,6 +222,13 @@ export class RosterManager {
         ? this.forwardGlobal(ev, isAuthority, now)
         : this.fusePersonal(ev, steamid, feed, isPrimary, now, refMap);
       if (fused) out.push(fused);
+    }
+
+    // Ops ITEM 14 / Finding #21: the CONFIGURED primary actually showed up this match.
+    // Set AFTER the events loop so forwardGlobal's same-frame matchStart reset (which runs
+    // inside the loop) can't clobber it. Keyed on the configured id, not the adopted fallback.
+    if (isPrimary && this.configuredPrimary && steamid === this.configuredPrimary) {
+      this.primaryEverSeen = true;
     }
 
     const team = this.buildTeam(now, refMap);
@@ -588,7 +596,17 @@ export class RosterManager {
     // actively hearing from is still behind the round.
     const squadSize = team.squadSize;
     const noFreshUnknown = !team.members.some((m) => m.alive === undefined && m.staleMs <= config.gsi.feedStaleMs);
-    const squadComplete = squadSize !== undefined && this.confirmedEver.size >= squadSize && noFreshUnknown;
+    // Finding #2: count only confirmed-ever ids whose feed still exists AND is on the
+    // squad's refMap — a confirmed member who requeued onto a DIFFERENT defined map but
+    // keeps POSTing (never reaped, excluded from live/members as off-map) must NOT inflate
+    // the count and fire a false last-man. Mirrors the reap()->confirmedEver.delete drop
+    // via the off-map path, using the same refMap buildTeam/deriveLastMan compute.
+    let confirmedOnMap = 0;
+    for (const id of this.confirmedEver) {
+      const f = this.feeds.get(id);
+      if (f && this.onRefMap(f, refMap)) confirmedOnMap++;
+    }
+    const squadComplete = squadSize !== undefined && confirmedOnMap >= squadSize && noFreshUnknown;
     if (!squadComplete) return null;
     if (team.members.some((m) => m.alive === undefined)) return null; // a feed behind the round → unsure
     const alive = team.members.filter((m) => m.alive === true);

@@ -258,13 +258,29 @@ export class GsiTracker {
     const prevMapPhase = prev?.map?.phase;
     const mapPhase = map?.phase;
 
-    // A tactical timeout flips map.phase to timeout_ct/timeout_t and back to
-    // live — that resume must not read as a fresh match (it would wipe the
-    // match memory mid-game and announce "match found"). Gated on inMatch so a
-    // COLD start during a timeout/halftime still adopts the match properly.
-    const midMatchPhase =
+    // Hard continuations of the SAME match: a tactical timeout (timeout_ct/
+    // timeout_t) resuming, halftime (intermission), or just play continuing
+    // (live → live). None of these is a fresh match even at a 0-0 scoreboard — a
+    // round-1 timeout is still 0-0 — so they suppress the match-start reset
+    // regardless of score. Gated on inMatch so a COLD start during a timeout/
+    // halftime still adopts the match properly.
+    const hardContinuation =
       this.inMatch &&
-      (prevMapPhase === "live" || prevMapPhase === "intermission" || prevMapPhase === "timeout_ct" || prevMapPhase === "timeout_t");
+      (prevMapPhase === "live" ||
+        prevMapPhase === "intermission" ||
+        prevMapPhase === "timeout_ct" ||
+        prevMapPhase === "timeout_t");
+    // prevMapPhase === undefined while in a match is a menu/no-map blip (a
+    // reconnect flicker that dropped the map block). Normally treated as
+    // mid-match so the re-fired "live" can't wipe round-by-round memory — UNLESS
+    // the scoreboard is positively 0-0, which means the prior match was abandoned
+    // and a genuinely new one has started (then we DO want to adopt + reset). A
+    // missing score can't prove a new match, so it stays suppressed.
+    const ctScore = map?.team_ct?.score;
+    const tScore = map?.team_t?.score;
+    const freshScore = ctScore === 0 && tScore === 0;
+    const blipContinuation = this.inMatch && prevMapPhase === undefined && !freshScore;
+    const midMatchPhase = hardContinuation || blipContinuation;
     if (map && mapPhase === "live" && !midMatchPhase) {
       this.inMatch = true;
       this.botsSeen = false;
@@ -573,7 +589,8 @@ export class GsiTracker {
       }
       if (roundPhase === "live" && p?.steamid && p.state) {
         if (this.prevSpec?.steamid === p.steamid) {
-          if (p.state.round_kills > this.prevSpec.roundKills) {
+          const prevKills = this.prevSpec.roundKills;
+          if (p.state.round_kills > prevKills) {
             events.push({
               type: "teammateKill",
               name: p.name,
@@ -581,7 +598,9 @@ export class GsiTracker {
               health: p.state.health,
               spectatedSteamid: p.steamid,
             });
-            if (p.state.round_kills === 3 && p.name) {
+            // Fire on CROSSING 3: a buffered frame jumping 2->4 skips an exact
+            // ===3 hit, so gate on the baseline having been below 3.
+            if (prevKills < 3 && p.state.round_kills >= 3 && p.name) {
               this.memory.recordNotable(this.liveRound, `${p.name} triple while you watched`);
             }
           }

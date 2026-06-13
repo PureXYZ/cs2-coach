@@ -154,6 +154,11 @@ export class VoiceCoach {
           this.queue = [];
           this.discardPrefetch();
           this.player.stop(true);
+          // Reset synthesis flags too — a line mid-synthesis would otherwise leave
+          // synthesizing=true forever, and the next session's pump() early-returns
+          // on it (the session guard discards the orphaned in-flight stream anyway).
+          this.synthesizing = false;
+          this.inFlight = null;
         }
       }
     });
@@ -180,6 +185,11 @@ export class VoiceCoach {
     this.discardPrefetch();
     this.songPlaying = false;
     this.player.stop(true);
+    // Reset synthesis flags too — a line mid-synthesis would otherwise leave
+    // synthesizing=true forever, and the next session's pump() early-returns
+    // on it (the session guard discards the orphaned in-flight stream anyway).
+    this.synthesizing = false;
+    this.inFlight = null;
   }
 
   /** Queue a line. Drops it silently if the bot isn't in a voice channel. */

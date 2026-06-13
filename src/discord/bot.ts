@@ -168,6 +168,8 @@ export async function startBot(deps: BotDeps): Promise<Client> {
         await handleSongButton(interaction, deps);
       } catch (err) {
         log.error("bot", "Song button failed", err);
+        if (!interaction.replied && !interaction.deferred)
+          await interaction.update({ content: "Couldn't start that — check the coach logs.", components: [] }).catch(() => {});
       }
       return;
     }
@@ -282,12 +284,15 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
             ? `✅ live (last update ${(s.gsiAgeMs / 1000).toFixed(1)}s ago)`
             : `⚠️ stale (last update ${Math.round(s.gsiAgeMs / 1000)}s ago)`;
       const feeds = s.connectedFeeds;
+      // Cap the rendered list — many feeds (misconfig or a token griefer) could otherwise blow past Discord's 2000-char limit.
+      const FEED_CAP = 12;
       const feedsLine =
         feeds.length === 0
           ? "no game feeds connected right now — launch CS2 with the cfg installed (`/coach setup`) and you'll show up here"
           : `${feeds.length} connected: ${feeds
+              .slice(0, FEED_CAP)
               .map((f) => `**${f.name}** (${Math.max(0, Math.round(f.ageMs / 1000))}s ago)`)
-              .join(", ")}`;
+              .join(", ")}${feeds.length > FEED_CAP ? ` +${feeds.length - FEED_CAP} more` : ""}`;
       const squadLine = (() => {
         const base = `${s.wiredFeeds} player feed${s.wiredFeeds === 1 ? "" : "s"} wired in`;
         const sizeNote = s.squadSize !== undefined ? ` of ${s.squadSize}` : " (always hedging — set COACH_SQUAD_SIZE)";
@@ -307,9 +312,14 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
         `**Memory:** ${s.sessionsOnFile} past match${s.sessionsOnFile === 1 ? "" : "es"} on file`,
       ];
       if (s.quarantined.length > 0) {
-        statusLines.push(`**Quarantined:** ${s.quarantined.map((q) => `${q.name ?? "unknown feed"} — ${q.reason}`).join("; ")}`);
+        const quarantined = s.quarantined;
+        statusLines.push(`**Quarantined:** ${quarantined
+          .slice(0, FEED_CAP)
+          .map((q) => `${q.name ?? "unknown feed"} — ${q.reason}`)
+          .join("; ")}${quarantined.length > FEED_CAP ? ` +${quarantined.length - FEED_CAP} more` : ""}`);
       }
-      await interaction.reply({ content: statusLines.join("\n"), flags: MessageFlags.Ephemeral });
+      // Final clamp — never let an unusually long readout throw past Discord's 2000-char limit.
+      await interaction.reply({ content: statusLines.join("\n").slice(0, 1990), flags: MessageFlags.Ephemeral });
       return;
     }
   }

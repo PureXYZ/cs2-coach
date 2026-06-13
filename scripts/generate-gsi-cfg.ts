@@ -30,12 +30,29 @@ import { fileURLToPath } from "node:url";
 import { buildCfg, resolveUri } from "../src/gsi/cfg.js";
 
 function detectLanIp(): string | null {
-  for (const ifaces of Object.values(networkInterfaces())) {
+  // Prefer a real private-LAN address CS2 can route to. On a Windows dev box the
+  // first non-internal IPv4 is often a Docker/WSL/VPN virtual adapter (172.x) or a
+  // 169.254 link-local, which CS2 cannot reach. Rank 192.168/16 over 10/8 and skip
+  // virtual adapters, link-local, and the 172.16/12 range.
+  const skipName = /docker|vEthernet|virtualbox|vmware|wsl|tailscale|zerotier/i;
+  let best: string | null = null;
+  let bestRank = 0; // 2 = 192.168/16, 1 = 10/8
+  for (const [name, ifaces] of Object.entries(networkInterfaces())) {
+    if (skipName.test(name)) continue;
     for (const iface of ifaces ?? []) {
-      if (iface.family === "IPv4" && !iface.internal) return iface.address;
+      if (iface.family !== "IPv4" || iface.internal) continue;
+      const addr = iface.address;
+      if (addr.startsWith("169.254.")) continue; // link-local
+      const [a, b] = addr.split(".").map(Number);
+      if (a === 172 && b >= 16 && b <= 31) continue; // 172.16/12 (Docker/WSL)
+      const rank = a === 192 && b === 168 ? 2 : a === 10 ? 1 : 0;
+      if (rank > bestRank) {
+        best = addr;
+        bestRank = rank;
+      }
     }
   }
-  return null;
+  return best;
 }
 
 const args = process.argv.slice(2);

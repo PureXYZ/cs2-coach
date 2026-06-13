@@ -32,6 +32,7 @@ const bags = new Map<string, BagState>();
  * Exported for the LLM coach's rotating strategy angles — same fairness rules.
  */
 export function pick(poolName: string, pool: string[]): string {
+  if (pool.length === 0) return "";
   if (pool.length === 1) return pool[0];
   let state = bags.get(poolName);
   if (!state) {
@@ -377,7 +378,7 @@ export function killLine(roundKills: number, name?: string): string | null {
       `That's four, ${who}. One more and it's an ace, which I assume we'll find a way to ruin.`,
       `Look at you, ${who}, four kills. Now go whiff the ace like we both know you will.`,
       `That's four, ${who}, one off the ace. No pressure, just everything you'll choke on later.`,
-      `Quad, ${who}. Last guy's low, hold the angle, don't ego peek it into the bin.`,
+      `Quad, ${who}. One left, hold the angle, don't ego peek it into the bin.`,
       `Four down, one off the ace, ${who}. Refrag him clean. Or don't, I'm braced either way.`,
       `Four kills, ${who}. Don't shit the bed on the fifth.`,
       `Nice quad, ${who}. Blow the ace and I'll never let it go.`,
@@ -433,7 +434,7 @@ export function knifeKillLine(name?: string): string {
 
 export function zeusKillLine(): string {
   return pick("zeusKill", [
-    "Zeus kill. Two hundred dollars of disrespect, paid in full.",
+    "Zeus kill. A hundred dollars of disrespect, paid in full.",
     "He had a rifle. You had a battery. Damn.",
     "Zapped. He's gonna hear that crackle in his sleep.",
     "That's a Zeus kill. He's never telling anyone about this.",
