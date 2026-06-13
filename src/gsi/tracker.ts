@@ -763,6 +763,14 @@ export class GsiTracker {
     return this.ownNameSeen;
   }
 
+  /** Steam persona from the provider block — present in every payload including
+   *  the main menu, before any in-game self frame has set ownName. A fallback name
+   *  for the roster's "feeds connected" readout so a friend who just launched CS2
+   *  (and is still in the menu) still sees their name in /coach status. */
+  providerName(): string | undefined {
+    return this.prev?.provider?.name;
+  }
+
   /** This feed's side, surviving death via lastKnownSide (auto-spectate only ever
    *  targets teammates, so the spectated player's side is still ours). */
   ownSide(): Team | undefined {

@@ -284,12 +284,16 @@ async function main(): Promise<void> {
     },
     // /coach lastmatch — one snide spoken sentence built from the recorded history.
     lastMatchSummary: () => buildLastMatchSummary(sessions.lastMatch()),
+    // /coach setup builds the friend's cfg from these — the same public address
+    // and token `npm run cfg` uses, so the file is identical either way.
+    cfg: { publicHost: config.coach.publicHost, token: config.gsi.token, port: config.gsi.port },
     status: () => ({
       gsiAgeMs: gsi.lastPayloadAgeMs(),
       ttsProviders: tts.activeNames,
       llmModel: llm ? `${config.llm.model} (mid-round: ${config.llm.fastModel})` : null,
       sessionsOnFile: sessions.count,
       wiredFeeds: roster.wiredCount(),
+      connectedFeeds: roster.connectedFeeds(),
     }),
   });
 
