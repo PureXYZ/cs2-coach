@@ -131,12 +131,11 @@ const VOICE_CHOICES = buildVoiceChoices();
 const commands = [
   new SlashCommandBuilder()
     .setName("coach")
-    .setDescription("CS2 AI coach — run /coach help if it's your first time")
+    .setDescription("CS2 AI coach — run /coach setup to get connected")
     // Guild-only: every action needs a guild voice channel, and ephemeral replies
     // aren't allowed in DMs — so keep the command out of DMs entirely (matters only
     // when registered globally; guild-scoped registration never shows it in DMs).
     .setContexts(InteractionContextType.Guild)
-    .addSubcommand((sub) => sub.setName("help").setDescription("What is this and where do I start?"))
     .addSubcommand((sub) =>
       sub.setName("setup").setDescription("Get connected — DMs you the CS2 config file (no software to install)"),
     )
@@ -327,22 +326,6 @@ function setMutePresence(client: Client, muted: boolean): void {
   }
 }
 
-function helpText(): string {
-  return [
-    "**CS2 Coach — quick guide**",
-    "",
-    "First time? `/coach setup` → drop the file in your CS2 cfg folder → restart CS2 → `/coach status` to confirm you show up under **Feeds**.",
-    "",
-    "**Get connected:** `/coach setup` (DMs you the config) · `/coach status` (is it working?)",
-    "**In the channel:** `/coach join` (I hop into your voice channel) · `/coach leave` · `/coach mute`",
-    "**Mess around:** `/coach say <text>` · `/coach voice` (pick my voice) · `/coach song` · `/coach stop-song`",
-    "",
-    "Once you're connected I read your game on my own — just `/coach join` and play. I'll pipe up when there's something worth saying. Don't hold your breath.",
-  ]
-    .join("\n")
-    .slice(0, 1990);
-}
-
 // ── status ───────────────────────────────────────────────────────────────────
 
 /** The full status readout as a string, so it can be served from /coach status,
@@ -351,7 +334,7 @@ function renderStatus(deps: BotDeps): string {
   const s = deps.status();
   const gsi =
     s.gsiAgeMs === null
-      ? "❌ no game state received yet — is CS2 running with the cfg installed? Run `/coach setup` to (re)install it. (New here? `/coach help`.)"
+      ? "❌ no game state received yet — is CS2 running with the cfg installed? Run `/coach setup` to (re)install it."
       : s.gsiAgeMs < 60_000
         ? `✅ live (last update ${(s.gsiAgeMs / 1000).toFixed(1)}s ago)`
         : `⚠️ stale (last update ${Math.round(s.gsiAgeMs / 1000)}s ago)`;
@@ -468,11 +451,6 @@ async function joinInvokerChannel(interaction: ActionInteraction, deps: BotDeps)
 
 async function handleCommand(interaction: ChatInputCommandInteraction, deps: BotDeps): Promise<void> {
   switch (interaction.options.getSubcommand()) {
-    case "help": {
-      await interaction.reply({ content: helpText(), flags: MessageFlags.Ephemeral });
-      return;
-    }
-
     case "setup": {
       await handleSetup(interaction, deps);
       return;

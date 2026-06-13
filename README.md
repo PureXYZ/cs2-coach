@@ -173,7 +173,6 @@ Set `COACH_TEAM_TACTICS=false` to switch the team-economy/drop calls off and kee
 
 | Command | What it does |
 |---|---|
-| `/coach help` | Plain-English "what is this / where do I start" cheat-sheet |
 | `/coach setup` | DMs you the GSI config file plus where-to-drop-it steps — the no-software way for a friend to get connected (needs `COACH_PUBLIC_HOST` set) |
 | `/coach join` | Joins the voice channel you're in (a no-op if already there; reconnects if the connection went stale) |
 | `/coach leave` | Leaves voice |
