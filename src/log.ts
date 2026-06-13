@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { config } from "./config.js";
 
 function ts(): string {
   return new Date().toISOString().slice(11, 23);
@@ -39,6 +40,18 @@ export const log = {
     console.log(line);
     emit(line);
   },
+  /**
+   * Verbose trace line, identical shape to info() but with a DEBUG tag. Emits
+   * ONLY when config.coach.debug is on (COACH_DEBUG=true) — every caller can fire
+   * freely and the gate keeps normal sessions quiet. Used for the engine's
+   * silent-drop reasons (why a moment never spoke) and similar diagnostics.
+   */
+  debug(scope: string, msg: string): void {
+    if (!config.coach.debug) return;
+    const line = `${ts()} [${scope}] DEBUG ${msg}`;
+    console.log(line);
+    emit(line);
+  },
   warn(scope: string, msg: string): void {
     const line = `${ts()} [${scope}] WARN ${msg}`;
     console.warn(line);
@@ -51,3 +64,40 @@ export const log = {
     emit(line);
   },
 };
+
+// Only our own session artifacts are eligible — never touch unrelated files
+// someone dropped in logs/.
+const LOG_FILE_RE = /^(coach-.*\.log|gsi-.*\.ndjson|decisions-.*\.ndjson)$/;
+
+/**
+ * Delete our log artifacts in `dir` older than `retentionDays` days, so an
+ * always-on host doesn't slowly fill its disk. No-op when retentionDays <= 0
+ * (keep forever). Best-effort: a missing dir or a single un-deletable file never
+ * throws — per-file errors are swallowed and we log one summary line. Called once
+ * at startup, before the new session's own files are opened.
+ */
+export function pruneOldLogs(dir = "logs", retentionDays: number): void {
+  if (retentionDays <= 0) return;
+  const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  let removed = 0;
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      if (!LOG_FILE_RE.test(name)) continue;
+      const full = path.join(dir, name);
+      try {
+        if (fs.statSync(full).mtimeMs < cutoff) {
+          fs.unlinkSync(full);
+          removed++;
+        }
+      } catch {
+        // A file we can't stat/delete (locked, vanished) — skip it, keep going.
+      }
+    }
+  } catch {
+    // No logs dir yet (fresh install) or it's unreadable — nothing to prune.
+    return;
+  }
+  if (removed > 0) {
+    log.info("log", `Pruned ${removed} log file${removed === 1 ? "" : "s"} older than ${retentionDays}d from ${dir}`);
+  }
+}

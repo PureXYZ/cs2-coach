@@ -79,6 +79,17 @@ export interface MatchContext {
   hasBomb?: true;
   /** Own deaths inside the first ~20s of a round this match (present when > 0). */
   earlyDeaths?: number;
+  /** Consecutive most-recent rounds the player died in the opening seconds —
+   *  the tilt/over-peek spiral. Present ONLY when >= 2 (a single open death is
+   *  not a pattern), so the engine can treat its mere presence as the signal. */
+  earlyDeathStreak?: number;
+  /** Short spoken-register own-data patterns this match (cold force buys, opening
+   *  deaths, headshot rate). Present ONLY when non-empty — derived from records,
+   *  never fabricated, so the coach can state them as fact. */
+  habits?: string[];
+  /** Own loadout when alive: the primary gun + ammo + carried nades, so the LLM
+   *  can make AWP-specific / dry-gun / use-your-util calls. Self+alive only. */
+  loadout?: { primary?: string; primaryType?: string; clip?: number; reserve?: number; nades?: string[] };
   /** Cross-session trend lines from past matches — attached by the engine at
    *  the storytelling moments only (match start, halftime, match end). */
   recentForm?: string[];
@@ -287,7 +298,14 @@ export class GsiTracker {
       const { ourScore, theirScore } = this.scores(payload, ourSide);
       events.push({
         type: "matchEnd",
-        won: ourScore !== undefined && theirScore !== undefined ? ourScore > theirScore : undefined,
+        // A tie (overtime exhausted, or a draw mode) must NOT read as a loss:
+        // equal scores resolve to undefined ("no winner"), not false.
+        won:
+          ourScore !== undefined && theirScore !== undefined
+            ? ourScore === theirScore
+              ? undefined
+              : ourScore > theirScore
+            : undefined,
         ourScore: ourScore ?? 0,
         theirScore: theirScore ?? 0,
       });
@@ -449,7 +467,11 @@ export class GsiTracker {
           // count every increment, not every frame.
           const killsDelta = cur.roundKills - this.prevSelf.roundKills;
           this.lastOwnKillAt = now;
-          for (let i = 0; i < killsDelta; i++) this.memory.recordKill(this.liveRound);
+          // Distribute the headshot count across this frame's kills: the same frame
+          // can carry several frags, but only round_killhs tells us how many were
+          // heads — flag the first hsDelta of them so the headshot-rate habit is fed.
+          const hsDelta = cur.roundKillHs - this.prevSelf.roundKillHs;
+          for (let i = 0; i < killsDelta; i++) this.memory.recordKill(this.liveRound, i < hsDelta);
           if (cur.roundKills >= 5) this.memory.recordNotable(this.liveRound, "ACE");
           else if (cur.roundKills === 4) this.memory.recordNotable(this.liveRound, "4k");
 
@@ -524,7 +546,7 @@ export class GsiTracker {
             this.memory.recordNotable(this.liveRound, `died with ${this.prevSelf.nadesCarried} unthrown grenades`);
           }
           if (roundPhase === "live" && this.roundLiveAt !== null && now - this.roundLiveAt <= EARLY_DEATH_WINDOW_MS) {
-            this.memory.recordEarlyDeath();
+            this.memory.recordEarlyDeath(this.liveRound);
           }
         }
         if (cur.mvps > this.prevSelf.mvps) {
@@ -624,6 +646,14 @@ export class GsiTracker {
 
     const pistols = this.memory.pistolResults();
 
+    // Own loadout — built only when the player block is the live user (alive),
+    // so a spectated teammate's gun never reads as ours. Omitted otherwise.
+    const loadout = isSelf && (p?.player?.state?.health ?? 0) > 0 ? this.buildLoadout(p?.player) : undefined;
+    // Tilt spiral + own-data patterns — surfaced ONLY when they cross the
+    // threshold (streak >= 2, habits non-empty) so a bare field IS the signal.
+    const earlyDeathStreak = this.memory.earlyDeathStreak();
+    const habits = this.memory.habits();
+
     // Match point from the live scores (the freezetime event only fires once per
     // stretch; mid-round consumers like the retake call need it every frame).
     const target = ourScore !== undefined && theirScore !== undefined ? winTarget(ourScore, theirScore) : undefined;
@@ -680,6 +710,9 @@ export class GsiTracker {
       streak: this.memory.streak(),
       notables: this.memory.notables(),
       earlyDeaths: this.memory.earlyDeaths() > 0 ? this.memory.earlyDeaths() : undefined,
+      earlyDeathStreak: earlyDeathStreak >= 2 ? earlyDeathStreak : undefined,
+      habits: habits.length > 0 ? habits : undefined,
+      loadout,
       playerIsSelf: isSelf,
     };
   }
@@ -870,6 +903,44 @@ export class GsiTracker {
   private activeWeapon(player: GsiPlayer | undefined): GsiWeapon | undefined {
     if (!player?.weapons) return undefined;
     return Object.values(player.weapons).find((w) => w.state === "active" || w.state === "reloading");
+  }
+
+  /**
+   * The player's own loadout for the LLM prompt: the primary gun (with ammo) plus
+   * the grenades carried. Lets the coach make AWP-specific, dry-gun and
+   * use-your-util calls. Prefers the active/reloading weapon when it's a real gun,
+   * otherwise the best gun by type — a held knife or nade isn't the "primary".
+   * Returns undefined when there are no weapons (warmup/spectate baseline).
+   */
+  private buildLoadout(player: GsiPlayer | undefined): MatchContext["loadout"] {
+    if (!player?.weapons) return undefined;
+    // Guns only — knife/nade/C4 are never the primary. Rank by type so the active
+    // weapon is preferred only when it IS a gun (a quick-switched knife isn't).
+    const GUN_TYPES = ["Rifle", "SniperRifle", "Machine Gun", "Shotgun", "SubMachineGun", "Pistol"];
+    const guns = Object.values(player.weapons).filter((w) => w.type !== undefined && GUN_TYPES.includes(w.type));
+    if (guns.length === 0) return undefined;
+    const active = this.activeWeapon(player);
+    const activeGun = active && active.type !== undefined && GUN_TYPES.includes(active.type) ? active : undefined;
+    // Active/reloading gun first; otherwise the best by the GUN_TYPES priority order.
+    const primary =
+      activeGun ?? guns.slice().sort((a, b) => GUN_TYPES.indexOf(a.type!) - GUN_TYPES.indexOf(b.type!))[0];
+
+    // One nade name per carried unit (CS2 stacks via the ammo fields), min 1 each.
+    const nades: string[] = [];
+    for (const w of Object.values(player.weapons)) {
+      if (w.type !== "Grenade") continue;
+      const units = Math.max(1, (w.ammo_clip ?? 0) + (w.ammo_reserve ?? 0));
+      const name = w.name.replace(/^weapon_/, "");
+      for (let i = 0; i < units; i++) nades.push(name);
+    }
+
+    return {
+      primary: primary.name.replace(/^weapon_/, ""),
+      primaryType: primary.type,
+      clip: primary.ammo_clip,
+      reserve: primary.ammo_reserve,
+      nades: nades.length > 0 ? nades : undefined,
+    };
   }
 
   /** Clip rounds for everything that shoots — knives, grenades and the C4 never "fire" this way. */

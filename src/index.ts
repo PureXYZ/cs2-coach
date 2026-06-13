@@ -1,7 +1,7 @@
 import os from "node:os";
 import { Events } from "discord.js";
 import { config } from "./config.js";
-import { log } from "./log.js";
+import { log, pruneOldLogs } from "./log.js";
 import { startGsiServer } from "./gsi/server.js";
 import { GsiPayloadLog } from "./gsi/payload-log.js";
 import type { CoachEvent, MatchContext } from "./gsi/tracker.js";
@@ -9,6 +9,7 @@ import { RosterManager } from "./gsi/roster.js";
 import { CoachEngine } from "./coach/engine.js";
 import { LlmCoach } from "./coach/llm.js";
 import { SessionStore } from "./coach/session-store.js";
+import { DecisionLog } from "./coach/decision-log.js";
 import { buildMatchRecord } from "./coach/debrief.js";
 import { leetifyRecapLine } from "./coach/lines.js";
 import { LeetifyClient, pollForLeetifyStats, spokenStatsSentence } from "./leetify.js";
@@ -26,10 +27,19 @@ async function main(): Promise<void> {
     // Couldn't lower priority (exotic sandbox?) — normal priority is fine too.
   }
 
+  // Reap our own old log artifacts (coach-*.log, gsi-*.ndjson, decisions-*.ndjson)
+  // BEFORE opening this session's files, so an always-on droplet doesn't slowly
+  // fill its disk. No-op when GSI_LOG_RETENTION_DAYS is 0 (keep forever).
+  pruneOldLogs("logs", config.gsi.logRetentionDays);
+
   // Keep the session's console output on disk next to the GSI capture — spoken
   // lines, drops and LLM/TTS latencies are otherwise lost when the window closes.
   log.toFile();
   log.info("main", "CS2 Coach starting up");
+
+  // Optional offline record of every decided line (COACH_LOG_DECISIONS) — what
+  // the coach saw and chose to say, for after-the-fact study. Off by default.
+  const decisionLog = config.coach.logDecisions ? new DecisionLog() : null;
 
   const tts = new TtsChain();
   const voice = new VoiceCoach(tts);
@@ -150,8 +160,14 @@ async function main(): Promise<void> {
             ourScore: event.ourScore,
             theirScore: event.theirScore,
             statsSentence,
+            // Qualitative multi-match direction (no numbers) — speakable as-is and
+            // safe to pass: it quotes no altered Leetify value (see leetify.ts).
+            trend: stats.trend,
           })
-        : null) ?? leetifyRecapLine(ctx.map, statsSentence);
+        : null) ??
+      // Canned fallback gets the trend tacked on too, so an LLM-less setup still
+      // mentions the multi-match direction when Leetify gave us one.
+      leetifyRecapLine(ctx.map, statsSentence) + (stats.trend ? " " + stats.trend : "");
     // The LLM call can take 20+ seconds — the next match may have gone live.
     if (!(await hold())) {
       log.info("leetify", "Quiet moment passed while writing the recap — dropping it");
@@ -179,6 +195,9 @@ async function main(): Promise<void> {
     recentForm: () => sessions.recentForm(roster.context().map),
     finalStats: () => roster.matchReport().stats,
     isQuiet: () => quiet.on,
+    // Every decided line (LLM or fallback) lands in the decision log when it's
+    // enabled; left undefined otherwise so the engine skips the call entirely.
+    onDecision: decisionLog ? (rec) => decisionLog.write(rec) : undefined,
     onMatchEnd: (event, ctx) => {
       handleMatchEnd(event, ctx).catch((err) => log.error("coach", "Post-match handling failed", err));
     },
@@ -237,6 +256,18 @@ async function main(): Promise<void> {
       quarantined: roster.quarantinedFeeds(),
     }),
   });
+
+  // DAVE smoke-check: @discordjs/voice pulls native (sodium / opus) prebuilds,
+  // and a missing musl build on the Alpine droplet would otherwise fail SILENTLY
+  // — the coach connects to voice but never makes a sound. Import it once at
+  // startup so a broken install surfaces LOUDLY in the logs. Best-effort and
+  // wrapped so it can NEVER take the process down.
+  try {
+    await import("@discordjs/voice");
+    log.info("main", "Voice (DAVE) library loaded");
+  } catch (err) {
+    log.warn("main", `Voice (DAVE) library failed to load — voice will be mute: ${err instanceof Error ? err.message : err}`);
+  }
 
   // After a restart (redeploy, crash, droplet reboot), put the coach back into
   // its last voice channel — otherwise every auto-deploy strands it outside.

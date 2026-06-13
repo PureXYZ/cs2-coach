@@ -64,6 +64,9 @@ const COOLDOWNS_MS: Record<string, number> = {
   timeout: 300_000,
   // The speech/jab when a tactical timeout actually starts (max two per match).
   timeoutTalk: 20_000,
+  // The opening-death-spiral tilt jab — a long gap so it scolds the spiral once,
+  // not at every freezetime while the player is already rattled.
+  tilt: 180_000,
 };
 
 /** Clock callouts bail when GSI went quiet (game crash, disconnect, menu).
@@ -102,6 +105,16 @@ export interface EngineDeps {
   isQuiet?: () => boolean;
   /** Fired once per matchEnd, quiet or not: session recording + the Leetify recap. */
   onMatchEnd?: (event: Extract<CoachEvent, { type: "matchEnd" }>, ctx: MatchContext) => void;
+  /** Fired for every decided line (LLM or fallback) — feeds the optional
+   *  decision log for offline review. redact keeps Leetify text out of the log. */
+  onDecision?: (rec: {
+    snapshot: MatchContext;
+    event: CoachEvent;
+    tier: LlmTier;
+    text: string;
+    source: "llm" | "fallback";
+    redact?: boolean;
+  }) => void;
 }
 
 export class CoachEngine {
@@ -141,7 +154,10 @@ export class CoachEngine {
     const batch = new Set(batchEvents.map((e) => e.type));
     for (const event of batchEvents) {
       try {
-        if (this.suppressedInBatch(event.type, batch)) continue;
+        if (this.suppressedInBatch(event.type, batch)) {
+          log.debug("engine", `${event.type}: batch-suppressed (folded into the same-frame round/match end)`);
+          continue;
+        }
         this.handleOne(event, ctx, batch);
       } catch (err) {
         log.error("coach", `Failed handling event ${event.type}`, err);
@@ -205,6 +221,14 @@ export class CoachEngine {
         // so it doesn't repeat either).
         if (!this.llm && wantTimeout) {
           this.say(() => lines.timeoutCallLine(), { category: "timeout", priority: 2, maxAgeMs: 12_000 });
+        }
+        // Opening-death spiral: a short canned tilt jab fired ALONGSIDE the buy
+        // call (its own 'tilt' bucket, so it doesn't race the economy cooldown).
+        // Canned on purpose — no second LLM round-trip competing with the buy
+        // line — and the 180s cooldown means it scolds the spiral once, not at
+        // every freezetime while the player's already on tilt.
+        if (!this.deps.isQuiet?.() && (ctx.earlyDeathStreak ?? 0) >= 3) {
+          this.say(() => lines.tiltLine(), { category: "tilt", priority: 2, maxAgeMs: 12_000 });
         }
         break;
       }
@@ -320,7 +344,9 @@ export class CoachEngine {
           "match",
           30_000,
           "smart",
-          1,
+          // Priority 3, not 1: this highest-effort line must survive a queue
+          // backlog (ace hype / MVP from the final round) instead of losing to it.
+          3,
           undefined,
           // 20s budget: effort=high × 3-6x the tokens doesn't fit the 9s
           // freezetime-sized default, and post-match nothing is waiting.
@@ -498,8 +524,14 @@ export class CoachEngine {
     llmOpts?: LineOpts,
   ): void {
     // Muted: skip the line AND the LLM spend (the game tracking carries on).
-    if (this.deps.isQuiet?.()) return;
-    if (!this.passesCooldown(category)) return;
+    if (this.deps.isQuiet?.()) {
+      log.debug("engine", `${category}: quiet (muted)`);
+      return;
+    }
+    if (!this.passesCooldown(category)) {
+      log.debug("engine", `${category}: cooldown`);
+      return;
+    }
     const eventAt = Date.now();
     // Reserve the category at launch, not at resolution: while the LLM call is
     // in flight the cooldown would otherwise read as cold and a duplicate event
@@ -511,7 +543,13 @@ export class CoachEngine {
     // ALSO die while queued behind other audio or mid-TTS — the queue re-checks
     // right before synthesis and right before playback.
     if (!this.llm) {
-      this.say(fallback, { category, priority, maxAgeMs, eventAt, stillRelevant }, true);
+      const final = fallback();
+      if (final) {
+        // The decision hook fires for the canned path too — source "fallback",
+        // and ctx (no snapshot taken on this branch) is the state it reacted to.
+        this.deps.onDecision?.({ snapshot: ctx, event, tier, text: final, source: "fallback" });
+      }
+      this.say(() => final, { category, priority, maxAgeMs, eventAt, stillRelevant }, true);
       return;
     }
 
@@ -541,12 +579,21 @@ export class CoachEngine {
       }
     }
     void this.llm.line(snapshot, event, tier, llmOpts).then((text) => {
-      if (stillRelevant && !stillRelevant()) return;
+      if (stillRelevant && !stillRelevant()) {
+        log.debug("engine", `${category}: stillRelevant overtaken (moment resolved mid-flight)`);
+        return;
+      }
       const final = text ?? fallback();
-      if (!final) return;
+      if (!final) {
+        log.debug("engine", `${category}: null final (llm + fallback both empty)`);
+        return;
+      }
       // Fallback lines join the LLM's anti-repeat memory too — the listener
       // doesn't care who authored what they just heard.
       if (!text) this.llm?.recordSpoken(final);
+      // The decision hook fires here on the LLM path — source "llm" when Claude
+      // produced the text, "fallback" when its line was empty and the canned one stood in.
+      this.deps.onDecision?.({ snapshot, event, tier, text: final, source: text ? "llm" : "fallback" });
       this.say(() => final, { category, priority, maxAgeMs, eventAt, stillRelevant }, true);
     });
   }
@@ -560,7 +607,10 @@ export class CoachEngine {
     if (delayMs <= 0) return;
     this.lateRoundTimer = setTimeout(() => {
       this.lateRoundTimer = null;
-      if (!this.payloadFresh()) return; // GSI went quiet — don't talk into a dead game
+      if (!this.payloadFresh()) {
+        log.debug("engine", "clock: payload-stale (GSI went quiet, lateRound bail)");
+        return; // GSI went quiet — don't talk into a dead game
+      }
       const ctx = this.getCtx();
       // Dead/spectating: a "hold your angles" clock nudge is advice a corpse
       // can't take (a live session heard one ~minute after dying). Also covers
@@ -573,13 +623,21 @@ export class CoachEngine {
         if (ctx.roundPhase === "live" && !ctx.bomb && ctx.ourSide === "T" && ctx.team?.bombCarrierName) {
           const carrier = ctx.team.bombCarrierName;
           this.say(() => lines.lateRoundCarrierNamed(carrier), { category: "clock", priority: 2, maxAgeMs: 8_000 });
+        } else {
+          log.debug("engine", "clock: dead-spectating (lateRound bail)");
         }
         return;
       }
-      if (ctx.roundPhase !== "live" || ctx.bomb) return; // round resolved or bomb already down
+      if (ctx.roundPhase !== "live" || ctx.bomb) {
+        log.debug("engine", "clock: round-resolved (lateRound bail — phase/bomb moved on)");
+        return; // round resolved or bomb already down
+      }
       // Carrying the C4 with no plant this late is always worth the words;
       // the generic nudge keeps its random skip so it isn't every-round nagging.
-      if (!ctx.hasBomb && Math.random() < 0.5) return;
+      if (!ctx.hasBomb && Math.random() < 0.5) {
+        log.debug("engine", "clock: random-skip (lateRound nudge, not carrying bomb)");
+        return;
+      }
       this.say(() => lines.lateRoundLine(ctx.ourSide, ctx.hasBomb ?? false), { category: "clock", priority: 2, maxAgeMs: 8_000 });
     }, delayMs);
   }
@@ -591,12 +649,21 @@ export class CoachEngine {
     if (delayMs <= 0) return;
     this.bombTimer = setTimeout(() => {
       this.bombTimer = null;
-      if (!this.payloadFresh()) return; // GSI went quiet — the frozen ctx would lie
+      if (!this.payloadFresh()) {
+        log.debug("engine", "clock: payload-stale (GSI went quiet, bomb bail)");
+        return; // GSI went quiet — the frozen ctx would lie
+      }
       const ctx = this.getCtx();
       // Dead/spectating (incl. the death-cam window: self, health 0) — "bail" or
       // "hold the bomb" is meaningless to a corpse.
-      if (!ctx.playerIsSelf || (ctx.health ?? 0) <= 0) return;
-      if (ctx.bomb !== "planted" || ctx.roundPhase !== "live") return; // defused/exploded/over already
+      if (!ctx.playerIsSelf || (ctx.health ?? 0) <= 0) {
+        log.debug("engine", "clock: dead-spectating (bomb bail)");
+        return;
+      }
+      if (ctx.bomb !== "planted" || ctx.roundPhase !== "live") {
+        log.debug("engine", "clock: round-resolved (bomb bail — defused/exploded/over)");
+        return; // defused/exploded/over already
+      }
       // A recent kill means the player is mid-fight: give them the clock, not a
       // "back off and live" order they're actively (and rightly) disobeying.
       const fighting = ctx.lastKillSecondsAgo !== undefined && ctx.lastKillSecondsAgo <= 12;
@@ -624,7 +691,10 @@ export class CoachEngine {
   }
 
   private payloadFresh(): boolean {
-    const age = this.deps.payloadAgeMs?.() ?? 0;
+    // null = no payload ever received: that must read as STALE, not fresh. The
+    // old `?? 0` defaulted a never-received feed to age 0 and let timer callouts
+    // talk into a game that never started.
+    const age = this.deps.payloadAgeMs?.() ?? null;
     return age !== null && age <= PAYLOAD_FRESH_MS;
   }
 
@@ -646,8 +716,14 @@ export class CoachEngine {
     skipCooldownCheck = false,
   ): void {
     // Muted: drop before cooldowns and shuffle bags so nothing is consumed.
-    if (this.deps.isQuiet?.()) return;
-    if (!skipCooldownCheck && !this.passesCooldown(opts.category)) return;
+    if (this.deps.isQuiet?.()) {
+      log.debug("engine", `${opts.category}: quiet (muted)`);
+      return;
+    }
+    if (!skipCooldownCheck && !this.passesCooldown(opts.category)) {
+      log.debug("engine", `${opts.category}: cooldown`);
+      return;
+    }
     const text = line();
     if (!text) return;
     this.lastSpokenAt.set(opts.category, Date.now());

@@ -10,7 +10,20 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Gate the deploy on a green typecheck + sim — a red build never ships.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run sim
+
   deploy:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Deploy to host over SSH

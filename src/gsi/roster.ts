@@ -1,6 +1,6 @@
 import { GsiTracker, type CoachEvent, type MatchContext } from "./tracker.js";
 import type { GsiPayload, TeamContext, TeamMember } from "./types.js";
-import { config } from "../config.js";
+import { config, STEAMID64_RE } from "../config.js";
 import { log } from "../log.js";
 
 /**
@@ -40,10 +40,11 @@ import { log } from "../log.js";
  * teammate feeds fresh) — see buildTeam().
  */
 
-/** A real SteamID64. The local player's id (provider.steamid) is always one of
- *  these; bots only ever appear as a spectated player.steamid, never as a
- *  provider, so a non-matching provider is a malformed or stray POST — dropped. */
-const STEAMID64_RE = /^7656\d{13}$/;
+/** STEAMID64_RE (imported from ../config.js) matches a real SteamID64. The local
+ *  player's id (provider.steamid) is always one of these; bots only ever appear as
+ *  a spectated player.steamid, never as a provider, so a non-matching provider is a
+ *  malformed or stray POST — dropped. Shared with config so the startup validation
+ *  of COACH_PRIMARY_STEAM64 and this feed gate agree on exactly what binds. */
 
 /** Match-global events — every feed sees them identically, so only the AUTHORITY
  *  feed's copy is forwarded; the rest are per-player. */
@@ -156,16 +157,21 @@ export class RosterManager {
     const isPrimary = this.isPrimary(steamid);
 
     // A genuinely NEW match for THIS feed: its tracker emitted matchStart AND the
-    // scoreboard is 0-0 (a fresh game). Its side votes from the previous match no
-    // longer apply. The score gate is what separates a real new match (including an
-    // abandon→requeue whose global matchStart was suppressed) from a mid-match
-    // menu/warmup/gameover blip that also re-emits matchStart but resumes at the
-    // live score — wiping a confirmed teammate's tally there would briefly drop
-    // them from the squad and from authority-fallback eligibility.
+    // scoreboard is a POSITIVELY-KNOWN 0-0 (a fresh game). Its side votes from the
+    // previous match no longer apply. The score gate is what separates a real new
+    // match (including an abandon→requeue whose global matchStart was suppressed)
+    // from a mid-match menu/warmup/gameover blip that also re-emits matchStart but
+    // resumes at the live score — wiping a confirmed teammate's tally there would
+    // briefly drop them from the squad and from authority-fallback eligibility.
+    // Require BOTH scores to be defined: an unknown-side frame reports them as
+    // undefined, and coalescing those to 0 would read as a phantom 0-0 and wipe a
+    // confirmed vote tally on a frame we actually know nothing about.
     if (
       rawEvents.some((e) => e.type === "matchStart") &&
-      (feed.ctx.ourScore ?? 0) === 0 &&
-      (feed.ctx.theirScore ?? 0) === 0
+      feed.ctx.ourScore !== undefined &&
+      feed.ctx.theirScore !== undefined &&
+      feed.ctx.ourScore === 0 &&
+      feed.ctx.theirScore === 0
     ) {
       feed.sameSide = 0;
       feed.oppSide = 0;
@@ -590,9 +596,18 @@ export class RosterManager {
     // The lone survivor must be TIGHTLY fresh — an actively-clutching player posts
     // sub-second, so a feed that last reported "alive" several seconds ago (and may
     // have since died without us seeing the death frame) must not be named the last
-    // man. Half the connection window is well under the 10s heartbeat yet far above
-    // a live player's update rate.
-    if (alive[0].staleMs > FRESH_READ_MS) return null; // Econ ITEM 11: shared const (value-identical)
+    // man. lastManFreshMs (default 3s) is tighter than the shared FRESH_READ_MS
+    // (feedStaleMs/2 ≈ 7.5s) on purpose: a last-man assertion is the most
+    // honesty-sensitive call there is, and 7.5s is most of a heartbeat — long
+    // enough for a "survivor" to have already died unseen. 3s is far above a live
+    // player's update rate yet tight enough that a stale "alive" can't slip through.
+    if (alive[0].staleMs > config.gsi.lastManFreshMs) return null;
+    // Symmetrically, every OTHER member must read not-alive on a frame seen within
+    // that same tight window. #19 already rejects an `alive === undefined` member,
+    // but a member reading `alive === false` off a STALE frame may actually still
+    // be up (we just haven't seen their newer alive frame) — asserting last-man off
+    // that is a lie. Require the WHOLE team's status freshly confirmed, not just the survivor's.
+    if (team.members.some((m) => m !== alive[0] && m.staleMs > config.gsi.lastManFreshMs)) return null;
     const ctx = this.mergedCtx(team);
     if (ctx.roundPhase !== "live") return null;
     // Connection-blip ITEM 13: latch on the squad-MAX round (same ref buildTeam used).
