@@ -418,6 +418,7 @@ function llmEngine(t: InstanceType<typeof GsiTracker>, out: SpeakRequest[]): { e
   const fakeLlm = {
     line: () => new Promise<string | null>((r) => { resolve = r; }),
     recordSpoken: () => {},
+    commitSpoken: () => {},
   } as unknown as LlmCoach;
   const e = new CoachEngine((req) => out.push(req), fakeLlm, {
     getCtx: () => t.context(),
@@ -641,6 +642,7 @@ console.log("\n=== scenario: LLM timeout directive rides the snapshot as a one-s
   const fakeLlm = {
     line: (c: MatchContext) => { captured.push(c); return Promise.resolve(null); },
     recordSpoken: () => {},
+    commitSpoken: () => {},
   } as unknown as LlmCoach;
   const e = new CoachEngine(() => {}, fakeLlm, { getCtx: () => tracker.context() });
   const lossCtx = { ...tracker.context(), ourLossStreak: 5, ourTimeoutsLeft: 1, money: 4000, playerIsSelf: true, roundPhase: "freezetime" };
@@ -770,6 +772,7 @@ console.log("\n=== scenario: /coach quiet gates lines and LLM spend ===");
   const fakeLlm = {
     line: () => { llmCalls++; return Promise.resolve("should never be requested while muted"); },
     recordSpoken: () => {},
+    commitSpoken: () => {},
   } as unknown as LlmCoach;
   const e = new CoachEngine((req) => out.push(req), fakeLlm, { getCtx: () => tracker.context(), isQuiet: () => muted });
   e.handle([{ type: "kill", roundKills: 3, headshot: false }], tracker.context());
@@ -788,6 +791,7 @@ console.log("\n=== scenario: smart-tier prompts get full history + recentForm; f
   const fakeLlm = {
     line: (ctx: MatchContext) => { captured.push(ctx); return Promise.resolve(null); },
     recordSpoken: () => {},
+    commitSpoken: () => {},
   } as unknown as LlmCoach;
   const fullHist = Array.from({ length: 20 }, (_, i) => `R${i + 1} CT full WON (elim)`);
   const form = ["Past matches, newest first: lost 9-13 on Mirage (today)."];
@@ -919,6 +923,7 @@ console.log("\n=== scenario: long form requested exactly at the dead-air moments
       return Promise.resolve(null);
     },
     recordSpoken: () => {},
+    commitSpoken: () => {},
   } as unknown as LlmCoach;
   const e = new CoachEngine(() => {}, fakeLlm, {
     getCtx: () => tracker.context(),

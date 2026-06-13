@@ -43,8 +43,11 @@ export class GsiPayloadLog {
         return;
       }
     }
+    // Drop the auth block — it carries the shared GSI secret, which must never reach disk.
+    const safe = { ...payload };
+    delete safe.auth;
     this.stream.write(
-      JSON.stringify({ at: new Date().toISOString(), events: events.length > 0 ? events : undefined, payload }) + "\n",
+      JSON.stringify({ at: new Date().toISOString(), events: events.length > 0 ? events : undefined, payload: safe }) + "\n",
     );
   }
 }

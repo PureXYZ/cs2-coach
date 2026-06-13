@@ -283,6 +283,38 @@ async function main(): Promise<void> {
     }),
   });
 
+  // Graceful teardown for a normal redeploy (SIGTERM) or Ctrl-C (SIGINT): a hard
+  // kill would otherwise strand the GSI port, the voice connection and the
+  // Discord gateway socket. Each teardown is wrapped so one failure doesn't block
+  // the others, and the flag makes it idempotent against a double signal.
+  let shuttingDown = false;
+  const shutdown = async (signal: string, code = 0): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log.info("main", `Received ${signal} — shutting down`);
+    try {
+      gsi.server.close();
+    } catch (err) {
+      log.error("main", "Error closing GSI server", err);
+    }
+    try {
+      voice.leave();
+    } catch (err) {
+      log.error("main", "Error leaving voice", err);
+    }
+    try {
+      client.destroy();
+    } catch (err) {
+      log.error("main", "Error destroying Discord client", err);
+    }
+    // Give the async log sink a beat to flush before the process dies.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    process.exit(code);
+  };
+  activeShutdown = shutdown;
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+
   // DAVE smoke-check: @discordjs/voice pulls native (sodium / opus) prebuilds,
   // and a missing musl build on the Alpine droplet would otherwise fail SILENTLY
   // — the coach connects to voice but never makes a sound. Import it once at
@@ -318,6 +350,10 @@ async function main(): Promise<void> {
   log.info("main", "Ready. Use /coach join in Discord, then start a CS2 match.");
 }
 
+// Wired up inside main() once gsi/voice/client exist; until then a fatal fault
+// can only do the bare exit below (nothing constructed yet to tear down).
+let activeShutdown: ((signal: string, code?: number) => Promise<void>) | null = null;
+
 // Safety nets: a stray rejection from a third-party stream/socket must not kill
 // the coach mid-match.
 process.on("unhandledRejection", (reason) => {
@@ -325,7 +361,10 @@ process.on("unhandledRejection", (reason) => {
 });
 process.on("uncaughtException", (err) => {
   log.error("main", "Uncaught exception — exiting", err);
-  process.exit(1);
+  // Route through the same teardown as a redeploy so the HTTP server, voice
+  // connection and Discord client are closed before we go (exit code 1).
+  if (activeShutdown) void activeShutdown("uncaughtException", 1);
+  else process.exit(1);
 });
 
 main().catch((err) => {

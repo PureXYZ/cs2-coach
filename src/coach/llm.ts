@@ -154,7 +154,7 @@ export class LlmCoach {
           model,
           // Long-form speeches need room; a one-liner keeps the tight cap so a
           // runaway reply gets caught by the max_tokens check below.
-          max_tokens: longForm ? Math.max(this.maxTokens, 500) : this.maxTokens,
+          max_tokens: longForm ? Math.max(this.maxTokens, 2000) : this.maxTokens,
           // Opus defaults to effort "high"; "low" shaves ~20% off latency with no
           // visible quality drop on one-liners. Smart tier only — Haiku rejects
           // it. Long-form moments flip back to "high": latency is free there.
@@ -187,11 +187,9 @@ export class LlmCoach {
         .trim();
 
       if (!text) return null;
-      this.recordSpoken(text);
-      if (event.type === "freezetime") {
-        this.recentPlans.push(text);
-        if (this.recentPlans.length > 8) this.recentPlans.shift();
-      }
+      // NOTE (ITEM 11): recording into the anti-repeat memory is deferred to
+      // commit time (commitSpoken) — the engine may still drop this line via
+      // stillRelevant(), and a discarded line must not pollute recentLines/recentPlans.
       return text;
     } catch (err) {
       log.warn("llm", `${model} call failed after ${Date.now() - startedAt}ms (${err instanceof Error ? err.message : err}) — using rule-based line`);
@@ -267,13 +265,21 @@ export class LlmCoach {
       // the credit must be present, and every number spoken must be one of the
       // provided values (omitting is fine, rounding/inventing is not). The
       // canned wrapper one fallback away satisfies both by construction.
+      // Tokenize SIGN-AWARE: spokenStatsSentence renders a negative as the WORD
+      // "minus" (e.g. "Leetify rating minus 0.3"), so a bare-numeral compare would
+      // pass a flipped sign ("plus 0.3" → token "0.3" ∈ {"0.3"}). Emit "-N" when a
+      // number is immediately preceded by "minus", else "N", on BOTH sides.
+      const signedNumbers = (s: string): string[] =>
+        Array.from(s.matchAll(/(?:(minus|plus)\s+)?(\d+(?:\.\d+)?)/gi)).map(
+          (m) => (m[1]?.toLowerCase() === "minus" ? `-${m[2]}` : m[2]),
+        );
       const allowed = new Set([
-        ...(input.statsSentence.match(/\d+(?:\.\d+)?/g) ?? []),
-        ...(input.squadSentence?.match(/\d+(?:\.\d+)?/g) ?? []),
+        ...signedNumbers(input.statsSentence),
+        ...signedNumbers(input.squadSentence ?? ""),
         String(input.ourScore),
         String(input.theirScore),
       ]);
-      const spokenNumbers = text.match(/\d+(?:\.\d+)?/g) ?? [];
+      const spokenNumbers = signedNumbers(text);
       if (!/leetify/i.test(text) || spokenNumbers.some((n) => !allowed.has(n))) {
         log.warn("llm", "Leetify recap dropped the credit or altered a value — using the canned wrapper");
         return null;
@@ -294,6 +300,20 @@ export class LlmCoach {
   recordSpoken(text: string): void {
     this.recentLines.push(text);
     if (this.recentLines.length > 16) this.recentLines.shift();
+  }
+
+  /**
+   * Commit a line to the anti-repeat memory once it has ACTUALLY been spoken
+   * (ITEM 11). line() no longer records at generation time, because the engine
+   * may still drop the line via stillRelevant() — recording a discarded line
+   * would poison recentLines/recentPlans. Call this only on the spoken path.
+   */
+  commitSpoken(event: CoachEvent, text: string): void {
+    this.recordSpoken(text);
+    if (event.type === "freezetime") {
+      this.recentPlans.push(text);
+      if (this.recentPlans.length > 8) this.recentPlans.shift();
+    }
   }
 
   /**

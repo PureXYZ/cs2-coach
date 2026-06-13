@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { log } from "../log.js";
 import { mapDisplayName } from "./lines.js";
@@ -90,7 +90,11 @@ export class SessionStore {
     if (this.records.length > MAX_RECORDS) this.records = this.records.slice(-MAX_RECORDS);
     try {
       mkdirSync(dirname(this.file), { recursive: true });
-      writeFileSync(this.file, JSON.stringify(this.records, null, 2), "utf8");
+      // Atomic write: a crash mid-write leaves either the old or the new
+      // complete file, never truncated JSON the constructor would discard.
+      const tmp = this.file + ".tmp";
+      writeFileSync(tmp, JSON.stringify(this.records, null, 2), "utf8");
+      renameSync(tmp, this.file);
       log.info("sessions", `Recorded match ${rec.map ?? "?"} ${rec.ourScore}-${rec.theirScore} (${this.records.length} on file)`);
     } catch (err) {
       log.warn("sessions", `Could not persist session history: ${err instanceof Error ? err.message : err}`);

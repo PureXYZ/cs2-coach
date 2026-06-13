@@ -218,12 +218,28 @@ export class CoachEngine {
         // and the coach would nag the timeout round after round.
         const wantTimeout =
           (ctx.ourTimeoutsLeft ?? 0) > 0 && (ctx.ourLossStreak ?? 0) >= 4 && !this.deps.isQuiet?.();
-        let ftCtx = ctx;
-        if (wantTimeout && this.llm && this.passesCooldown("timeout")) {
-          this.lastSpokenAt.set("timeout", Date.now());
-          ftCtx = { ...ctx, suggestTimeout: true };
-        }
-        this.tacticalMoment(event, ftCtx, () => lines.economyLine(ctx, this.droppedTo), "economy", 12_000, "smart");
+        // Fold the timeout nudge into the buy line via the one-shot flag, but DON'T
+        // reserve the "timeout" bucket yet (ITEM 10): if the buy line resolves to
+        // nothing the nudge is never delivered, and a launch reservation would
+        // suppress it for ~5min though it was never spoken. The reservation happens
+        // on the delivery path below, via onSpoken.
+        const suggestTimeout = wantTimeout && !!this.llm && this.passesCooldown("timeout");
+        const ftCtx: MatchContext = suggestTimeout ? { ...ctx, suggestTimeout: true } : ctx;
+        this.tacticalMoment(
+          event,
+          ftCtx,
+          () => lines.economyLine(ctx, this.droppedTo),
+          "economy",
+          12_000,
+          "smart",
+          1,
+          undefined,
+          undefined,
+          // Reserve the timeout bucket only once the buy line (carrying the nudge)
+          // is actually spoken — a dropped line leaves the bucket cold so the nudge
+          // can fire at the next freezetime of the streak instead of being burned.
+          suggestTimeout ? () => this.lastSpokenAt.set("timeout", Date.now()) : undefined,
+        );
         // The LLM-less setup still has to make the call somehow (same bucket,
         // so it doesn't repeat either).
         if (!this.llm && wantTimeout) {
@@ -539,6 +555,10 @@ export class CoachEngine {
     stillRelevant?: () => boolean,
     /** longForm: dead-air moments (wrap-up, our timeout) get more words + effort=high. */
     llmOpts?: LineOpts,
+    /** Fires exactly once when a line is ACTUALLY handed to say() (ITEM 10) — lets a
+     *  caller durably reserve a PAIRED bucket (the timeout nudge) only on delivery,
+     *  not at launch, so a dropped line doesn't burn that bucket's cooldown. */
+    onSpoken?: () => void,
   ): void {
     // Muted: skip the line AND the LLM spend (the game tracking carries on).
     if (this.deps.isQuiet?.()) {
@@ -552,8 +572,19 @@ export class CoachEngine {
     const eventAt = Date.now();
     // Reserve the category at launch, not at resolution: while the LLM call is
     // in flight the cooldown would otherwise read as cold and a duplicate event
-    // could start a second line for the same moment.
+    // could start a second line for the same moment. Capture the prior value
+    // first (ITEM 10): if nothing is ultimately spoken, this in-flight reservation
+    // must be RELEASED (restored, or deleted if there was none) so a dropped line
+    // doesn't burn the whole cooldown window for the category.
+    const priorReservation = this.lastSpokenAt.get(category);
     this.lastSpokenAt.set(category, eventAt);
+    const releaseReservation = (): void => {
+      // Only release OUR reservation: a success path (say()) or a later event may
+      // have overwritten it with a newer stamp, which must stand.
+      if (this.lastSpokenAt.get(category) !== eventAt) return;
+      if (priorReservation === undefined) this.lastSpokenAt.delete(category);
+      else this.lastSpokenAt.set(category, priorReservation);
+    };
 
     // stillRelevant rides along into the voice queue: the LLM-resolution check
     // below catches a moment that died while Claude thought, but the line can
@@ -561,12 +592,17 @@ export class CoachEngine {
     // right before synthesis and right before playback.
     if (!this.llm) {
       const final = fallback();
-      if (final) {
-        // The decision hook fires for the canned path too — source "fallback",
-        // and ctx (no snapshot taken on this branch) is the state it reacted to.
-        this.deps.onDecision?.({ snapshot: ctx, event, tier, text: final, source: "fallback" });
+      if (!final) {
+        // Nothing audible — release the launch reservation (ITEM 10) so a silent
+        // fallback doesn't block the category for the cooldown window.
+        releaseReservation();
+        return;
       }
+      // The decision hook fires for the canned path too — source "fallback",
+      // and ctx (no snapshot taken on this branch) is the state it reacted to.
+      this.deps.onDecision?.({ snapshot: ctx, event, tier, text: final, source: "fallback" });
       this.say(() => final, { category, priority, maxAgeMs, eventAt, stillRelevant }, true);
+      onSpoken?.();
       return;
     }
 
@@ -598,20 +634,32 @@ export class CoachEngine {
     void this.llm.line(snapshot, event, tier, llmOpts).then((text) => {
       if (stillRelevant && !stillRelevant()) {
         log.debug("engine", `${category}: stillRelevant overtaken (moment resolved mid-flight)`);
+        // The moment died mid-flight — nothing audible, so release the launch
+        // reservation (ITEM 10) instead of burning the cooldown on a dropped line.
+        releaseReservation();
         return;
       }
       const final = text ?? fallback();
       if (!final) {
         log.debug("engine", `${category}: null final (llm + fallback both empty)`);
+        // Nothing audible (llm + fallback both empty) — release the reservation (ITEM 10).
+        releaseReservation();
         return;
       }
-      // Fallback lines join the LLM's anti-repeat memory too — the listener
-      // doesn't care who authored what they just heard.
-      if (!text) this.llm?.recordSpoken(final);
       // The decision hook fires here on the LLM path — source "llm" when Claude
       // produced the text, "fallback" when its line was empty and the canned one stood in.
       this.deps.onDecision?.({ snapshot, event, tier, text: final, source: text ? "llm" : "fallback" });
       this.say(() => final, { category, priority, maxAgeMs, eventAt, stillRelevant }, true);
+      onSpoken?.();
+      // Commit to the anti-repeat memory only now that the line is actually spoken
+      // (ITEM 11): line() no longer records at generation time, so a line dropped by
+      // stillRelevant() above never polluted recentLines/recentPlans. Both the LLM
+      // line and the canned fallback join — the listener doesn't care who authored it.
+      this.llm?.commitSpoken(event, final);
+    }).catch((err) => {
+      // ITEM 13: a throw in the resolution body (fallback/stillRelevant/say) would
+      // otherwise escape the per-event try/catch as an unhandled rejection.
+      log.error("coach", `LLM line resolution failed for ${event.type}`, err);
     });
   }
 
