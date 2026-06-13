@@ -180,11 +180,9 @@ Set `COACH_TEAM_TACTICS=false` to switch the team-economy/drop calls off and kee
 | `/coach leave` | Leaves voice |
 | `/coach quiet [state]` | Mutes/unmutes the coach mid-match (game tracking continues); `state:on`/`off` sets it explicitly, no arg toggles. Persists across restarts |
 | `/coach say <text> [voice]` | Speak arbitrary text (test); auto-joins your channel if needed; optional `voice` overrides the coach's voice for that one line |
-| `/coach repeat [voice]` | Re-say your last `/coach say` line — handy for A/B-ing voices without retyping |
 | `/coach voice [name]` | Switch the coach's voice (persists across restarts); leave `name` empty for a clickable picker |
-| `/coach status [share]` | GSI freshness, **feeds connected right now** (confirm a friend's install), voice/queue, mute state, TTS chain, active voice, LLM model, session memory — with a Refresh button; `share:true` posts it for the whole squad |
-| `/coach song [title]` | Plays one of the coach's covers — pick from buttons or pass a title (EZ4ENCE, Xue Hua Piao Piao, Zenzenzense, White Pony); auto-joins if needed; picking while one plays switches songs |
-| `/coach stop-song` | Stops the song; coaching lines resume |
+| `/coach status` | GSI freshness, **feeds connected right now** (confirm a friend's install), voice/queue, mute state, TTS chain, active voice, LLM model, session memory — with a Refresh button |
+| `/coach song [title]` | Plays one of the coach's covers — pick from buttons or pass a title (EZ4ENCE, Xue Hua Piao Piao, Zenzenzense, White Pony); auto-joins if needed; picking while one plays switches songs. Stop it from the **panel** (or `/coach leave`) |
 
 ## Costs
 

@@ -123,14 +123,9 @@ function buildVoiceChoices(): { name: string; value: string }[] {
   }
   return all.slice(0, MAX_VOICE_CHOICES).map((v) => ({ name: v.label, value: v.key }));
 }
-// Computed once: /coach say, /coach voice and /coach repeat reuse the same choice
-// list, so the truncation warning above fires at most once.
+// Computed once: /coach say and /coach voice reuse the same choice list, so the
+// truncation warning above fires at most once.
 const VOICE_CHOICES = buildVoiceChoices();
-
-/** Last text spoken via /coach say, so /coach repeat can re-say it (handy for
- *  A/B-ing voices without retyping). Per-process; resets on redeploy, which is fine
- *  for a throwaway test line. */
-let lastSaidText: string | null = null;
 
 const commands = [
   new SlashCommandBuilder()
@@ -160,17 +155,6 @@ const commands = [
     )
     .addSubcommand((sub) =>
       sub
-        .setName("repeat")
-        .setDescription("Re-say your last /coach say line — handy for A/B-ing voices")
-        .addStringOption((opt) =>
-          opt
-            .setName("voice")
-            .setDescription("Voice for this replay (defaults to the current coach voice)")
-            .addChoices(...VOICE_CHOICES),
-        ),
-    )
-    .addSubcommand((sub) =>
-      sub
         .setName("voice")
         .setDescription("Switch the coach's voice (persists across restarts)")
         .addStringOption((opt) =>
@@ -180,14 +164,7 @@ const commands = [
             .addChoices(...VOICE_CHOICES),
         ),
     )
-    .addSubcommand((sub) =>
-      sub
-        .setName("status")
-        .setDescription("Show GSI / voice / TTS status")
-        .addBooleanOption((opt) =>
-          opt.setName("share").setDescription("Post it publicly so the squad can see (default: only you)"),
-        ),
-    )
+    .addSubcommand((sub) => sub.setName("status").setDescription("Show GSI / voice / TTS status"))
     .addSubcommand((sub) => sub.setName("panel").setDescription("Post a clickable control panel (pin it for one-tap controls)"))
     .addSubcommand((sub) =>
       sub
@@ -210,8 +187,7 @@ const commands = [
             .setDescription("Which song (leave empty to pick from buttons)")
             .addChoices(...Object.entries(SONGS).map(([value, s]) => ({ name: s.name, value }))),
         ),
-    )
-    .addSubcommand((sub) => sub.setName("stop-song").setDescription("Stop the song (coaching continues)")),
+    ),
 ].map((c) => c.toJSON());
 
 export async function startBot(deps: BotDeps): Promise<Client> {
@@ -358,9 +334,9 @@ function helpText(): string {
     "",
     "**Get connected:** `/coach setup` (DMs you the config) · `/coach status` (is it working?)",
     "**In the channel:** `/coach join` (I hop into your voice channel) · `/coach leave` · `/coach quiet` (mute/unmute)",
-    "**Mess around:** `/coach say <text>` · `/coach voice` (pick my voice) · `/coach song` · `/coach stop-song`",
+    "**Mess around:** `/coach say <text>` · `/coach voice` (pick my voice) · `/coach song`",
     "",
-    "Hate typing? `/coach panel` posts buttons you can pin and tap instead.",
+    "Hate typing? `/coach panel` posts buttons you can pin and tap instead — that's all most people need.",
     "",
     "Once you're connected I read your game on my own — just `/coach join` and play. I'll pipe up when there's something worth saying. Don't hold your breath.",
   ]
@@ -372,7 +348,7 @@ function helpText(): string {
 
 /** The full status readout as a string, so it can be served from /coach status,
  *  the panel button, the Refresh button, and the setup "did it work?" button. */
-function renderStatus(deps: BotDeps, opts: { share?: boolean } = {}): string {
+function renderStatus(deps: BotDeps): string {
   const s = deps.status();
   const gsi =
     s.gsiAgeMs === null
@@ -416,9 +392,9 @@ function renderStatus(deps: BotDeps, opts: { share?: boolean } = {}): string {
     `**LLM:** ${s.llmModel ?? "disabled (rule-based lines only)"}`,
     `**Memory:** ${s.sessionsOnFile} past match${s.sessionsOnFile === 1 ? "" : "es"} on file`,
   ];
-  // The Quarantined line names griefer/non-member feeds — fine in a private
-  // readout, but skip it when posting publicly with `share`.
-  if (!opts.share && s.quarantined.length > 0) {
+  // The Quarantined line names griefer/non-member feeds — fine in this private
+  // (ephemeral) readout.
+  if (s.quarantined.length > 0) {
     const quarantined = s.quarantined;
     statusLines.push(
       `**Quarantined:** ${quarantined
@@ -535,36 +511,6 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
         eventAt: Date.now(),
         voiceId: voice?.voiceId,
       });
-      lastSaidText = text;
-      await interaction.editReply(sayConfirmation(deps, text, voice, ensured.joinedName));
-      return;
-    }
-
-    case "repeat": {
-      if (!lastSaidText) {
-        await interaction.reply({
-          content: "Nothing to repeat yet — use `/coach say` first.",
-          flags: MessageFlags.Ephemeral,
-        });
-        return;
-      }
-      const text = lastSaidText;
-      const voiceKey = interaction.options.getString("voice");
-      const voice = voiceKey ? findVoice(voiceKey) : undefined;
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const ensured = await ensureInVoice(interaction, deps);
-      if (!ensured.ok) {
-        await interaction.editReply({ content: NOT_IN_VC, components: [joinButtonRow()] });
-        return;
-      }
-      deps.voice.say({
-        text,
-        priority: 5,
-        maxAgeMs: 30_000,
-        category: "manual",
-        eventAt: Date.now(),
-        voiceId: voice?.voiceId,
-      });
       await interaction.editReply(sayConfirmation(deps, text, voice, ensured.joinedName));
       return;
     }
@@ -592,12 +538,10 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
     }
 
     case "status": {
-      const share = interaction.options.getBoolean("share") ?? false;
       await interaction.reply({
-        content: renderStatus(deps, { share }),
+        content: renderStatus(deps),
         components: [statusRow()],
-        // Default private; `share:true` posts it so the whole squad can see.
-        ...(share ? {} : { flags: MessageFlags.Ephemeral }),
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -605,7 +549,8 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
     case "panel": {
       // Non-ephemeral on purpose: friends pin this and tap the buttons.
       await interaction.reply({
-        content: "🎛️ **CS2 Coach controls** — tap a button. Pin this so everyone can use it.",
+        content:
+          "🎛️ **CS2 Coach controls** — tap a button. Pin it so everyone can use it. (If a button stops responding after an update, just run `/coach panel` again.)",
         components: panelRows(),
       });
       return;
@@ -640,15 +585,6 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
       return;
     }
 
-    case "stop-song": {
-      if (deps.voice.stopSong()) {
-        await interaction.reply({ content: "Song's off. Back to work.", flags: MessageFlags.Ephemeral });
-      } else {
-        await interaction.reply({ content: "Nothing's playing.", flags: MessageFlags.Ephemeral });
-      }
-      return;
-    }
-
     case "quiet": {
       // Explicit on/off is idempotent (you can guarantee a state without reading a
       // reply first); no arg keeps the original toggle for muscle memory.
@@ -661,8 +597,8 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
   }
 }
 
-/** /coach say & /coach repeat confirmation line — notes an auto-join, the one-off
- *  voice (and whether it'll actually take effect), and that test lines bypass mute. */
+/** /coach say confirmation line — notes an auto-join, the one-off voice (and
+ *  whether it'll actually take effect), and that test lines bypass mute. */
 function sayConfirmation(
   deps: BotDeps,
   text: string,

@@ -112,7 +112,7 @@ export class VoiceCoach {
   /**
    * Drop every queued, prefetched and in-flight coach line and cut off the one
    * currently speaking — /coach quiet's "shut up NOW". A playing song survives
-   * (silencing that is /coach stop-song's job).
+   * (silencing that is the panel's Stop button / stopSong()).
    */
   clearCoachLines(): void {
     this.clearQueue();
