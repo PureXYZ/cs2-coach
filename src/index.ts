@@ -23,7 +23,7 @@ import { TtsChain } from "./tts/index.js";
 import { currentVoice, voices } from "./tts/voices.js";
 import { VoiceCoach } from "./discord/voice.js";
 import { startBot } from "./discord/bot.js";
-import { clearVoiceChannel, loadVoiceChannel, loadQuiet, saveQuiet } from "./discord/voice-state.js";
+import { clearVoiceChannel, loadVoiceChannel } from "./discord/voice-state.js";
 
 async function main(): Promise<void> {
   // The coach often shares the PC with CS2 — make sure it never wins a CPU
@@ -87,10 +87,10 @@ async function main(): Promise<void> {
 
   // /coach mute's shared flag: the engine checks it (skipping lines AND LLM
   // spend); the bot toggles it and flushes anything already queued or speaking.
-  // Restored from disk so a redeploy doesn't silently un-mute (the saved voice
-  // channel is already restored below — mute resetting was the odd one out).
-  const quiet = { on: loadQuiet() };
-  if (quiet.on) log.info("main", "Coach starting muted (restored /coach mute state)");
+  // Session-scoped on purpose — the bot resets it to speaking whenever the coach
+  // joins or leaves a channel (so it also starts false on boot), so a forgotten
+  // mute can't silently follow you into the next session.
+  const quiet = { on: false };
 
   // Apply the preferred spoken name for the (primary) player to a context.
   const withNickname = (ctx: MatchContext): MatchContext => ({
@@ -293,7 +293,6 @@ async function main(): Promise<void> {
       get: () => quiet.on,
       set: (on) => {
         quiet.on = on;
-        saveQuiet(on); // survive a redeploy — see loadQuiet() above
         // Muting mid-sentence should actually shut the coach up, not just
         // stop the NEXT line — flush the queue and cut the current one off.
         if (on) voice.clearCoachLines();
