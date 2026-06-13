@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { log } from "../log.js";
 import { winTarget, type MatchContext, type CoachEvent } from "../gsi/tracker.js";
+import type { TeamMember } from "../gsi/types.js";
 import { ECONOMY_CHEATSHEET, DECISION_PRINCIPLES, mapBriefing, playbookOptions } from "./knowledge.js";
 import { pick, mapDisplayName } from "./lines.js";
 
@@ -23,7 +24,7 @@ export interface LineOpts {
   timeoutMs?: number;
 }
 
-const SYSTEM_CORE = `You are "Coach" — a dry, sarcastic, perpetually unimpressed Counter-Strike 2 coach sitting in a Discord voice channel with a player and their friends during a Premier/Competitive match. The player ASKED for a negative, sarcastic coach — it's a consensual roast between friends. Each request gives you a JSON snapshot of the game state plus a description of the moment; you reply with ONE spoken coaching line.
+const SYSTEM_CORE = `You are "Coach" — a dry, sarcastic, perpetually unimpressed Counter-Strike 2 coach sitting in a Discord voice channel with the wired crew — the player AND any friends also running the coach — during a Premier/Competitive match. The player ASKED for a negative, sarcastic coach — it's a consensual roast between friends. Each request gives you a JSON snapshot of the game state plus a description of the moment; you reply with ONE spoken coaching line.
 
 VOICE:
 - You sound like a real coach TALKING on voice comms, not a writer writing. Short sentences. Contractions. Simple everyday words. Sentence fragments are fine. Say it like: "Bomb's down, forty seconds. Group up, go in together. No solo hero shit."
@@ -60,7 +61,9 @@ HOW TO SPEAK:
 - Vary your phrasing — never reuse the openers or signature words from your recent lines.
 
 THE SQUAD (who you can see):
-- The player's friends are in the voice channel. You only know the names the snapshot gives you (the "team" block, plus any "spectating" name) — never invent or guess a name. Roasting the player is the main job; teammates get lighter teasing.
+- The player's friends are in the voice channel. You only know the names the snapshot gives you (the "team" block, plus any "spectating" name) — never invent or guess a name. Roast the wired teammates exactly as hard as the player — they're in the channel and signed up for the same consensual roast, so NO kid gloves and no softer touch for friends. (Gameplay only, never anyone's identity — same line as for the player.)
+- WHO YOU COACH: when a "team" block is present you coach the WHOLE WIRED CREW, not one player with witnesses — address them by name and let the loudest mistake win the jab, whoever made it. The player is your default anchor — most of the material is theirs (own gear, session history, Leetify recap) — but the wired friends are FULL co-subjects: when a friend's the one who threw, roast them just as hard, by name. No bystanders, no kid gloves. With NO team block, "you" is the one player.
+- Coaching the crew is NOT narrating every friend's round: it's still ONE line — AGGREGATE or ROTATE. A different teammate is a fresh angle for the NEXT moment, never a second line crammed into this one. Defer to team.visibility and whatever the moment's own instructions say about who to name.
 - The "team" block appears only when 2+ friends run the coach. It lists ONLY the teammates whose own game you can see — "team.wiredCount" of the squad. You have NO information about any teammate NOT in team.members: not their gear, not their money, not whether they're alive. Treat them as unknown and never speak about them.
 - HONESTY — the most important rule here: NEVER assert a WHOLE-TEAM fact ("everyone's alive", "you're the last one alive", "the team's all broke", "we're split") UNLESS "team.rosterComplete" is true. Otherwise speak only about the players you can see, BY NAME, and hedge the rest: "the three of you I can see are on eco", "last of our guys I can see — dunno about the other two". team.rosterComplete true means the whole squad is wired in and you MAY state those facts with confidence.
 - "team.visibility" is a one-line VERDICT on exactly how much of the squad you can honestly speak for. FOLLOW IT LITERALLY — it overrides any instinct to round "the two I can see" up to "the team". It is the plain-English form of the rosterComplete rule above; when the two ever seem to conflict, obey team.visibility.
@@ -87,6 +90,9 @@ export class LlmCoach {
   private recentLines: string[] = [];
   /** The actual PLANS called at recent freezetimes — the anti-repeat for strategy, not phrasing. */
   private recentPlans: string[] = [];
+  /** B2: wired teammates recently FEATURED for the break-moment jab — rotates the
+   *  spotlight across the crew so it isn't always the same friend getting ribbed. */
+  private recentRibbed: string[] = [];
 
   constructor(opts: {
     apiKey: string;
@@ -126,9 +132,11 @@ export class LlmCoach {
       },
     ];
 
+    if (event.type === "matchStart") this.recentRibbed = []; // fresh rib rotation each match
+    const ribTarget = this.pickRibTarget(event, context);
     const userContent = [
-      `Game state snapshot: ${JSON.stringify(context)}`,
-      `Moment: ${describeMoment(event, context, longForm)}`,
+      `Game state snapshot: ${JSON.stringify(stripMemberNotes(context))}`,
+      `Moment: ${describeMoment(event, context, longForm, ribTarget)}`,
       event.type === "freezetime" && this.recentPlans.length
         ? `Plans you already called this match, oldest first — rotate sites and styles instead of repeating them, UNLESS the last call is visibly printing rounds (then keep it and say you're going back to the well): ${JSON.stringify(this.recentPlans)}`
         : "",
@@ -204,6 +212,7 @@ export class LlmCoach {
     ourScore: number;
     theirScore: number;
     statsSentence: string;
+    squadSentence?: string;
     /** A qualitative multi-match trend clause (direction only, NO numbers) — e.g.
      *  "your preaim's been creeping up the last few games". Spoken as-is if used;
      *  it introduces no values, so the spoken-number verifier stays untouched. */
@@ -214,12 +223,15 @@ export class LlmCoach {
     const userContent = [
       `Leetify finished analyzing the demo of the match that ended a while ago${where}, final score ${input.ourScore}-${input.theirScore}${result}. The players are BETWEEN games right now — this is downtime talk, not a mid-round call.`,
       `Leetify's numbers for the player: ${input.statsSentence}.`,
+      input.squadSentence
+        ? `The wired crew ran the SAME match — read these teammate numbers EXACTLY as given, and NEVER recompute a difference into a new number: ${input.squadSentence}. Work the whole crew into the recap and roast whoever the numbers expose — friends included, hit them the same as the player.`
+        : "",
       // Trend is qualitative (direction, no numbers) — the model may speak it as
       // written without tripping the verifier below (which only polices numerals).
       input.trend
         ? `Recent multi-match trend from Leetify (qualitative, speak as-is if used): ${input.trend}`
         : "",
-      `Speak ONE recap, 25-50 words (the usual cap doesn't apply): credit Leetify by name, read the headline numbers EXACTLY as given (you may leave stats out, never change a value), and land one dry verdict. You may reference the multi-match trend if it's given. Say "minus" for negative numbers — no symbols, it goes straight to text-to-speech.`,
+      `Speak ONE recap, ${input.squadSentence ? "30-60" : "25-50"} words (the usual cap doesn't apply): credit Leetify by name, read the headline numbers EXACTLY as given (you may leave stats out, never change a value), and land one dry verdict. You may reference the multi-match trend if it's given. Say "minus" for negative numbers — no symbols, it goes straight to text-to-speech.`,
       this.recentLines.length
         ? `Your recent lines, oldest first (do NOT reuse their phrasing, openers or joke constructions): ${JSON.stringify(this.recentLines)}`
         : "",
@@ -257,6 +269,7 @@ export class LlmCoach {
       // canned wrapper one fallback away satisfies both by construction.
       const allowed = new Set([
         ...(input.statsSentence.match(/\d+(?:\.\d+)?/g) ?? []),
+        ...(input.squadSentence?.match(/\d+(?:\.\d+)?/g) ?? []),
         String(input.ourScore),
         String(input.theirScore),
       ]);
@@ -281,6 +294,17 @@ export class LlmCoach {
   recordSpoken(text: string): void {
     this.recentLines.push(text);
     if (this.recentLines.length > 16) this.recentLines.shift();
+  }
+
+  /**
+   * B2: pick ONE wired teammate to feature in a break-moment jab (timeout, halftime,
+   * match end), rotating past the recently-featured names so the spotlight moves
+   * across the crew. Recording the pick here is what ENFORCES the rotation in code
+   * rather than leaving it to the model. undefined for non-break moments or solo play.
+   */
+  private pickRibTarget(event: CoachEvent, ctx: MatchContext): { name: string; note?: string } | undefined {
+    if (event.type !== "timeout" && event.type !== "halftime" && event.type !== "matchEnd") return undefined;
+    return chooseRibTarget(ctx.team?.members ?? [], this.recentRibbed);
   }
 }
 
@@ -376,23 +400,69 @@ function methodStory(method: string, won: boolean): string {
 /**
  * Shared squad clause for the DEAD-AIR break moments (our timeout, halftime, match
  * end). Gated on a real multi-feed view (ctx.team with 2+ members), NOT on econ
- * (empty at a break when the crew is dead). Names the wired crew, allows ONE lighter
- * rotated jab at a DIFFERENT teammate (own money/state only, hedged unless
- * rosterComplete, at most one). Empty string for a solo player. NOTE (ITEM 12): jab
- * rotation is only ASKED for, not enforced — recentLines tracks phrasing, not who was named.
+ * (empty at a break when the crew is dead). Names the wired crew and, when the engine
+ * supplies a rotated ribTarget (B2), features ONE named teammate by name with their
+ * own-feed debrief note — roasted as hard as the player, own play only, hedged unless
+ * rosterComplete. The rotation IS enforced in code (LlmCoach.pickRibTarget records who
+ * was featured), not left to the model. Empty string for a solo player.
  */
-function squadBreakClause(ctx: MatchContext): string {
+/**
+ * Pure rotation core for the break-moment rib target (exported for tests). Prefers a
+ * teammate we have a debrief note on (so the jab has an honest hook), skips the
+ * recently-featured names, and uses a POOL-RELATIVE cap so recentRibbed can never
+ * saturate the candidate set — a fixed cap collapsed a 2-3 stack to one repeated
+ * friend. Mutates recentRibbed (push + trim). undefined when no fresh, named,
+ * non-primary teammate exists.
+ */
+export function chooseRibTarget(
+  members: TeamMember[],
+  recentRibbed: string[],
+): { name: string; note?: string } | undefined {
+  const candidates = members.filter((m) => !m.isPrimary && m.tier === "fresh" && m.name);
+  if (candidates.length === 0) return undefined;
+  const withNote = candidates.filter((m) => m.note);
+  const pool = withNote.length ? withNote : candidates;
+  const notRecent = pool.filter((m) => !recentRibbed.includes(m.name as string));
+  const choice = (notRecent.length ? notRecent : pool)[0];
+  recentRibbed.push(choice.name as string);
+  const capN = Math.max(candidates.length - 1, 1); // never saturate the candidate set
+  while (recentRibbed.length > capN) recentRibbed.shift();
+  return { name: choice.name as string, note: choice.note };
+}
+
+/** The per-friend debrief note is for the rib-target TEXT channel only (rotation-gated).
+ *  Strip it from the JSON snapshot so the model never sees every friend's bad-pattern
+ *  tag out-of-band at non-break moments. */
+function stripMemberNotes(ctx: MatchContext): MatchContext {
+  if (!ctx.team?.members?.length) return ctx;
+  return {
+    ...ctx,
+    team: { ...ctx.team, members: ctx.team.members.map(({ note: _note, ...m }) => m) },
+  };
+}
+
+function squadBreakClause(ctx: MatchContext, ribTarget?: { name: string; note?: string }): string {
   const members = ctx.team?.members ?? [];
   if (!ctx.team || members.length <= 1) return "";
   const names = members.map((m) => m.name).filter(Boolean);
   const named = names.length ? ` The wired crew right now is ${names.join(", ")}.` : "";
-  const jab = names.length > 1
-    ? ` You MAY land ONE lighter jab at a teammate you haven't ribbed lately — by name, about their OWN money or play only, hedged unless team.rosterComplete, and at most one.`
-    : "";
-  return `${named} Follow team.visibility: speak whole-team facts only if rosterComplete, otherwise stay to the players you can see, by name.${jab}`;
+  // B2: feature ONE specific teammate by name (the engine rotates who across breaks,
+  // so it isn't always the same friend). With a debrief note, invite a substantive
+  // jab off it; without one, only an econ-grounded jab (no unseen-play invention).
+  const rib = !ribTarget
+    ? ""
+    : ribTarget.note
+      ? ` Besides the player, you MAY land ONE substantive line at ${ribTarget.name} — ${ribTarget.note} — their OWN play only, hedged unless team.rosterComplete. Two named beats max; do NOT narrate every teammate.`
+      : ` Besides the player, you MAY rib ${ribTarget.name} too — but ONLY off what you can see (their team.econ money/buy), never their unseen play. Two named beats max; do NOT narrate every teammate.`;
+  return `${named} The player is your main focus and gets the main note. Follow team.visibility: speak whole-team facts only if rosterComplete, otherwise stay to the players you can see, by name.${rib}`;
 }
 
-function describeMoment(event: CoachEvent, ctx: MatchContext, longForm = false): string {
+function describeMoment(
+  event: CoachEvent,
+  ctx: MatchContext,
+  longForm = false,
+  ribTarget?: { name: string; note?: string },
+): string {
   switch (event.type) {
     case "matchStart": {
       const form = ctx.recentForm?.length
@@ -515,11 +585,11 @@ function describeMoment(event: CoachEvent, ctx: MatchContext, longForm = false):
       return `The player just TEAM-KILLED a teammate. One deadpan roast or mock-apology on their behalf — sarcastic, not genuinely hostile.`;
     case "timeout":
       if (event.ours) {
-        return `OUR team just called a tactical timeout — a 30-second pause, the one mid-match moment with room for an actual SPEECH. Take 35-60 words, three to five sentences (the one-line cap does NOT apply). Read the snapshot first: if the history shows the rounds bleeding, say why and give ONE concrete fix for the very next round; if we're ahead or it's a routine pause, make it a reset-and-refocus talk instead — same structure, no invented crisis. Either way: the buy plan if money matters, and a dry steadying close. Snide is fine, rah-rah is not.${squadBreakClause(ctx)}`;
+        return `OUR team just called a tactical timeout — a 30-second pause, the one mid-match moment with room for an actual SPEECH. Take 35-60 words, three to five sentences (the one-line cap does NOT apply). Read the snapshot first: if the history shows the rounds bleeding, say why and give ONE concrete fix for the very next round; if we're ahead or it's a routine pause, make it a reset-and-refocus talk instead — same structure, no invented crisis. Either way: the buy plan if money matters, and a dry steadying close. Snide is fine, rah-rah is not.${squadBreakClause(ctx, ribTarget)}`;
       }
       return `THEY called a tactical timeout. One short dry line: the pause is theirs — they're rattled or regrouping — and our side stays warm and sharp through it.`;
     case "halftime": {
-      const squad = squadBreakClause(ctx);
+      const squad = squadBreakClause(ctx, ribTarget);
       const buySync = ctx.team?.buySyncNote ? ` ${ctx.team.buySyncNote} A halftime note to sync the buys going into the new side is fair game.` : "";
       return `Halftime break. Give a short, dry halftime talk grounded in the actual half: the score, pistol result, streaks, anything notable from history. Set the mindset for the side switch (economy resets, new roles) — sarcasm welcome, the actual reset facts mandatory.${squad}${buySync}${habitsNote(ctx)}`;
     }
@@ -538,7 +608,7 @@ function describeMoment(event: CoachEvent, ctx: MatchContext, longForm = false):
       // Squad break clause + the K/D guardrail: the snapshot's numbers are the
       // PRIMARY player's alone, so never quote or guess a teammate's stats.
       const squad = ctx.team && (ctx.team.members?.length ?? 0) > 1
-        ? `${squadBreakClause(ctx)} The K/D and MVP numbers in the snapshot are the PRIMARY player's ALONE — you have NO stats for any teammate, so never quote or guess a teammate's kills, deaths or rating.`
+        ? `${squadBreakClause(ctx, ribTarget)} The K/D and MVP numbers in the snapshot are the PRIMARY player's ALONE — you have NO stats for any teammate, so never quote or guess a teammate's kills, deaths or rating.`
         : "";
       // The wrap-up is exactly where the match's own-data patterns and the session
       // focus earn their keep — a debrief is the right place to name them.

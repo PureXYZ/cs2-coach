@@ -26,8 +26,15 @@ function countNotable(rounds: readonly RoundRecord[], marker: string): number {
   return rounds.reduce((n, r) => n + r.notable.filter((s) => s.includes(marker)).length, 0);
 }
 
-/** The match as a SessionMatchRecord — own GSI-derived data only, safe to persist. */
-export function buildMatchRecord(event: MatchEndEvent, ctx: MatchContext, report: MatchReport): SessionMatchRecord {
+/** The match as a SessionMatchRecord — own GSI-derived data only, safe to persist.
+ *  `squadNames` are the wired friends present this match (names only, primary
+ *  excluded), captured synchronously at matchEnd by the caller. */
+export function buildMatchRecord(
+  event: MatchEndEvent,
+  ctx: MatchContext,
+  report: MatchReport,
+  squadNames: string[] = [],
+): SessionMatchRecord {
   const buys = { eco: 0, force: 0, full: 0 };
   for (const r of report.rounds) {
     if (r.buy === "eco" || r.buy === "force" || r.buy === "full") buys[r.buy]++;
@@ -54,5 +61,6 @@ export function buildMatchRecord(event: MatchEndEvent, ctx: MatchContext, report
     diedWithNades: countNotable(report.rounds, MARK_POCKET_NADES) || undefined,
     notables: report.notables.slice(0, 8),
     roundsPlayed: report.rounds.length,
+    squad: squadNames.length ? squadNames : undefined,
   };
 }

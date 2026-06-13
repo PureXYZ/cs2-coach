@@ -31,7 +31,7 @@ const { retakeDecisionLine, economyLine, lateRoundLine, lateRoundCarrierNamed, o
 import os from "node:os";
 import path from "node:path";
 import type { CoachEvent, MatchContext } from "../src/gsi/tracker.js";
-import type { GsiPayload, GsiWeapon } from "../src/gsi/types.js";
+import type { GsiPayload, GsiWeapon, TeamMember } from "../src/gsi/types.js";
 import type { SpeakRequest } from "../src/coach/engine.js";
 import type { LlmCoach } from "../src/coach/llm.js";
 
@@ -963,6 +963,66 @@ console.log("\n=== scenario: the Leetify recap waits for a quiet moment ===");
   expect(recap.includes("Mirage") && recap.includes("ADR 67.09") && /leetify/i.test(recap), `canned recap credits Leetify and reads the numbers ("${recap.slice(0, 70)}...")`);
 }
 
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: B4/C2 — session squad tag + squad-contextualized form line ===");
+{
+  const { buildMatchRecord } = await import("../src/coach/debrief.js");
+  const { SessionStore } = await import("../src/coach/session-store.js");
+  const { writeFileSync, rmSync } = await import("node:fs");
+
+  // B4: the match record stamps the wired friends' NAMES (never their stats).
+  const endEv = { type: "matchEnd", won: true, ourScore: 13, theirScore: 9 } as Extract<CoachEvent, { type: "matchEnd" }>;
+  const endCtx = { map: "de_mirage", mode: "competitive", kills: 20, deaths: 15 } as unknown as MatchContext;
+  const report = { rounds: [], pistols: {}, earlyDeaths: 0, notables: [], stats: { kills: 20, assists: 3, deaths: 15, mvps: 2 }, botsDetected: false };
+  const tagged = buildMatchRecord(endEv, endCtx, report, ["Mouse", "Cadian"]);
+  expect(JSON.stringify(tagged.squad) === JSON.stringify(["Mouse", "Cadian"]), "match record stamps the wired friends' names");
+  const soloRec = buildMatchRecord(endEv, endCtx, report, []);
+  expect(soloRec.squad === undefined, "a solo match record carries no squad tag");
+
+  // C2: recentForm adds ONE squad-contextualized line — an assertion about the
+  // PRIMARY's own W/L, tagged with who was wired (never the friend's stats).
+  const tmp = "_test_c2_sessions.json";
+  const recs = [0, 1, 2].map((i) => ({
+    endedAt: new Date(Date.now() - i * 3_600_000).toISOString(),
+    ourScore: 13, theirScore: 7, won: i !== 1, squad: ["Mouse"],
+  }));
+  writeFileSync(tmp, JSON.stringify(recs), "utf8");
+  const store = new SessionStore(tmp);
+  const form = store.recentForm();
+  rmSync(tmp, { force: true });
+  expect(
+    form?.some((l) => /With Mouse wired in, you're 2 and 1/.test(l)) === true,
+    `recentForm adds the squad-tagged trend line (got ${JSON.stringify(form)})`,
+  );
+
+  // Boundary: a friend wired for only ONE tagged match gets no squad line (needs 2+).
+  writeFileSync(tmp, JSON.stringify([
+    { endedAt: new Date().toISOString(), ourScore: 13, theirScore: 9, won: true, squad: ["Solo"] },
+    { endedAt: new Date(Date.now() - 3_600_000).toISOString(), ourScore: 8, theirScore: 13, won: false, squad: [] },
+  ]), "utf8");
+  const formOne = new SessionStore(tmp).recentForm();
+  rmSync(tmp, { force: true });
+  expect(!formOne?.some((l) => /wired in, you're/.test(l)), "a friend in only one tagged match gets no squad line");
+
+  // Tie-break: two friends each in 2 tagged matches → exactly ONE line, first-seen wins.
+  writeFileSync(tmp, JSON.stringify([
+    { endedAt: new Date().toISOString(), ourScore: 13, theirScore: 5, won: true, squad: ["Alpha", "Beta"] },
+    { endedAt: new Date(Date.now() - 3_600_000).toISOString(), ourScore: 13, theirScore: 6, won: true, squad: ["Alpha", "Beta"] },
+  ]), "utf8");
+  const formTie = new SessionStore(tmp).recentForm();
+  rmSync(tmp, { force: true });
+  const tieLines = (formTie ?? []).filter((l) => /wired in, you're/.test(l));
+  expect(tieLines.length === 1, `a tie yields exactly one squad line (got ${tieLines.length}: ${JSON.stringify(tieLines)})`);
+
+  // won===undefined (reconnected too late to know the result) is excluded from the tag.
+  writeFileSync(tmp, JSON.stringify(
+    [0, 1].map((i) => ({ endedAt: new Date(Date.now() - i * 3_600_000).toISOString(), ourScore: 7, theirScore: 7, won: undefined, squad: ["Ghost"] })),
+  ), "utf8");
+  const formNo = new SessionStore(tmp).recentForm();
+  rmSync(tmp, { force: true });
+  expect(!formNo?.some((l) => /Ghost/.test(l)), "won-unknown matches are excluded from the squad-tagged line");
+}
+
 // ===========================================================================
 // MULTI-FEED: friends also running the GSI cfg. These exercise the RosterManager
 // (demux by provider.steamid → one tracker per feed → fused output), which the
@@ -1324,12 +1384,29 @@ console.log("\n=== scenario: econ — gear + alive per entry, fresh tier, cross-
   expect(synced?.rosterComplete === true, "full squad wired for the buy-sync read");
   expect(typeof synced?.buySyncNote === "string" && synced.buySyncNote.includes("Mouse"), `buy-sync read names the lone out-of-sync buyer ("${synced?.buySyncNote}")`);
 
-  // 2-of-3 wired → no whole-team license → no buy-sync read at all.
-  const partial = rosterRig(P1);
-  partial.run("P1 warmup", payload({ provider: P1, mapPhase: "warmup" }));
-  partial.run("P1 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 0, state: { money: 5000 } }));
-  partial.run("P2 freeze", payload({ provider: P2, roundPhase: "freezetime", round: 0, name: "Mouse", state: { money: 1000 } }));
-  expect(partial.r.context().team?.buySyncNote === undefined, "no buy-sync read while the roster is only partial (no whole-team license)");
+  // 2-of-3 wired is no longer mute: buy-sync is an observation about the VISIBLE
+  // wired buyers (it names "the wired crew", never the team), so a recurring
+  // out-of-sync pattern between the two wired players surfaces WITHOUT the
+  // whole-team rosterComplete license. Same teammate-first ordering so P1
+  // (authority) settles the snapshot once per freeze.
+  const partialRig = rosterRig(P1);
+  const pr = partialRig.r;
+  const pRun = partialRig.run;
+  pRun("P1 warmup", payload({ provider: P1, mapPhase: "warmup" }));
+  pRun("P1 live", payload({ provider: P1, roundPhase: "live", round: 0 }));
+  pRun("P2 live", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse" }));
+  for (const round of [2, 3]) {
+    pRun(`r${round} P1 live`, payload({ provider: P1, roundPhase: "live", round: round - 1, ctScore: 1 }));
+    pRun(`r${round} P2 live`, payload({ provider: P2, roundPhase: "live", round: round - 1, name: "Mouse", ctScore: 1 }));
+    pRun(`r${round} P2 freeze (full)`, payload({ provider: P2, roundPhase: "freezetime", round, name: "Mouse", state: { money: 5000 }, ctScore: 1 }));
+    pRun(`r${round} P1 freeze (save)`, payload({ provider: P1, roundPhase: "freezetime", round, state: { money: 1000 }, ctScore: 1 }));
+  }
+  const partial = pr.context().team;
+  expect(partial?.rosterComplete === false, "2 of a 3-stack is still NOT roster-complete (no whole-team license)");
+  expect(
+    typeof partial?.buySyncNote === "string" && partial.buySyncNote.includes("Mouse"),
+    `buy-sync now fires on the visible wired pair, naming the out-of-sync buyer ("${partial?.buySyncNote}")`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1357,6 +1434,153 @@ console.log("\n=== scenario: events ITEM 8 — numbers-aware CT retake when the 
     partial.every((l) => !/of us|full squad up|Three-plus|the bodies/.test(l)),
     "a partial roster falls through to the gear pools, not a numbers call",
   );
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: B5 — partial-roster retake names the fresh-alive wired friends ===");
+{
+  const partialUp = {
+    playerIsSelf: true, health: 100, armor: 100, equipValue: 4000, ourSide: "CT",
+    team: {
+      wiredCount: 2, rosterComplete: false, squadSize: 3, visibility: "x",
+      members: [
+        { isPrimary: true, alive: true, tier: "fresh", staleMs: 0, name: "You" },
+        { isPrimary: false, alive: true, tier: "fresh", staleMs: 0, name: "Mouse" },
+      ],
+    },
+  } as unknown as MatchContext;
+  const ls: string[] = [];
+  for (let i = 0; i < 6; i++) ls.push(retakeDecisionLine(partialUp));
+  expect(ls.every((l) => l.includes("Mouse")), "partial roster with a fresh-alive friend names them in the retake call");
+  expect(
+    ls.every((l) => /don't overcommit|bail|play it safe|no solo/.test(l)),
+    "the partial call hedges the players it can't see",
+  );
+
+  // A LAGGING friend's "alive" read is stale — not a live body to call a swing with.
+  const partialStale = {
+    playerIsSelf: true, health: 100, armor: 100, equipValue: 4000, ourSide: "CT",
+    team: {
+      wiredCount: 2, rosterComplete: false, squadSize: 3, visibility: "x",
+      members: [
+        { isPrimary: true, alive: true, tier: "fresh", staleMs: 0, name: "You" },
+        { isPrimary: false, alive: true, tier: "lagging", staleMs: 9000, name: "Mouse" },
+      ],
+    },
+  } as unknown as MatchContext;
+  expect(!retakeDecisionLine(partialStale).includes("Mouse"), "a lagging friend's stale alive read isn't used for the partial call");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: B1/C3 — per-friend debrief note + weak-link entry-death nudge ===");
+{
+  const { r, out, run } = rosterRig(P1);
+  run("P1 warmup", payload({ provider: P1, mapPhase: "warmup" }));
+  run("P1 r1 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 0 }));
+  run("P1 r1 live", payload({ provider: P1, roundPhase: "live", round: 0 }));
+  // Mouse joins, confirms same-side, and dies on the opening in round 1.
+  run("P2 r1 freeze", payload({ provider: P2, roundPhase: "freezetime", round: 0, name: "Mouse" }));
+  run("P2 r1 live", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse" }));
+  run("P2 r1 dies early", payload({ provider: P2, roundPhase: "live", round: 0, name: "Mouse", state: { health: 0 } }));
+  // Round 2: Mouse dies on the opening again.
+  run("P1 r2 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 1 }));
+  run("P1 r2 live", payload({ provider: P1, roundPhase: "live", round: 1 }));
+  run("P2 r2 freeze", payload({ provider: P2, roundPhase: "freezetime", round: 1, name: "Mouse" }));
+  run("P2 r2 live", payload({ provider: P2, roundPhase: "live", round: 1, name: "Mouse" }));
+  run("P2 r2 dies early", payload({ provider: P2, roundPhase: "live", round: 1, name: "Mouse", state: { health: 0 } }));
+
+  // B1: Mouse's fresh member now carries the synthesized, number-free entry-death note.
+  const mouse = r.context().team?.members.find((m) => m.name === "Mouse");
+  expect(mouse?.note === "kept dying early on the entry", `per-friend note synthesized from their own feed (got "${mouse?.note}")`);
+
+  // C3: at the next freezetime the weak-link nudge fires ONCE, naming Mouse.
+  const ev = run("P1 r3 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 2 }));
+  expect(ev.some((e) => e.type === "weakLink" && e.who.name === "Mouse"), "weak-link nudge fires at freezetime naming the repeat early-dier");
+  // The engine maps it to a spoken, NUMBER-FREE line naming the offender (covers
+  // the engine case, the weakLink cooldown bucket, and the privacy guarantee).
+  expect(
+    out.some((s) => s.category === "weakLink" && s.text.includes("Mouse") && !/\d/.test(s.text)),
+    "weak-link nudge speaks a number-free line naming the offender",
+  );
+  const ev2 = run("P1 r3 freeze again", payload({ provider: P1, roundPhase: "freezetime", round: 2 }));
+  expect(!ev2.some((e) => e.type === "weakLink"), "weak-link latch holds — no repeat nudge for the same friend");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: B6 — LLM-off economy drop coda (kitted primary → broke alive friend) ===");
+{
+  const { economyLine } = await import("../src/coach/lines.js");
+  const kitted = (econ: Array<Record<string, unknown>>): MatchContext =>
+    ({
+      money: 3000, equipValue: 4000, ourLossStreak: 0,
+      team: { wiredCount: 2, rosterComplete: false, squadSize: 3, visibility: "x", members: [], econ },
+    }) as unknown as MatchContext;
+
+  const fire = economyLine(kitted([
+    { isPrimary: true, money: 3000, equipValue: 4000, alive: true },
+    { isPrimary: false, name: "Mouse", money: 1000, alive: true },
+  ]));
+  expect(!!fire && fire.includes("Mouse") && /drop|sling|gun|rifle|shoots/i.test(fire), `kitted primary + broke friend → drop coda names them ("${fire}")`);
+
+  // Poorest friend is DEAD → skip to the next-poorest ALIVE friend.
+  const deadPoorest = economyLine(kitted([
+    { isPrimary: true, money: 3000, equipValue: 4000, alive: true },
+    { isPrimary: false, name: "Mouse", money: 500, alive: false },
+    { isPrimary: false, name: "Cadian", money: 1500, alive: true },
+  ]));
+  expect(!!deadPoorest && deadPoorest.includes("Cadian") && !deadPoorest.includes("Mouse"), "a dead poorest friend is skipped for the next-poorest alive");
+
+  const pistol = economyLine({ ...kitted([
+    { isPrimary: true, money: 3000, equipValue: 4000, alive: true },
+    { isPrimary: false, name: "Mouse", money: 1000, alive: true },
+  ]), roundKind: "pistol" } as MatchContext);
+  expect(!/Mouse/.test(pistol ?? ""), "pistol round suppresses the drop coda");
+
+  const noSpare = economyLine(kitted([
+    { isPrimary: true, money: 2000, equipValue: 4000, alive: true }, // money < 2700
+    { isPrimary: false, name: "Mouse", money: 1000, alive: true },
+  ]));
+  expect(!/Mouse/.test(noSpare ?? ""), "a primary without spare cash gets no drop coda");
+
+  // Anti-repeat latch: the same broke friend isn't re-named across freezetimes.
+  const latch = new Set<string>();
+  const econ = [
+    { isPrimary: true, money: 3000, equipValue: 4000, alive: true },
+    { isPrimary: false, name: "Mouse", money: 1000, alive: true },
+  ];
+  const first = economyLine(kitted(econ), latch);
+  const second = economyLine(kitted(econ), latch);
+  expect(!!first && first.includes("Mouse"), "first drop call names the broke friend");
+  expect(!/Mouse/.test(second ?? ""), "the drop latch suppresses re-naming the same friend next freeze");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: B2 — chooseRibTarget rotates the rib spotlight across the crew ===");
+{
+  const { chooseRibTarget } = await import("../src/coach/llm.js");
+  const mk = (name: string, note?: string): TeamMember => ({ name, isPrimary: false, tier: "fresh", staleMs: 0, note });
+  const crew: TeamMember[] = [
+    { name: "You", isPrimary: true, tier: "fresh", staleMs: 0 },
+    mk("Mouse", "kept dying early on the entry"),
+    mk("Cadian", "dropped an ace this match"),
+  ];
+  const recent: string[] = [];
+  const picks = Array.from({ length: 6 }, () => chooseRibTarget(crew, recent)?.name);
+  expect(picks.every((p) => p !== undefined), "always picks a fresh named non-primary teammate");
+  expect(picks.every((p, i) => i === 0 || p !== picks[i - 1]), `no back-to-back repeats across breaks (got ${JSON.stringify(picks)})`);
+  expect(picks.filter((p) => p === "Mouse").length === 3, `even rotation, not skewed to one friend (${JSON.stringify(picks)})`);
+
+  // Prefers a teammate we have a note on (an honest hook) over a note-less one.
+  const mixed: TeamMember[] = [
+    { name: "You", isPrimary: true, tier: "fresh", staleMs: 0 },
+    mk("Noted", "teamkilled one of their own"),
+    mk("Blank", undefined),
+  ];
+  expect(chooseRibTarget(mixed, [])?.name === "Noted", "prefers the note-bearing teammate for an honest hook");
+
+  // Solo (no fresh named non-primary) → undefined.
+  const solo: TeamMember[] = [{ name: "You", isPrimary: true, tier: "fresh", staleMs: 0 }];
+  expect(chooseRibTarget(solo, []) === undefined, "no fresh teammate → no rib target");
 }
 
 // ---------------------------------------------------------------------------
@@ -1429,7 +1653,15 @@ console.log("\n=== scenario: llm-prompt — visibility verdict + squad-aware fre
   const halftime = describeMomentForTest({ type: "halftime" }, fullCtx);
   expect(/wired crew/i.test(halftime), "halftime prompt names the wired crew");
   expect(/team\.visibility/i.test(halftime), "halftime prompt defers to team.visibility");
-  expect(/ONE lighter jab/i.test(halftime), "halftime prompt allows the rotated one-jab");
+  // B2: the per-teammate jab now needs the engine-rotated ribTarget — without one
+  // the clause names the crew but adds no named-teammate beat; with one it features them.
+  expect(!/substantive line at/i.test(halftime), "no ribTarget → no named-teammate beat");
+  const halftimeRibbed = describeMomentForTest({ type: "halftime" }, fullCtx, false, {
+    name: "Mouse",
+    note: "kept dying early on the entry",
+  });
+  expect(/substantive line at Mouse/i.test(halftimeRibbed), "the rotated rib clause features the named teammate by name");
+  expect(halftimeRibbed.includes("kept dying early on the entry"), "the rib clause carries the teammate's debrief note");
   const matchEnd = describeMomentForTest({ type: "matchEnd", won: true, ourScore: 13, theirScore: 9 }, fullCtx, true);
   expect(/PRIMARY player's ALONE|no stats for any teammate/i.test(matchEnd), "matchEnd prompt guards the K/D as the primary's alone");
 
