@@ -300,24 +300,28 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
   }
 }
 
-/** The friend-facing install steps. Deliberately uses Steam's own "Browse local
- *  files" to open the right folder — that works no matter which drive/library CS2
- *  lives in, with NO script for the friend to run (the cfg is plain data, never a
- *  program). `host` is shown so they can sanity-check where their game will post. */
-function setupInstructions(host: string): string {
+/** The friend-facing install steps — one self-contained message. Deliberately
+ *  uses Steam's own "Browse local files" to open the right folder (works no matter
+ *  which drive/library CS2 lives in, with NO script for the friend to run), and
+ *  offers two ways in: the attached file, OR — for a friend who'd rather not
+ *  download anything — pasting the cfg text shown inline. `host` is shown so they
+ *  can sanity-check where their game will post; `cfg` is the file contents to
+ *  paste. Stays well under Discord's 2000-char limit at any realistic token size. */
+function setupInstructions(host: string, cfg: string): string {
   return [
-    "**CS2 Coach — get connected (about 2 minutes, nothing to install)**",
+    "**CS2 Coach — connect your game** (2 min, nothing to install)",
     "",
-    "I've attached `gamestate_integration_coach.cfg`. It's a plain text config that tells CS2 to send its game state to the coach — it is **not** a program, it just sits in a folder.",
+    "Open your CS2 config folder: in **Steam**, right-click **Counter-Strike 2 → Manage → Browse local files**, then open `game\\csgo\\cfg`. Get the config in there either way:",
     "",
-    "1. **Save** the attached file.",
-    "2. In **Steam**, right-click **Counter-Strike 2** → **Manage** → **Browse local files**.",
-    "3. In the window that opens, go into **`game`** → **`csgo`** → **`cfg`**.",
-    "4. **Move the file** into that `cfg` folder.",
-    "5. **Fully close and reopen CS2** — the config is only read at launch, so alt-tabbing isn't enough.",
-    "6. Back here, run **`/coach status`** — your name should appear under **Feeds** within ~10 seconds.",
+    "**A** — drop in the **attached file**.",
+    "**B** — or make it yourself: create `gamestate_integration_coach.cfg` there and paste in:",
+    "```",
+    cfg.trimEnd(),
+    "```",
+    "(In Notepad: *Save as type → All Files*, so it's `.cfg` not `.cfg.txt`.)",
     "",
-    `_(Your game will post to \`${host}\`. Same file for everyone in the squad — the coach tells you apart by Steam ID.)_`,
+    "Then **fully restart CS2** and run **`/coach status`** — you'll show up under **Feeds** in ~10s.",
+    `_Points your game at \`${host}\`._`,
   ].join("\n");
 }
 
@@ -338,26 +342,34 @@ async function handleSetup(interaction: ChatInputCommandInteraction, deps: BotDe
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  const buf = Buffer.from(buildCfg({ host: publicHost, port, token }), "utf8");
+  const cfgText = buildCfg({ host: publicHost, port, token });
+  const buf = Buffer.from(cfgText, "utf8");
   const makeFile = () => new AttachmentBuilder(buf, { name: "gamestate_integration_coach.cfg" });
-  const guide = setupInstructions(resolveUri(publicHost, port));
+  const guide = setupInstructions(resolveUri(publicHost, port), cfgText);
 
   try {
     await interaction.user.send({ content: guide, files: [makeFile()] });
     await interaction.editReply(
-      "📬 Check your DMs — I sent your config file and the (2-minute, no-software) setup steps. Drop it in, restart CS2, then run `/coach status` to confirm.",
+      "📬 Sent to your DMs — your config (as a file *or* copy-paste text) and quick steps. Drop it in, restart CS2, then run `/coach status`.",
     );
   } catch (err) {
-    // 50007 = "Cannot send messages to this user" → their DMs are closed. Fall
-    // back to the ephemeral reply (still private to just this person).
-    if (err instanceof DiscordAPIError && err.code === 50007) {
-      await interaction.editReply({
-        content: `Your DMs are closed, so here it is privately (only you can see this) 👇\n\n${guide}`,
-        files: [makeFile()],
-      });
-      return;
-    }
-    throw err;
+    // The DM didn't go through. Usually the user has "Allow direct messages from
+    // server members" off, or blocked the bot (DiscordAPIError 50007) — but
+    // whatever the reason, still hand them the file: fall back to the ephemeral
+    // reply, which only this person can see, right here in the channel. So a
+    // friend can always grab the cfg and install it themselves, DMs or not.
+    const dmsClosed = err instanceof DiscordAPIError && err.code === 50007;
+    const reason = err instanceof Error ? err.message : String(err);
+    log.warn("bot", `/coach setup: DM failed (${dmsClosed ? "DMs closed" : "unexpected"}: ${reason}) — using ephemeral fallback`);
+    await interaction.editReply({
+      content:
+        (dmsClosed
+          ? "I couldn't DM you — your **direct messages from server members** are off (or the bot's blocked)."
+          : "I couldn't DM you for some reason.") +
+        " No worries, here's your config privately (only you can see this) 👇\n\n" +
+        guide,
+      files: [makeFile()],
+    });
   }
 }
 
