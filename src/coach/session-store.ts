@@ -43,6 +43,22 @@ export interface SessionMatchRecord {
   squad?: string[];
 }
 
+/**
+ * Stricter than a bare object check: recentForm() does arithmetic and string
+ * interpolation on ourScore/theirScore/endedAt and states the result as fact
+ * (the honesty surface), so a record missing those would print NaN-flavoured
+ * lies. Reject anything lacking the fields the spoken-form lines lean on.
+ */
+function isValidRecord(r: unknown): r is SessionMatchRecord {
+  return (
+    !!r &&
+    typeof r === "object" &&
+    typeof (r as any).endedAt === "string" &&
+    typeof (r as any).ourScore === "number" &&
+    typeof (r as any).theirScore === "number"
+  );
+}
+
 /** Keep the file small and the trends honest — old matches stop being "form". */
 const MAX_RECORDS = 50;
 /** How many recent matches the spoken-form lines aggregate over. */
@@ -73,7 +89,7 @@ export class SessionStore {
     try {
       if (existsSync(this.file)) {
         const parsed = JSON.parse(readFileSync(this.file, "utf8"));
-        if (Array.isArray(parsed)) this.records = parsed.filter((r) => r && typeof r === "object");
+        if (Array.isArray(parsed)) this.records = parsed.filter(isValidRecord);
       }
     } catch (err) {
       log.warn("sessions", `Could not read ${this.file} — starting fresh (${err instanceof Error ? err.message : err})`);

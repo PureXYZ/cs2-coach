@@ -69,4 +69,15 @@ export class DecisionLog {
       }) + "\n",
     );
   }
+
+  /** Flush and close the stream — called on shutdown so the final decisions hit disk. */
+  async close(): Promise<void> {
+    // Lazily opened, so the stream may never have been created — nothing to flush then.
+    const s = this.stream;
+    this.stream = null;
+    if (!s) return;
+    await new Promise<void>((resolve) => {
+      s.end(() => resolve());
+    });
+  }
 }

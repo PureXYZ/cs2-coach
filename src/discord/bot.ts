@@ -17,6 +17,7 @@ import {
 } from "discord.js";
 import { log } from "../log.js";
 import { buildCfg, resolveUri } from "../gsi/cfg.js";
+import { currentVoice, findVoice, setVoice, voices } from "../tts/voices.js";
 import type { VoiceCoach } from "./voice.js";
 import { clearVoiceChannel, saveVoiceChannel } from "./voice-state.js";
 
@@ -30,6 +31,9 @@ export interface BotDeps {
    *  publicHost disables the command (the container can't self-detect its public
    *  address; emitting a Docker-bridge IP would be confidently wrong). */
   cfg: { publicHost?: string; token: string; port: number };
+  /** The active TTS provider chain (newest config), so `/coach voice` can warn
+   *  when ElevenLabs — the only provider voice switching affects — isn't in it. */
+  ttsProviders: () => string[];
   status: () => {
     gsiAgeMs: number | null;
     ttsProviders: string[];
@@ -102,6 +106,22 @@ function startSong(deps: BotDeps, song: (typeof SONGS)[keyof typeof SONGS]): str
   return switching ? `Fine, switching it up. ${song.reply}` : song.reply;
 }
 
+/** Discord caps a string option at 25 choices. The registry is normally far
+ *  smaller, but a big custom ELEVENLABS_VOICES could exceed it — slice (and warn
+ *  once) so command registration never throws. (Label length is validated at
+ *  startup in config.ts, so a name can't blow Discord's 100-char choice limit.) */
+const MAX_VOICE_CHOICES = 25;
+function buildVoiceChoices(): { name: string; value: string }[] {
+  const all = voices();
+  if (all.length > MAX_VOICE_CHOICES) {
+    log.warn("bot", `ELEVENLABS_VOICES has ${all.length} voices — only the first ${MAX_VOICE_CHOICES} are pickable in Discord`);
+  }
+  return all.slice(0, MAX_VOICE_CHOICES).map((v) => ({ name: v.label, value: v.key }));
+}
+// Computed once: both /coach say and /coach voice reuse the same choice list, so
+// the truncation warning above fires at most once.
+const VOICE_CHOICES = buildVoiceChoices();
+
 const commands = [
   new SlashCommandBuilder()
     .setName("coach")
@@ -115,7 +135,24 @@ const commands = [
       sub
         .setName("say")
         .setDescription("Make the coach say something (test)")
-        .addStringOption((opt) => opt.setName("text").setDescription("What to say").setRequired(true)),
+        .addStringOption((opt) => opt.setName("text").setDescription("What to say").setRequired(true))
+        .addStringOption((opt) =>
+          opt
+            .setName("voice")
+            .setDescription("Voice for this line only (defaults to the current coach voice)")
+            .addChoices(...VOICE_CHOICES),
+        ),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("voice")
+        .setDescription("Switch the coach's voice (persists across restarts)")
+        .addStringOption((opt) =>
+          opt
+            .setName("name")
+            .setDescription("Which voice (leave empty to see the current one and the options)")
+            .addChoices(...VOICE_CHOICES),
+        ),
     )
     .addSubcommand((sub) => sub.setName("status").setDescription("Show GSI / voice / TTS status"))
     .addSubcommand((sub) => sub.setName("quiet").setDescription("Mute/unmute the coach (game tracking continues)"))
@@ -222,6 +259,10 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
 
     case "say": {
       const text = interaction.options.getString("text", true).slice(0, 300);
+      // Choices guarantee a known key, but guard anyway — a stale client could
+      // send an old value after the registry changed.
+      const voiceKey = interaction.options.getString("voice");
+      const voice = voiceKey ? findVoice(voiceKey) : undefined;
       if (!deps.voice.connected) {
         await interaction.reply({
           content: "I'm not in a voice channel — use `/coach join` first.",
@@ -229,8 +270,59 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
         });
         return;
       }
-      deps.voice.say({ text, priority: 5, maxAgeMs: 30_000, category: "manual", eventAt: Date.now() });
-      await interaction.reply({ content: `Saying: "${text}"`, flags: MessageFlags.Ephemeral });
+      deps.voice.say({
+        text,
+        priority: 5,
+        maxAgeMs: 30_000,
+        category: "manual",
+        eventAt: Date.now(),
+        voiceId: voice?.voiceId,
+      });
+      // The override only does anything when the switchable-voice provider is the
+      // one that actually synthesizes — flag it if it isn't even in the chain.
+      const switchable = deps.ttsProviders().includes("elevenlabs");
+      const voiceNote = voice
+        ? ` in **${voice.label}**${switchable ? "" : " (no effect — switchable voices aren't active right now)"}`
+        : "";
+      await interaction.reply({ content: `Saying${voiceNote}: "${text}"`, flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    case "voice": {
+      const key = interaction.options.getString("name");
+      const switchable = deps.ttsProviders().includes("elevenlabs");
+      const offNote = switchable
+        ? ""
+        : "\n⚠️ Switchable voices aren't turned on right now, so this won't change what you hear yet.";
+      if (!key) {
+        const cur = currentVoice();
+        const all = voices();
+        // Cap the rendered list (a big custom registry could blow Discord's
+        // 2000-char message limit), mirroring the feed-list cap in /coach status.
+        const LIST_CAP = 25;
+        const list = all
+          .slice(0, LIST_CAP)
+          .map((v) => `${v.key === cur.key ? "▶️" : "•"} **${v.label}** — \`${v.key}\``)
+          .join("\n");
+        const more = all.length > LIST_CAP ? `\n…and ${all.length - LIST_CAP} more` : "";
+        await interaction.reply({
+          content: `Current coach voice: **${cur.label}**.\n${list}${more}\n\nSwitch with \`/coach voice <name>\`.${offNote}`.slice(0, 1990),
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      const voice = setVoice(key);
+      if (!voice) {
+        await interaction.reply({
+          content: "Never heard of that voice — pick one from the list (`/coach voice`).",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      await interaction.reply({
+        content: `🎙️ Coach voice switched to **${voice.label}** — every new line from here on.${offNote}`,
+        flags: MessageFlags.Ephemeral,
+      });
       return;
     }
 
@@ -308,6 +400,11 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
         squadLine,
         `**Coach:** ${deps.quiet.get() ? "🔇 muted (\`/coach quiet\` to unmute)" : "🎙️ speaking"}`,
         `**TTS:** ${s.ttsProviders.join(" → ")}`,
+        // Show the active voice only when switching is actually set up (more than
+        // one voice configured and the switchable-voice provider is in the chain).
+        ...(s.ttsProviders.includes("elevenlabs") && voices().length > 1
+          ? [`**Coach voice:** ${currentVoice().label}`]
+          : []),
         `**LLM:** ${s.llmModel ?? "disabled (rule-based lines only)"}`,
         `**Memory:** ${s.sessionsOnFile} past match${s.sessionsOnFile === 1 ? "" : "es"} on file`,
       ];
@@ -331,9 +428,12 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
  *  offers two ways in: the attached file, OR — for a friend who'd rather not
  *  download anything — pasting the cfg text shown inline. `host` is shown so they
  *  can sanity-check where their game will post; `cfg` is the file contents to
- *  paste. Stays well under Discord's 2000-char limit at any realistic token size. */
+ *  paste. Stays under Discord's 2000-char limit: at a realistic token size the
+ *  inline-cfg form is used, but if an unusually long token would push the message
+ *  past the cap we drop the inline paste block (option B) and lean on the attached
+ *  file (option A) instead — the file is sent regardless, so it always works. */
 function setupInstructions(host: string, cfg: string): string {
-  return [
+  const guide = [
     "**CS2 Coach — connect your game** (2 min, nothing to install)",
     "",
     "Open your CS2 config folder: in **Steam**, right-click **Counter-Strike 2 → Manage → Browse local files**, then open `game\\csgo\\cfg`. Get the config in there either way:",
@@ -348,6 +448,23 @@ function setupInstructions(host: string, cfg: string): string {
     "Then **fully restart CS2** and run **`/coach status`** — you'll show up under **Feeds** in ~10s.",
     `_Points your game at \`${host}\`._`,
   ].join("\n");
+
+  // Length guard: an unusually long GSI token inflates the inline cfg block enough
+  // to blow past Discord's 2000-char cap. Rather than let the whole message fail,
+  // fall back to a shorter form that drops the inline paste path (option B) and
+  // points at the always-sent attached file (option A) instead. Stays under 1900.
+  if (guide.length > 1900) {
+    return [
+      "**CS2 Coach — connect your game** (2 min, nothing to install)",
+      "",
+      "Open your CS2 config folder: in **Steam**, right-click **Counter-Strike 2 → Manage → Browse local files**, then open `game\\csgo\\cfg`, and **drop in the attached file** (`gamestate_integration_coach.cfg`).",
+      "",
+      "Then **fully restart CS2** and run **`/coach status`** — you'll show up under **Feeds** in ~10s.",
+      `_Points your game at \`${host}\`._`,
+    ].join("\n");
+  }
+
+  return guide;
 }
 
 /** /coach setup — hands the friend their GSI cfg as a file (data, not an

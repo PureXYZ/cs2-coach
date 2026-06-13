@@ -77,6 +77,33 @@ ${ECONOMY_CHEATSHEET}
 
 ${DECISION_PRINCIPLES}`;
 
+/**
+ * Sign-aware numeric tokens for the Leetify recap verifier. spokenStatsSentence
+ * renders a negative as the WORD "minus" (e.g. "Leetify rating minus 0.3"), so a
+ * bare-numeral compare would pass a flipped sign. Emit "-N" when a number is
+ * preceded by "minus", else "N". The whitespace between the sign word and the
+ * digits is OPTIONAL (\s*): a model that writes "minus0.3" must NOT slip the sign
+ * past the check by dropping the space (that would let a negative read as positive).
+ * Exported for the sim's regression test.
+ */
+export function signedNumbers(s: string): string[] {
+  return Array.from(s.matchAll(/(?:(minus|plus)\s*)?(\d+(?:\.\d+)?)/gi)).map((m) =>
+    m[1]?.toLowerCase() === "minus" ? `-${m[2]}` : m[2],
+  );
+}
+
+/**
+ * Sanitize a Steam persona before interpolating it into a PROSE prompt section.
+ * Names come from the wired crew's feeds (semi-trusted) and also reach TTS; strip
+ * control chars / newlines and cap the length so a crafted name can't inject prompt
+ * instructions or blow the line budget. (The JSON-snapshot path is already escaped
+ * by JSON.stringify, which can't be broken out of, so this guards only the prose.)
+ */
+function safeName(name: string | undefined): string {
+  if (!name) return "";
+  return name.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 32);
+}
+
 export class LlmCoach {
   private client: Anthropic;
   private model: string;
@@ -121,9 +148,10 @@ export class LlmCoach {
     const timeout = opts?.timeoutMs ?? (tier === "fast" ? this.fastTimeoutMs : this.timeoutMs);
     const longForm = opts?.longForm ?? false;
 
-    // Static core + the active map's notes. The cache marker is currently inert
-    // (the prompt sits under the 4096-token minimum cacheable prefix for these
-    // models) — it's kept so caching engages for free if the knowledge pack grows.
+    // Static core + the active map's notes, marked cacheable. The combined system
+    // prompt is well above the ~1024-token minimum cacheable prefix for these models,
+    // so this should engage prompt caching (a large cost saving on the static prefix
+    // across a session) — confirm via response.usage.cache_read_input_tokens if unsure.
     const system: Anthropic.TextBlockParam[] = [
       {
         type: "text",
@@ -265,14 +293,8 @@ export class LlmCoach {
       // the credit must be present, and every number spoken must be one of the
       // provided values (omitting is fine, rounding/inventing is not). The
       // canned wrapper one fallback away satisfies both by construction.
-      // Tokenize SIGN-AWARE: spokenStatsSentence renders a negative as the WORD
-      // "minus" (e.g. "Leetify rating minus 0.3"), so a bare-numeral compare would
-      // pass a flipped sign ("plus 0.3" → token "0.3" ∈ {"0.3"}). Emit "-N" when a
-      // number is immediately preceded by "minus", else "N", on BOTH sides.
-      const signedNumbers = (s: string): string[] =>
-        Array.from(s.matchAll(/(?:(minus|plus)\s+)?(\d+(?:\.\d+)?)/gi)).map(
-          (m) => (m[1]?.toLowerCase() === "minus" ? `-${m[2]}` : m[2]),
-        );
+      // Tokenize SIGN-AWARE (signedNumbers, module-level + tested): a negative renders
+      // as the WORD "minus", so a bare-numeral compare would pass a flipped sign.
       const allowed = new Set([
         ...signedNumbers(input.statsSentence),
         ...signedNumbers(input.squadSentence ?? ""),
@@ -460,30 +482,36 @@ export function chooseRibTarget(
   return { name: choice.name as string, note: choice.note };
 }
 
-/** The per-friend debrief note is for the rib-target TEXT channel only (rotation-gated).
- *  Strip it from the JSON snapshot so the model never sees every friend's bad-pattern
- *  tag out-of-band at non-break moments. */
+/** Strip the name-bearing TEAM fields that belong ONLY to gated prose from the JSON
+ *  snapshot: each member's debrief `note` (rotation-gated rib hook) AND `buySyncNote`
+ *  (which can name a specific teammate, "Andy's money's out of sync..."). Both reach the
+ *  model only through describeMoment's freezetime/halftime/break clauses — leaving them in
+ *  the snapshot would expose a named accusation at EVERY moment (kill, death, retake),
+ *  bypassing the rotation/anti-nag gating. describeMoment reads the ORIGINAL ctx, so the
+ *  gated paths are unaffected. */
 function stripMemberNotes(ctx: MatchContext): MatchContext {
-  if (!ctx.team?.members?.length) return ctx;
+  if (!ctx.team) return ctx;
+  const { buySyncNote: _bsn, ...teamRest } = ctx.team;
   return {
     ...ctx,
-    team: { ...ctx.team, members: ctx.team.members.map(({ note: _note, ...m }) => m) },
+    team: { ...teamRest, members: (ctx.team.members ?? []).map(({ note: _note, ...m }) => m) },
   };
 }
 
 function squadBreakClause(ctx: MatchContext, ribTarget?: { name: string; note?: string }): string {
   const members = ctx.team?.members ?? [];
   if (!ctx.team || members.length <= 1) return "";
-  const names = members.map((m) => m.name).filter(Boolean);
+  const names = members.map((m) => safeName(m.name)).filter(Boolean);
   const named = names.length ? ` The wired crew right now is ${names.join(", ")}.` : "";
   // B2: feature ONE specific teammate by name (the engine rotates who across breaks,
   // so it isn't always the same friend). With a debrief note, invite a substantive
   // jab off it; without one, only an econ-grounded jab (no unseen-play invention).
+  const ribName = safeName(ribTarget?.name);
   const rib = !ribTarget
     ? ""
     : ribTarget.note
-      ? ` Anchor the main note on the player. But hit ${ribTarget.name} just as hard — ${ribTarget.note} — their OWN play only, hedged unless team.rosterComplete, and make it sting. Don't go soft on the rest either: spread a few named jabs across whoever earned them, nobody's safe — just don't read out the whole roster, and never make up a play you didn't see.`
-      : ` Anchor the main note on the player. But don't let ${ribTarget.name} off clean — rib them too, ONLY off what you can see (their team.econ money/buy), never some unseen play you're guessing at. Clown anyone across the crew whose buy is a joke when the money backs it; just keep the player front and center and don't narrate every teammate's wallet.`;
+      ? ` Anchor the main note on the player. But hit ${ribName} just as hard — ${ribTarget.note} — their OWN play only, hedged unless team.rosterComplete, and make it sting. Don't go soft on the rest either: spread a few named jabs across whoever earned them, nobody's safe — just don't read out the whole roster, and never make up a play you didn't see.`
+      : ` Anchor the main note on the player. But don't let ${ribName} off clean — rib them too, ONLY off what you can see (their team.econ money/buy), never some unseen play you're guessing at. Clown anyone across the crew whose buy is a joke when the money backs it; just keep the player front and center and don't narrate every teammate's wallet.`;
   return `${named} The player is your main focus and gets the main note. Follow team.visibility: speak whole-team facts only if rosterComplete, otherwise stay to the players you can see, by name.${rib}`;
 }
 
@@ -495,7 +523,7 @@ function squadBreakClause(ctx: MatchContext, ribTarget?: { name: string; note?: 
  *  extra named beat that must not bury the round's own result. */
 function roundEndRibClause(ribTarget?: { name: string; note?: string }): string {
   if (!ribTarget?.note) return "";
-  return ` After you've called the result, fire ONE quick shot at ${ribTarget.name} off their own game — ${ribTarget.note} — gameplay only, hedged unless team.rosterComplete, never an invented play or position, and never let it bury the round.`;
+  return ` After you've called the result, fire ONE quick shot at ${safeName(ribTarget.name)} off their own game — ${ribTarget.note} — gameplay only, hedged unless team.rosterComplete, never an invented play or position, and never let it bury the round.`;
 }
 
 function describeMoment(
@@ -573,7 +601,7 @@ function describeMoment(
       // Full stack wired — invite ONE coordinated execute with named jobs off the
       // playbook above (a SUGGESTED setup; positions are never asserted).
       const squadExecute = ctx.team?.rosterComplete && ctx.team.members.length > 1
-        ? ` Full stack wired (${ctx.team.members.map((m) => m.name).filter(Boolean).join(", ")}): you MAY invite ONE coordinated execute, handing named jobs (entry, flash support, trade, lurk, planter) to the crew off the playbook above. Keep it a SUGGESTED setup — you can't see where anyone actually is — and don't repeat a recent plan.`
+        ? ` Full stack wired (${ctx.team.members.map((m) => safeName(m.name)).filter(Boolean).join(", ")}): you MAY invite ONE coordinated execute, handing named jobs (entry, flash support, trade, lurk, planter) to the crew off the playbook above. Keep it a SUGGESTED setup — you can't see where anyone actually is — and don't repeat a recent plan.`
         : "";
       // Cross-round buy-sync read for a coordinating squad, when buildTeam flagged one.
       const buySync = ctx.team?.buySyncNote ? ` ${ctx.team.buySyncNote} If it fits, call it out and tell them to sync the next buy.` : "";
@@ -595,7 +623,7 @@ function describeMoment(
           ? ` Their loss-bonus level is ${ctx.theirLossStreak} (0 = they bought full, 1-2 = eco or cheap force, 3+ = they were broke this round) — factor their likely gear into whether the retake's worth it.`
           : "";
         if (!ctx.playerIsSelf) {
-          return `The ENEMY (T side) just planted the bomb — your team is CT, about 40 seconds on the clock. The player is DEAD, spectating teammate "${ctx.spectating?.name ?? "unknown"}" — that teammate is a CT trying to RETAKE; they did NOT plant, and any plant credit belongs to the enemy. Call the retake-or-save for the TEAM from score, economy and history only (no own-gear talk); narrating the spectated teammate by name is welcome.${mustWin}${enemyEcon} Short and dry-urgent.`;
+          return `The ENEMY (T side) just planted the bomb — your team is CT, about 40 seconds on the clock. The player is DEAD, spectating teammate "${safeName(ctx.spectating?.name) || "unknown"}" — that teammate is a CT trying to RETAKE; they did NOT plant, and any plant credit belongs to the enemy. Call the retake-or-save for the TEAM from score, economy and history only (no own-gear talk); narrating the spectated teammate by name is welcome.${mustWin}${enemyEcon} Short and dry-urgent.`;
         }
         const fighting =
           ctx.lastKillSecondsAgo !== undefined && ctx.lastKillSecondsAgo <= 10

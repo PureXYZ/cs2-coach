@@ -30,6 +30,8 @@ function intEnv(name: string, fallback: number, min?: number, max?: number): num
 function floatEnv(name: string, fallback: number, min?: number, max?: number): number {
   const raw = process.env[name];
   if (!raw) return fallback;
+  // Reject trailing garbage ("1.2abc") — parseFloat is lenient and would silently truncate.
+  if (!/^-?\d+(?:\.\d+)?$/.test(raw.trim())) throw new Error(`${name} must be a number, got "${raw}"`);
   const n = Number.parseFloat(raw);
   if (Number.isNaN(n)) throw new Error(`${name} must be a number, got "${raw}"`);
   // Fail at startup, not as a silent per-request 422 that demotes the provider.
@@ -40,6 +42,68 @@ function floatEnv(name: string, fallback: number, min?: number, max?: number): n
 }
 
 export type TtsProviderName = "deepgram" | "elevenlabs" | "edge";
+
+/** A selectable ElevenLabs coach voice (the choices behind `/coach voice`). */
+export interface CoachVoice {
+  /** Stable slug — the Discord choice value and the key persisted on switch. */
+  key: string;
+  /** Human label shown in Discord (e.g. "Coach"). */
+  label: string;
+  /** The ElevenLabs voice id this speaks with. */
+  voiceId: string;
+}
+
+/** label → stable slug for the Discord choice value / persisted selection. */
+function voiceKey(label: string): string {
+  return label
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/**
+ * Parse ELEVENLABS_VOICES — a comma-separated list of `Label:voiceId` pairs, the
+ * first of which is the default switchable voice. When it's unset there's a
+ * single unnamed voice using `fallbackVoiceId` (ELEVENLABS_VOICE_ID), so the app
+ * works with no voice list configured. Throws on a malformed list rather than
+ * silently shipping a broken voice id. (Voice ids/names are deployment config —
+ * they live in the env, never hard-coded here.)
+ */
+function parseVoices(raw: string, fallbackVoiceId: string): CoachVoice[] {
+  if (!raw.trim()) return [{ key: "default", label: "Default", voiceId: fallbackVoiceId }];
+  const voices: CoachVoice[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw.split(",").map((s) => s.trim()).filter(Boolean)) {
+    // Split on the LAST colon: a voiceId never contains one, but a label might.
+    const sep = entry.lastIndexOf(":");
+    const label = sep > 0 ? entry.slice(0, sep).trim() : "";
+    const voiceId = sep > 0 ? entry.slice(sep + 1).trim() : "";
+    if (!label || !voiceId) {
+      throw new Error(`ELEVENLABS_VOICES entry "${entry}" must be "Label:voiceId"`);
+    }
+    // Discord caps a slash-command choice name at 100 chars — fail loudly here
+    // rather than letting addChoices() throw opaquely and break registration of
+    // every command.
+    if (label.length > 100) {
+      throw new Error(`ELEVENLABS_VOICES label "${label}" exceeds Discord's 100-character limit`);
+    }
+    // ElevenLabs voice ids are alphanumeric. Reject a typo at startup instead of
+    // shipping it into the request URL and getting a per-line 4xx that silently
+    // demotes the provider mid-match (same reasoning as intEnv/floatEnv above).
+    if (!/^[A-Za-z0-9]+$/.test(voiceId)) {
+      throw new Error(`ELEVENLABS_VOICES entry "${entry}" has an invalid voiceId "${voiceId}"`);
+    }
+    // Disambiguate colliding/empty slugs so every choice value stays unique.
+    const base = voiceKey(label) || `voice-${voices.length + 1}`;
+    let key = base;
+    for (let n = 2; seen.has(key); n++) key = `${base}-${n}`;
+    seen.add(key);
+    voices.push({ key, label, voiceId });
+  }
+  if (voices.length === 0) throw new Error("ELEVENLABS_VOICES is set but contains no valid voices");
+  return voices;
+}
 
 // A valid SteamID64 is the literal 7656 prefix + 13 digits (17 digits total).
 // Shared so config validation and the multi-feed roster agree on what binds.
@@ -57,11 +121,38 @@ function steamId64Env(name: string): string | undefined {
   return raw;
 }
 
+// COACH_LLM_EFFORT is passed straight to the Anthropic API; a typo'd value would
+// otherwise reach the provider and fail per-request. Validate it loudly at startup
+// instead. Empty string is allowed (it means "omit the effort field").
+function effortEnv(name: string, fallback: string): string {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  if (raw === "") return "";
+  const valid = ["low", "medium", "high", "max"];
+  if (!valid.includes(raw)) {
+    throw new Error(`${name} must be one of ${valid.join(", ")} (or empty to omit), got "${raw}"`);
+  }
+  return raw;
+}
+
+// GSI_TOKEN is interpolated verbatim into the generated KeyValues cfg; a quote,
+// space or newline would break that file's syntax. Restrict it to cfg-safe chars
+// and fail at startup rather than emit a malformed cfg.
+function tokenEnv(name: string): string {
+  const raw = process.env[name] ?? "";
+  if (raw !== "" && !/^[A-Za-z0-9._-]+$/.test(raw)) {
+    throw new Error(
+      `${name} must contain only letters, digits, dot, dash or underscore (no quotes/spaces/newlines), got an invalid value`,
+    );
+  }
+  return raw;
+}
+
 export const config = {
   gsi: {
     port: intEnv("GSI_PORT", 3000, 1, 65535),
     // Echoed by CS2 in every payload (from the cfg's auth block). Empty = accept all.
-    token: optional("GSI_TOKEN"),
+    token: tokenEnv("GSI_TOKEN"),
     // Append every payload (+ derived events) to logs/gsi-*.ndjson for offline analysis.
     logPayloads: optional("GSI_LOG_PAYLOADS", "true") !== "false",
     // Multi-feed: a teammate's feed counts as "connected/fresh" (toward alive
@@ -116,7 +207,12 @@ export const config = {
     },
     elevenlabs: {
       apiKey: optional("ELEVENLABS_API_KEY") || undefined,
-      voiceId: optional("ELEVENLABS_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb"),
+      // The switchable coach voices (first = default). From ELEVENLABS_VOICES (a
+      // named list) when set; otherwise a single voice using ELEVENLABS_VOICE_ID.
+      voices: parseVoices(
+        optional("ELEVENLABS_VOICES"),
+        optional("ELEVENLABS_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb"),
+      ),
       modelId: optional("ELEVENLABS_MODEL_ID", "eleven_flash_v2_5"),
       // 0–1 scale (the dashboard shows these as percentages).
       stability: floatEnv("ELEVENLABS_STABILITY", 0.3, 0, 1),
@@ -145,7 +241,7 @@ export const config = {
     // Reasoning effort for the smart tier (low | medium | high | max). Opus 4.8
     // defaults to "high"; "low" is ~20% faster for these one-liner replies.
     // Only sent on smart-tier calls (Haiku errors on it); empty string = omit.
-    effort: optional("COACH_LLM_EFFORT", "low"),
+    effort: effortEnv("COACH_LLM_EFFORT", "low"),
     maxTokens: intEnv("COACH_LLM_MAX_TOKENS", 150),
     // Freezetime is ~15s; if Claude hasn't answered by then the line is useless.
     timeoutMs: intEnv("COACH_LLM_TIMEOUT_MS", 9000),
@@ -178,7 +274,7 @@ export const config = {
     // coach speak with whole-team certainty ("you're the last one alive",
     // "everyone's broke"). Leave it unset and the coach always hedges to "the
     // players I can see" — safe even when someone forgets to launch the cfg.
-    squadSize: intEnv("COACH_SQUAD_SIZE", 0) || undefined,
+    squadSize: intEnv("COACH_SQUAD_SIZE", 0, 0, 5) || undefined,
     // Team-economy tactics: buy-sync calls and named drop suggestions at
     // freezetime, plus last-man framing. On by default; set false to keep the
     // coach focused on the primary player and skip the team-econ calls.

@@ -27,7 +27,8 @@ const { GsiTracker } = await import("../src/gsi/tracker.js");
 const { RosterManager } = await import("../src/gsi/roster.js");
 const { CoachEngine } = await import("../src/coach/engine.js");
 const { config } = await import("../src/config.js");
-const { retakeDecisionLine, economyLine, lateRoundLine, lateRoundCarrierNamed, ourTimeoutSpeechLine } = await import("../src/coach/lines.js");
+const { retakeDecisionLine, economyLine, lateRoundLine, lateRoundCarrierNamed, ourTimeoutSpeechLine, pick } = await import("../src/coach/lines.js");
+const { signedNumbers } = await import("../src/coach/llm.js");
 import os from "node:os";
 import path from "node:path";
 import type { CoachEvent, MatchContext } from "../src/gsi/tracker.js";
@@ -1702,6 +1703,36 @@ console.log("\n=== scenario: ops — quarantine surfacing + configured squad siz
   expect(!quarantined.some((q) => q.name === "Mouse"), "the confirmed teammate is NOT quarantined");
   expect(r.squadSize() === 3, "squad size reads the configured COACH_SQUAD_SIZE");
   expect(r.context().team?.rosterComplete === false, "2 confirmed of a 3-stack → not roster-complete");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: Leetify recap number-verifier is sign-aware (no minus-bypass) ===");
+{
+  // The verifier builds an allowed-set of sign-aware tokens from the provided sentence,
+  // then rejects any spoken number not in it. A negative renders as the WORD "minus".
+  expect(JSON.stringify(signedNumbers("Leetify rating minus 0.3")) === JSON.stringify(["-0.3"]), "'minus 0.3' tokenizes to -0.3");
+  expect(JSON.stringify(signedNumbers("minus0.3")) === JSON.stringify(["-0.3"]), "'minus0.3' (no space) STILL tokenizes to -0.3 — the sign can't be dropped to slip past the check");
+  expect(JSON.stringify(signedNumbers("ADR 70, 18 kills")) === JSON.stringify(["70", "18"]), "unsigned numbers pass through verbatim");
+  // The bypass the fix closes: a NEGATIVE provided value spoken as positive must NOT validate.
+  const allowed = new Set([...signedNumbers("Leetify rating minus 0.3"), ...signedNumbers("ADR 70")]);
+  expect(!allowed.has("0.3"), "a positive '0.3' is NOT in the allowed set built from 'minus 0.3' (sign-flip rejected)");
+  expect(allowed.has("-0.3") && allowed.has("70"), "the correctly-signed values ARE allowed");
+}
+
+console.log("\n=== scenario: shuffle-bag pick() is fair and correct for interpolated pools ===");
+{
+  const pool = ["a", "b", "c", "d"];
+  const cycle1 = [pick("simbag", pool), pick("simbag", pool), pick("simbag", pool), pick("simbag", pool)];
+  expect(new Set(cycle1).size === 4, "every line in the pool plays once before any repeats");
+  const cycle2first = pick("simbag", pool);
+  expect(cycle2first !== cycle1[3], "a fresh cycle never opens with the line that just ended the previous one");
+  // Dynamic pools store INDICES; each call rebuilds the same templates in the same order
+  // with fresh interpolation, so index->template is stable and the value is always the
+  // CURRENT call's (this is why the "dynamic-pool desync" review finding was a false positive).
+  const mk = (s: number) => [`won ${s}`, `lost ${s}`, `tie ${s}`];
+  const d1 = pick("simdyn", mk(1));
+  const d2 = pick("simdyn", mk(2));
+  expect(d1.endsWith(" 1") && d2.endsWith(" 2"), "an interpolated pool always speaks the current call's value, never a stale one");
 }
 
 // ---------------------------------------------------------------------------

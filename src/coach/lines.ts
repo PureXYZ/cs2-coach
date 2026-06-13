@@ -30,6 +30,7 @@ const bags = new Map<string, BagState>();
  * the previous one. Keyed by pool name (not contents, since many pools
  * interpolate scores), state lives for the process so it spans rounds and matches.
  * Exported for the LLM coach's rotating strategy angles — same fairness rules.
+ * Returns "" for an empty pool (callers guard against falsy text).
  */
 export function pick(poolName: string, pool: string[]): string {
   if (pool.length === 0) return "";
@@ -818,6 +819,9 @@ export function bombTenLine(side: string | undefined, fighting = false): string 
   return pick("bombTenNeutral", [
     "Ten on the bomb. This ends loud or it ends quiet.",
     "Final seconds. Whatever you're doing, do it faster.",
+    "Ten seconds, no more waffling. Finish the damn round.",
+    "Clock's basically empty. Make a decision and end it.",
+    "Ten left. Whatever the play is, commit and close it out.",
   ]);
 }
 
@@ -969,7 +973,7 @@ export function retakeDecisionLine(ctx: MatchContext): string {
     }
     if (alive === 2) {
       return pick("retakeNumbers2", [
-        "Two of us up. Hit it together, same chok, trade everything. If they swing first, back off and save.",
+        "Two of us up. Hit it together, same choke, trade everything. If they swing first, back off and save.",
         "Just the two of us. No solo entries — one flashes, one swings, refrag clean. Bail if it's not there.",
         "Two-man retake. Pair up tight, take the same fight. Dunno their numbers, so don't overcommit.",
       ]);

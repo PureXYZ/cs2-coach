@@ -101,3 +101,13 @@ export function pruneOldLogs(dir = "logs", retentionDays: number): void {
     log.info("log", `Pruned ${removed} log file${removed === 1 ? "" : "s"} older than ${retentionDays}d from ${dir}`);
   }
 }
+
+/** Flush and close the on-disk log sink — called on shutdown so the final lines are written. */
+export async function closeLog(): Promise<void> {
+  const s = sink;
+  sink = null;
+  if (!s) return;
+  await new Promise<void>((resolve) => {
+    s.end(() => resolve());
+  });
+}

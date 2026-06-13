@@ -39,6 +39,9 @@ export function idleGuarded(src: Readable, ms: number): Readable {
       cb(null, chunk);
     },
   });
+  // Guarantee the guard always has an error listener so a destroy(err) before the
+  // consumer attaches its own handler can never become an uncaught exception.
+  guard.on("error", () => {});
   timer = setTimeout(() => guard.destroy(new Error(`TTS stream idle for ${ms}ms`)), ms);
   // Source done sending: the line arrived in full, no stall is possible anymore —
   // disarm so a slow reader (prefetch hold) can never trip the watchdog.

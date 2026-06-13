@@ -21,6 +21,9 @@ interface QueuedLine extends SpeakRequest {
   /** Set when a later line superseded this one mid-synthesis — the queue filter
    *  can't reach a line that's already in the TTS provider's hands. */
   superseded?: boolean;
+  /** Guards the onPlayed/onDropped callbacks to fire EXACTLY ONCE, however many
+   *  drop paths a line passes through. */
+  finalized?: boolean;
 }
 
 /** Hard ceiling on one TTS synthesis, so a hung provider can never stall the queue. */
@@ -92,7 +95,7 @@ export class VoiceCoach {
     // coach line so none of it fires when the song ends (same clearing as
     // clearCoachLines, but WITHOUT player.stop(): the play() call below replaces
     // the current audio itself, and the song must keep playing).
-    this.queue = [];
+    this.clearQueue();
     this.discardPrefetch();
     if (this.inFlight) this.inFlight.superseded = true;
     this.player.play(createAudioResource(stream, { inputType: StreamType.OggOpus }));
@@ -104,7 +107,7 @@ export class VoiceCoach {
    * (silencing that is /coach stop's job).
    */
   clearCoachLines(): void {
-    this.queue = [];
+    this.clearQueue();
     this.discardPrefetch();
     // A line mid-synthesis already left the queue — flag it so the post-synth
     // checkpoint discards the audio instead of speaking it.
@@ -151,7 +154,7 @@ export class VoiceCoach {
           this.connection = null;
           // Full teardown, same as leave(): a held prefetch stream and queued
           // lines would otherwise linger until the next /coach join.
-          this.queue = [];
+          this.clearQueue();
           this.discardPrefetch();
           this.player.stop(true);
           // Reset synthesis flags too — a line mid-synthesis would otherwise leave
@@ -181,7 +184,7 @@ export class VoiceCoach {
       this.safeDestroy(this.connection);
       this.connection = null;
     }
-    this.queue = [];
+    this.clearQueue();
     this.discardPrefetch();
     this.songPlaying = false;
     this.player.stop(true);
@@ -194,7 +197,12 @@ export class VoiceCoach {
 
   /** Queue a line. Drops it silently if the bot isn't in a voice channel. */
   say(req: SpeakRequest): void {
-    if (!this.connection) return;
+    if (!this.connection) {
+      // Never queued → still let the producer release any cooldown/reservation it
+      // provisionally took, so a not-connected drop doesn't starve the next moment.
+      req.onDropped?.();
+      return;
+    }
     // A superseding line makes queued lines in the listed categories old news
     // (the quad line replaces a still-waiting triple line, never follows it).
     if (req.supersedes?.length) {
@@ -202,6 +210,7 @@ export class VoiceCoach {
       this.queue = this.queue.filter((line) => {
         if (!obsolete.has(line.category)) return true;
         log.info("voice", `Superseded queued [${line.category}]: "${preview(line)}"`);
+        this.finalize(line, false);
         return false;
       });
       if (this.prefetched && obsolete.has(this.prefetched.line.category)) {
@@ -220,13 +229,38 @@ export class VoiceCoach {
     // Highest priority first; FIFO within the same priority.
     this.queue.sort((a, b) => b.priority - a.priority || a.enqueuedAt - b.enqueuedAt);
     if (this.queue.length > 4) {
-      const dropped = this.queue.pop();
-      if (dropped) log.info("voice", `Queue full — dropped: "${preview(dropped)}"`);
+      // Prefer to evict a line that's ALREADY dead (past its freshness window or
+      // overtaken) over a fresh-but-lower-priority one — otherwise a burst could drop a
+      // still-actionable call while keeping a soon-to-be-stale hype line. Only if none
+      // is dead does the lowest-priority tail (last after the sort) go.
+      const dropAt = Date.now();
+      let idx = this.queue.findIndex((line) => this.lineDead(line, dropAt) !== null);
+      if (idx === -1) idx = this.queue.length - 1;
+      const [dropped] = this.queue.splice(idx, 1);
+      if (dropped) {
+        log.info("voice", `Queue full — dropped: "${preview(dropped)}"`);
+        this.finalize(dropped, false);
+      }
     }
     // Deferred so a same-tick batch of lines is fully queued before the first one
     // grabs the idle player — order is then decided by the priority sort above,
     // not by tracker emission order (e.g. the MVP callout beats the round score).
     queueMicrotask(() => this.pump());
+  }
+
+  /** Fire a line's play/drop callback exactly once. The engine uses these to commit
+   *  the durable cooldown / anti-repeat memory at play time and to release a reserved
+   *  cooldown when a line is dropped — so they must each fire at most once, and a line
+   *  is either played OR dropped, never both. */
+  private finalize(line: QueuedLine, played: boolean): void {
+    if (line.finalized) return;
+    line.finalized = true;
+    try {
+      if (played) line.onPlayed?.();
+      else line.onDropped?.();
+    } catch (err) {
+      log.error("voice", `Line ${played ? "onPlayed" : "onDropped"} callback threw`, err);
+    }
   }
 
   /** Why a line must not be spoken anymore, or null while it's still good. */
@@ -241,9 +275,16 @@ export class VoiceCoach {
 
   private discardPrefetch(): void {
     if (!this.prefetched) return;
+    this.finalize(this.prefetched.line, false); // never aired → release its reservation
     this.prefetched.result.stream.on("error", () => {});
     this.prefetched.result.stream.destroy();
     this.prefetched = null;
+  }
+
+  /** Drop every queued line as un-aired (firing each onDropped) and empty the queue. */
+  private clearQueue(): void {
+    for (const line of this.queue) this.finalize(line, false);
+    this.queue = [];
   }
 
   private pump(): void {
@@ -253,7 +294,10 @@ export class VoiceCoach {
     const now = Date.now();
     this.queue = this.queue.filter((line) => {
       const reason = this.lineDead(line, now);
-      if (reason) log.info("voice", `Dropped ${reason} line: "${preview(line)}"`);
+      if (reason) {
+        log.info("voice", `Dropped ${reason} line: "${preview(line)}"`);
+        this.finalize(line, false);
+      }
       return !reason;
     });
     if (this.prefetched) {
@@ -294,7 +338,7 @@ export class VoiceCoach {
     const session = this.session;
     this.synthesizing = true;
     this.inFlight = next;
-    this.synthWithDeadline(next.text)
+    this.synthWithDeadline(next.text, next.voiceId)
       .then((result) => {
         this.synthesizing = false;
         this.inFlight = null;
@@ -310,9 +354,14 @@ export class VoiceCoach {
             log.info("voice", `Dropped errored prefetched line: "${preview(next)}"`);
             this.discardPrefetch();
           }
+          // Advance the queue no matter which slot this stream was in: if it erred while
+          // PLAYING and Discord.js doesn't surface a player-level 'error', pump() would
+          // otherwise never re-run and the queue would stall. pump() guards on synthesizing.
+          this.pump();
         });
         if (session !== this.session || !this.connection) {
-          result.stream.destroy(); // session ended/changed while synthesizing — discard, don't replay
+          this.finalize(next, false); // session ended/changed → never aired
+          result.stream.destroy(); // discard, don't replay
           // Re-arm regardless: a fresh session's lines may already be queued
           // behind this dead synth, and no other pump is scheduled for them.
           this.pump();
@@ -323,6 +372,7 @@ export class VoiceCoach {
         const reason = this.lineDead(next, Date.now());
         if (reason) {
           log.info("voice", `Dropped ${reason} line after synth: "${preview(next)}"`);
+          this.finalize(next, false);
           result.stream.destroy();
           this.pump();
           return;
@@ -338,6 +388,7 @@ export class VoiceCoach {
       .catch((err) => {
         this.synthesizing = false;
         this.inFlight = null;
+        this.finalize(next, false); // every provider failed / deadline hit → never aired
         log.error("voice", `TTS failed for line "${preview(next)}"`, err);
         this.pump();
       });
@@ -345,13 +396,14 @@ export class VoiceCoach {
 
   private playLine(line: QueuedLine, result: TtsResult): void {
     log.info("voice", `Speaking [${line.category}] ${Date.now() - line.eventAt}ms after event: ${preview(line, 1_000)}`);
+    this.finalize(line, true); // it is airing now → commit the engine's durable cooldown / anti-repeat
     this.player.play(createAudioResource(result.stream, { inputType: result.inputType }));
     // Start synthesizing the next queued line while this one talks.
     queueMicrotask(() => this.pump());
   }
 
   /** TTS with a hard deadline; a result arriving after the deadline is disposed of. */
-  private synthWithDeadline(text: string): Promise<TtsResult> {
+  private synthWithDeadline(text: string, voiceId?: string): Promise<TtsResult> {
     return new Promise<TtsResult>((resolve, reject) => {
       let timedOut = false;
       const timer = setTimeout(() => {
@@ -359,7 +411,7 @@ export class VoiceCoach {
         reject(new Error(`TTS deadline exceeded (${SYNTH_DEADLINE_MS}ms)`));
       }, SYNTH_DEADLINE_MS);
 
-      this.tts.synth(text).then(
+      this.tts.synth(text, voiceId ? { voiceId } : undefined).then(
         (result) => {
           clearTimeout(timer);
           if (timedOut) {

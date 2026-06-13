@@ -33,6 +33,26 @@ export interface SpeakRequest {
    * from third-party API data the project must not persist (Leetify).
    */
   redactText?: boolean;
+  /**
+   * Called by the voice queue EXACTLY ONCE when this line actually begins playing
+   * aloud. The engine uses it to commit the durable cooldown / anti-repeat memory at
+   * PLAY time rather than enqueue time, so a line that never airs doesn't pollute them.
+   */
+  onPlayed?: () => void;
+  /**
+   * Called by the voice queue EXACTLY ONCE if this line is dropped before it ever plays
+   * (stale, superseded, queue overflow, session change, synth/stream failure). The
+   * engine uses it to release the cooldown it provisionally reserved at enqueue, so a
+   * dropped line doesn't starve the next valid moment in its category. Mutually
+   * exclusive with onPlayed.
+   */
+  onDropped?: () => void;
+  /**
+   * One-off ElevenLabs voice override for this line only (the `/coach say voice:`
+   * option). Unset = the current `/coach voice` selection. Ignored by the
+   * non-ElevenLabs providers.
+   */
+  voiceId?: string;
 }
 
 export type Speak = (req: SpeakRequest) => void;
@@ -93,6 +113,12 @@ export interface EngineDeps {
   getCtx: () => MatchContext;
   /** ms since the last GSI payload (null before the first) — staleness guard for timers. */
   payloadAgeMs?: () => number | null;
+  /** Epoch ms the current round went live / the bomb was planted (null when N/A) — the
+   *  TRUE in-game start, so clock callouts are scheduled off it rather than engine
+   *  handle-time (GSI buffering + async + the ~1-2s Valve plant delay would otherwise
+   *  make "ten seconds on the bomb" land a couple seconds late). */
+  roundLiveAt?: () => number | null;
+  bombPlantedAt?: () => number | null;
   /** Raw epoch ms of the player's latest own kill — exact, unlike the rounded context field. */
   lastOwnKillAt?: () => number | null;
   /** Current own round-kill count (null while dead) — staleness check for queued kill hype. */
@@ -404,6 +430,7 @@ export class CoachEngine {
         // live session lost its entire ace escalation to this cooldown).
         // Singles and doubles stay silent — kill-by-kill narration is noise.
         const count = event.roundKills;
+        const killRound = ctx.round; // snapshot: a kill line must never revive in a later round
         this.say(
           () => lines.killLine(count, ctx.playerName),
           {
@@ -416,6 +443,11 @@ export class CoachEngine {
             // triple hype while the fourth body was already on the floor).
             supersedes: ["kill", "specialKill"],
             stillRelevant: () => {
+              // A queue stall past a round boundary resets ownRoundKills to the new
+              // round's count, which would let a stale line read as relevant — bail if
+              // the round moved on (round_kills alone can't distinguish 0-this-round
+              // from a fresh start).
+              if (this.getCtx().round !== killRound) return false;
               const k = this.ownRoundKills();
               if (k !== null && k > count) return false; // a fresher kill line exists
               // The ace is history — celebrate it even if the player got traded.
@@ -598,11 +630,38 @@ export class CoachEngine {
         releaseReservation();
         return;
       }
-      // The decision hook fires for the canned path too — source "fallback",
-      // and ctx (no snapshot taken on this branch) is the state it reacted to.
-      this.deps.onDecision?.({ snapshot: ctx, event, tier, text: final, source: "fallback" });
-      this.say(() => final, { category, priority, maxAgeMs, eventAt, stillRelevant }, true);
-      onSpoken?.();
+      try {
+        // The decision hook fires for the canned path too — source "fallback",
+        // and ctx (no snapshot taken on this branch) is the state it reacted to.
+        this.deps.onDecision?.({ snapshot: ctx, event, tier, text: final, source: "fallback" });
+        this.say(
+          () => final,
+          {
+            category,
+            priority,
+            maxAgeMs,
+            eventAt,
+            stillRelevant,
+            // The launch reservation owns this category until the line actually airs.
+            manageCooldown: false,
+            // Durable cooldown commit + the paired timeout-nudge bucket, ONLY on real
+            // playback. (No anti-repeat commit on this branch: recentLines/recentPlans
+            // live on the LlmCoach, which doesn't exist in this LLM-less path.)
+            onPlayed: () => {
+              this.lastSpokenAt.set(category, Date.now());
+              onSpoken?.();
+            },
+            // Dropped before play → release the launch reservation so the next moment fires.
+            onDropped: releaseReservation,
+          },
+          true,
+        );
+      } catch (err) {
+        // ITEM 13/engine-4: a throw here (onDecision / say) must release the
+        // reservation, not leave the category locked for the session.
+        releaseReservation();
+        log.error("coach", `Fallback line failed for ${event.type}`, err);
+      }
       return;
     }
 
@@ -649,16 +708,37 @@ export class CoachEngine {
       // The decision hook fires here on the LLM path — source "llm" when Claude
       // produced the text, "fallback" when its line was empty and the canned one stood in.
       this.deps.onDecision?.({ snapshot, event, tier, text: final, source: text ? "llm" : "fallback" });
-      this.say(() => final, { category, priority, maxAgeMs, eventAt, stillRelevant }, true);
-      onSpoken?.();
-      // Commit to the anti-repeat memory only now that the line is actually spoken
-      // (ITEM 11): line() no longer records at generation time, so a line dropped by
-      // stillRelevant() above never polluted recentLines/recentPlans. Both the LLM
-      // line and the canned fallback join — the listener doesn't care who authored it.
-      this.llm?.commitSpoken(event, final);
+      this.say(
+        () => final,
+        {
+          category,
+          priority,
+          maxAgeMs,
+          eventAt,
+          stillRelevant,
+          // The launch reservation owns the cooldown until the line actually airs.
+          manageCooldown: false,
+          onPlayed: () => {
+            // Durable cooldown commit at PLAY time, not enqueue (so a line dropped by
+            // the voice queue never burns the category or the paired timeout bucket).
+            this.lastSpokenAt.set(category, Date.now());
+            onSpoken?.();
+            // Commit to the anti-repeat memory only now that the line ACTUALLY aired
+            // (ITEM 11 + engine-3): a line dropped while queued (stillRelevant flipped at
+            // pump time, staleness, supersede) must not pollute recentLines/recentPlans.
+            this.llm?.commitSpoken(event, final);
+          },
+          // Dropped before play (queued-then-stale/superseded/overflow) → release the
+          // launch reservation so the next valid moment in this category can speak.
+          onDropped: releaseReservation,
+        },
+        true,
+      );
     }).catch((err) => {
       // ITEM 13: a throw in the resolution body (fallback/stillRelevant/say) would
-      // otherwise escape the per-event try/catch as an unhandled rejection.
+      // otherwise escape the per-event try/catch as an unhandled rejection — and must
+      // release the launch reservation (engine-0), or the category locks for the session.
+      releaseReservation();
       log.error("coach", `LLM line resolution failed for ${event.type}`, err);
     });
   }
@@ -668,7 +748,11 @@ export class CoachEngine {
   /** "~35 seconds left, no plant" nudge — randomly skipped so it isn't every-round nagging. */
   private scheduleLateRoundCallout(): void {
     this.cancelLateRoundTimer();
-    const delayMs = (config.timings.roundSeconds - 35) * 1000;
+    // Schedule off the TRUE round-live instant (when available) rather than engine
+    // handle-time, so GSI buffering / async processing don't make the callout late.
+    const startedAt = this.deps.roundLiveAt?.() ?? null;
+    const baseDelay = (config.timings.roundSeconds - 35) * 1000;
+    const delayMs = startedAt !== null ? baseDelay - (Date.now() - startedAt) : baseDelay;
     if (delayMs <= 0) return;
     this.lateRoundTimer = setTimeout(() => {
       this.lateRoundTimer = null;
@@ -710,7 +794,12 @@ export class CoachEngine {
   /** "Ten seconds on the bomb" — high-value, always spoken when still relevant. */
   private scheduleBombCallout(): void {
     this.cancelBombTimer();
-    const delayMs = (config.timings.bombSeconds - 12) * 1000;
+    // Off the TRUE plant instant (tracker's bombPlantedAt) — the plant signal is itself
+    // delayed ~1-2s by Valve and processing adds more, so scheduling from engine
+    // handle-time would land "ten seconds" a couple seconds late.
+    const startedAt = this.deps.bombPlantedAt?.() ?? null;
+    const baseDelay = (config.timings.bombSeconds - 12) * 1000;
+    const delayMs = startedAt !== null ? baseDelay - (Date.now() - startedAt) : baseDelay;
     if (delayMs <= 0) return;
     this.bombTimer = setTimeout(() => {
       this.bombTimer = null;
@@ -765,8 +854,14 @@ export class CoachEngine {
 
   /**
    * The cooldown check runs BEFORE the line thunk, so a cooldown-gated event
-   * never consumes a shuffle-bag variant. (Lines dropped later in the voice
-   * queue — staleness, overflow — still do; that path is rare.)
+   * never consumes a shuffle-bag variant.
+   *
+   * Cooldown lifecycle: by default this reserves the category at ENQUEUE and wires an
+   * onDropped that RESTORES the prior stamp if the voice queue later drops the line
+   * (stale/superseded/overflow/error) — so a dropped line no longer starves the next
+   * valid moment in its category. Callers that own the cooldown externally (the LLM
+   * reservation path) pass manageCooldown:false and commit it themselves at play time
+   * via onPlayed.
    */
   private say(
     line: () => string | null,
@@ -777,22 +872,59 @@ export class CoachEngine {
       eventAt?: number;
       supersedes?: string[];
       stillRelevant?: () => boolean;
+      /** Run at actual play time (durable cooldown / anti-repeat commit). */
+      onPlayed?: () => void;
+      /** Run if the line is dropped before play (in addition to the cooldown restore). */
+      onDropped?: () => void;
+      /** Set false when the caller manages the category cooldown itself (LLM path). */
+      manageCooldown?: boolean;
     },
     skipCooldownCheck = false,
   ): void {
     // Muted: drop before cooldowns and shuffle bags so nothing is consumed.
     if (this.deps.isQuiet?.()) {
       log.debug("engine", `${opts.category}: quiet (muted)`);
+      opts.onDropped?.();
       return;
     }
     if (!skipCooldownCheck && !this.passesCooldown(opts.category)) {
       log.debug("engine", `${opts.category}: cooldown`);
+      opts.onDropped?.();
       return;
     }
     const text = line();
-    if (!text) return;
-    this.lastSpokenAt.set(opts.category, Date.now());
-    this.speak({ text, ...opts, eventAt: opts.eventAt ?? Date.now() });
+    if (!text) {
+      opts.onDropped?.();
+      return;
+    }
+    // Reserve at enqueue (unless the caller owns the cooldown), capturing the prior
+    // stamp so a drop can restore it. The restore is guarded on the stamp still being
+    // OURS, so a newer line that overwrote it (or a superseding line) keeps the cooldown.
+    let release: (() => void) | undefined;
+    if (opts.manageCooldown !== false) {
+      const stamp = Date.now();
+      const prior = this.lastSpokenAt.get(opts.category);
+      this.lastSpokenAt.set(opts.category, stamp);
+      release = () => {
+        if (this.lastSpokenAt.get(opts.category) !== stamp) return;
+        if (prior === undefined) this.lastSpokenAt.delete(opts.category);
+        else this.lastSpokenAt.set(opts.category, prior);
+      };
+    }
+    this.speak({
+      text,
+      category: opts.category,
+      priority: opts.priority,
+      maxAgeMs: opts.maxAgeMs,
+      eventAt: opts.eventAt ?? Date.now(),
+      supersedes: opts.supersedes,
+      stillRelevant: opts.stillRelevant,
+      onPlayed: opts.onPlayed,
+      onDropped: () => {
+        release?.();
+        opts.onDropped?.();
+      },
+    });
   }
 
   private passesCooldown(category: string): boolean {

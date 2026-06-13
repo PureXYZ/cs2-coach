@@ -31,6 +31,9 @@ jobs:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
         run: |
+          # Fail loudly on a misconfigured repo — without this, a missing
+          # secret surfaces as a cryptic SSH error far downstream.
+          if [ -z "$DEPLOY_SSH_KEY" ] || [ -z "$DEPLOY_HOST" ]; then echo "ERROR: DEPLOY_SSH_KEY and/or DEPLOY_HOST repository secrets are not set"; exit 1; fi
           install -m 700 -d ~/.ssh
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key

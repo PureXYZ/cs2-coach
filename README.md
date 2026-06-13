@@ -90,6 +90,7 @@ cp .env.example .env
 ### 3. Pick your TTS voice
 
 - **Deepgram (recommended):** sign up at https://console.deepgram.com (no card needed, **$200 free credit** — at this project's usage that's 2+ years free). Put the API key in `DEEPGRAM_API_KEY`.
+- **ElevenLabs (optional upgrade):** put a key in `ELEVENLABS_API_KEY` and add `elevenlabs` to `TTS_PROVIDER`. Set `ELEVENLABS_VOICE_ID` to the voice you want (copy the ID from your ElevenLabs dashboard). To make several voices switchable, list them in `ELEVENLABS_VOICES` as `Label:voiceId` pairs (first = default) — then switch live with **`/coach voice <name>`** (the pick persists across restarts), or use a one-off voice for a single line with **`/coach say <text> <voice>`**.
 - **Free fallback:** nothing to do — `edge` (Microsoft Edge voices) works with no key and is already in the fallback chain.
 
 ### 4. Claude (optional — the "smart" half of the coach)
@@ -176,8 +177,9 @@ Set `COACH_TEAM_TACTICS=false` to switch the team-economy/drop calls off and kee
 | `/coach join` | Joins the voice channel you're in |
 | `/coach leave` | Leaves voice |
 | `/coach quiet` | Mutes/unmutes the coach mid-match (game tracking continues) |
-| `/coach say <text>` | Speak arbitrary text (test) |
-| `/coach status` | GSI freshness, **feeds connected right now** (confirm a friend's install), voice/queue, mute state, TTS chain, LLM model, session memory |
+| `/coach say <text> [voice]` | Speak arbitrary text (test); optional `voice` overrides the coach's voice for that one line |
+| `/coach voice [name]` | Switch the coach's voice (persists across restarts); leave `name` empty to see the current voice and the options |
+| `/coach status` | GSI freshness, **feeds connected right now** (confirm a friend's install), voice/queue, mute state, TTS chain, active voice, LLM model, session memory |
 | `/coach song [title]` | Plays one of the coach's covers — pick from buttons or pass a title (EZ4ENCE, Xue Hua Piao Piao, Zenzenzense, White Pony); picking while one plays switches songs |
 | `/coach stop` | Stops the song; coaching lines resume |
 
