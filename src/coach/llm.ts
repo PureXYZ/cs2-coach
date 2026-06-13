@@ -28,6 +28,7 @@ const SYSTEM_CORE = `You are "Coach" — a dry, sarcastic, perpetually unimpress
 VOICE:
 - You sound like a real coach TALKING on voice comms, not a writer writing. Short sentences. Contractions. Simple everyday words. Sentence fragments are fine. Say it like: "Bomb's down, forty seconds. Group up, go in together. No solo hero shit."
 - Sarcastic, snide, dry. Mock sympathy for deaths, lowered expectations for buys, grudging respect when something is genuinely great (being annoyed about being impressed is the bit). Roast the gameplay, never the person's identity.
+- Lean MEAN. The player asked for more bite than a normal coach — sharper jabs, more trash talk, less hand-holding. Be the friend who roasts hardest because he's watched you throw a hundred times. Stay this side of cruelty (no slurs, nothing about who the person is), but don't be polite and don't soften every dig with a compliment.
 - Use CS slang naturally, the way a 3000-hour player would: eco, force, full buy, util, nades, flash, molly, dink, one-tap, whiff, spray, peek, dry peek, swing, trade, refrag, entry, lurk, bait, stack, rotate, save, exit frags, ninja, post-plant, retake, clutch, run it back, free round, "gave them a gun".
 - Swearing is allowed and welcome for punch — shit, damn, hell, ass, fuck — in roughly a third of your lines, not all of them. Never slurs, never anything aimed at who a person is.
 - BANNED: literary or written-English phrasing ("expectations set at sea level", "the projections did not see that coming", "taken like an unlocked bike"). If nobody would say it out loud mid-game, don't write it.
@@ -45,11 +46,12 @@ WHAT YOU CAN AND CANNOT SEE:
 - "earlyDeaths" counts the player's deaths inside the first 20 seconds of rounds THIS match — at 2+ it's a pattern (over-peeking on the opening) worth calling out.
 - "recentForm" lines are REAL results from this player's PREVIOUS play sessions, recorded by you. They're callback and roast material ("third night in a row you've thrown the pistols") for the moments that carry them — match start, halftime, the wrap-up. A couple of callbacks per MATCH is plenty; use at most one per line, and never invent past results beyond what's listed.
 - MR12 ROUND STRUCTURE: rounds 1-12 are the first half, 13-24 the second; rounds 1 and 13 are pistol rounds. Round 12 is the LAST round of the half — after it sides swap and ALL money and guns are wiped. Round 24 ends regulation; 12-12 goes to overtime (MR3, fresh $10000, money resets every 3 OT rounds). Across ANY reset boundary there is no "next round" to buy, save, or carry guns for — never suggest it.
+- NEVER announce a half-end, a money reset, or match point on your own from the score or the round number. Say it ONLY when the facts back it: the "round" field is exactly 12 (half-end) or 24 (end of regulation), "moneyResetsNextRound" is set (a reset), or "matchPoint" is set. A live session wrongly called round 11 "the last round of the half" off the scoreline — that exact miscount is banned. When unsure, say nothing about round structure.
 - Unless "team.aliveWired" tells you (and even then it's only the players you can see, never the whole team unless team.rosterComplete), you don't know how many are alive — phrase mid-round advice conditionally: "if the retake isn't clean...", "if you've got the numbers...".
 - "history" and "notables" really happened — referencing them is encouraged. Inventing other past events is forbidden.
 
 HOW TO SPEAK:
-- ONE line, at most 28 words; mid-round moments want 8-15 words. Output ONLY the line — no preamble, quotes, markdown, emoji or reasoning. It goes straight to text-to-speech.
+- ONE line. Mid-round twitch moments (kills, bomb calls, retake) stay tight: 8-15 words. A freezetime buy call can run longer when you're actually laying out a plan — up to about 35 words — but never pad; every word earns its place. Round-end reactions stay under 15 words (they chain straight into the next buy call). Output ONLY the line — no preamble, quotes, markdown, emoji or reasoning. It goes straight to text-to-speech.
 - Say "nade" or "grenade", never the bare letters "HE" — text-to-speech reads that as the pronoun "he".
 - Plain spoken English, contractions welcome. Deadpan, not shouty; mid-round lines are short and dry-urgent.
 - Be concrete: tie the call to the actual money, gear, score, clock and history in the snapshot.
@@ -345,6 +347,21 @@ function describeMoment(event: CoachEvent, ctx: MatchContext, longForm = false):
           : ctx.matchPoint === "us"
             ? " OUR MATCH POINT: win this round and it's done — closing mindset, no hero plays."
             : "";
+      // Anchor the half/regulation boundary on the round number itself (NOT the
+      // money-reset flag, which is also true at 24 and OT swaps) so the model
+      // stops inventing "last round of the half" off the scoreline.
+      const structure =
+        ctx.mode === "competitive" && ctx.round
+          ? ` Round ${ctx.round} of an MR12 game — first half ends after round 12, regulation after round 24. This is ${
+              ctx.round === 12
+                ? "the LAST round of the first half (halftime, side swap and money wipe after it)"
+                : ctx.round === 24
+                  ? "the LAST round of regulation"
+                  : ctx.moneyResetsNextRound
+                    ? "the LAST round of this overtime half (money wipes after it)"
+                    : "NOT a half-end or reset round"
+            }; do not say otherwise.`
+          : "";
       // Two rotating named plays from the map playbook: concrete, map-specific
       // variety instead of the same three generic calls every match.
       const options = playbookOptions(ctx.map, ctx.ourSide);
@@ -356,7 +373,7 @@ function describeMoment(event: CoachEvent, ctx: MatchContext, longForm = false):
       const teamBuy = ctx.team?.econ && ctx.team.econ.length > 1
         ? ` You can see the wired crew's money by name in team.econ — fold in ONE synced buy call, and if someone's loaded while a teammate's broke, name a specific drop. Only the players listed there, and hedge unless team.rosterComplete.`
         : "";
-      return `Freezetime / buy period, round ${event.round}. Give ONE buy call matched to the money and loss bonus, plus ONE concrete tactical idea for this map and side. Coaching angle for the tactical idea this round (ground it in the snapshot; ignore it only if the economy dictates otherwise): ${angle}.${playbook}${teamBuy}${mustSpend}${mp}${timeout} If the round history shows a pattern — lost streak, won pistols, repeated bomb-site losses — use it.`;
+      return `Freezetime / buy period, round ${event.round}. Give ONE buy call matched to the money and loss bonus, plus ONE concrete tactical idea for this map and side. Coaching angle for the tactical idea this round (ground it in the snapshot; ignore it only if the economy dictates otherwise): ${angle}.${playbook}${teamBuy}${mustSpend}${mp}${structure}${timeout} If the round history shows a pattern — lost streak, won pistols, repeated bomb-site losses — use it.`;
     }
     case "bombPlanted":
       if (event.ourSide === "CT") {
@@ -366,7 +383,7 @@ function describeMoment(event: CoachEvent, ctx: MatchContext, longForm = false):
             : ctx.moneyResetsNextRound
               ? " Money resets next round — saving preserves nothing, lean retake."
               : ctx.matchPoint === "us"
-                ? " It's OUR match point — close-out mindset, but normal retake-or-save judgment applies."
+                ? " It's OUR match point — a lost round costs nothing (still match point next round) and you can't see alive counts, so SAVING is a fully valid call: take the retake only if it's clean, otherwise keep the gear. No hero retake."
                 : "";
         if (!ctx.playerIsSelf) {
           return `The ENEMY (T side) just planted the bomb — your team is CT, about 40 seconds on the clock. The player is DEAD, spectating teammate "${ctx.spectating?.name ?? "unknown"}" — that teammate is a CT trying to RETAKE; they did NOT plant, and any plant credit belongs to the enemy. Call the retake-or-save for the TEAM from score, economy and history only (no own-gear talk); narrating the spectated teammate by name is welcome.${mustWin} Short and dry-urgent.`;

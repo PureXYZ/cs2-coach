@@ -27,7 +27,9 @@ export type CoachEvent =
   | { type: "kill"; roundKills: number; headshot: boolean }
   // Own kill with a story: knife/zeus/grenade attribution from the active weapon
   // + recent-throw/gunfire/kill-cash heuristics, or a clutch frag on low HP.
-  | { type: "specialKill"; kind: "knife" | "zeus" | "grenade" | "lowhp"; nade?: "he" | "fire"; hp?: number }
+  // kills = how many bodies this one event accounts for (a molly burning two
+  // lands as a single increment of 2) — lets the line call a multi-kill.
+  | { type: "specialKill"; kind: "knife" | "zeus" | "grenade" | "lowhp"; nade?: "he" | "fire"; hp?: number; kills?: number }
   // Own scoreboard kill counter went DOWN while alive — only a teamkill does that.
   | { type: "teamkill" }
   // The teammate the dead user is spectating got a kill (the only friend-play GSI
@@ -35,7 +37,9 @@ export type CoachEvent =
   // RosterManager can drop this when the same teammate is a wired feed reporting
   // the kill first-hand (it would otherwise double-count).
   | { type: "teammateKill"; name?: string; roundKills: number; health?: number; spectatedSteamid?: string }
-  | { type: "death" }
+  // cause is filled in when the dying frame's intensities prove how they went —
+  // burning (molotov) or fully flashed (blind) — so the roast can name it.
+  | { type: "death"; cause?: "fire" | "blind" }
   | { type: "mvp" }
   // --- roster-derived (multi-feed): emitted by the RosterManager, not the
   // per-feed tracker, once friends are also POSTing their own GSI. ---
@@ -150,6 +154,10 @@ const NADE_KILL_WINDOW_MS: Record<"he" | "fire", number> = { he: 3_000, fire: 9_
 
 /** Competitive knife-kill cash — lands in state.money on the same GSI tick as the kill. */
 const KNIFE_KILL_REWARD = 1_500;
+/** A gun clip going down this recently before a kill means the gun got it — the
+ *  knife being "active" on the kill frame is just a quick-switch for movement
+ *  (CS players swap to the knife to run faster right after fragging). */
+const GUN_KILL_RECENT_MS = 2_000;
 
 // Death forensics: facts go into match memory as notables; the LLM does the roasting.
 /** state.flashed is a 0-255 whiteout intensity; above this the player was effectively blind. */
@@ -157,9 +165,11 @@ const FLASHED_BLIND_MIN = 160;
 /** state.burning is 0-255 too and decays — a residual tail from clipping a fire
  *  edge shouldn't read as burning to death, so require real intensity. */
 const BURNING_DEATH_MIN = 150;
-/** A molly flies ~1s and burns ~7s — fire deaths inside this window after our own
- *  fire-nade throw get blamed on the player's own molly. */
-const OWN_MOLLY_BLAME_MS = 10_000;
+/** A molly flies ~1s and burns ~7s, so ~8s is the longest our own fire could still
+ *  be burning after we threw it. Fire deaths inside this window get hedged as
+ *  possibly-own (no enemy-fire claim); BEYOND it the own molly is provably out, so
+ *  a fire death is enemy fire and earns the roast. Sized to the burn, not padded. */
+const OWN_MOLLY_BLAME_MS = 8_000;
 /** Dying inside this window after the round goes live is an "opening seconds" death. */
 const EARLY_DEATH_WINDOW_MS = 20_000;
 
@@ -456,7 +466,7 @@ export class GsiTracker {
           // kill event below the triple, and multikill hype (triple and up)
           // outranks it — "TRIPLE KILL" speaks uncontested.
           if (special && cur.roundKills < 3) {
-            events.push({ type: "specialKill", ...special });
+            events.push({ type: "specialKill", ...special, kills: killsDelta });
           } else {
             events.push({
               type: "kill",
@@ -476,19 +486,27 @@ export class GsiTracker {
         }
 
         if (cur.health === 0 && this.prevSelf.health > 0) {
-          events.push({ type: "death" });
-          this.memory.recordDeath(this.liveRound);
           // Death forensics — factual notables; the LLM turns them into roasts.
           // The dying frame's state can already be partially wiped, so each
           // signal also reads the last alive frame's value.
           const flashed = Math.max(s.flashed, this.prevSelf.flashed);
           const burning = Math.max(s.burning, this.prevSelf.burning);
+          const ownFire =
+            this.lastNadeThrows.fire !== undefined && now - this.lastNadeThrows.fire <= OWN_MOLLY_BLAME_MS;
+          // How they went, when the intensities prove it — burned to death in a
+          // molotov, or dropped fully flashed (fire wins ties, it's the more
+          // roastable end). The "fire" cause is ENEMY fire only: if the player's
+          // OWN molly is the likely culprit, don't let the spoken line claim an
+          // enemy cooked them — fall back to a generic death; the notable below
+          // still records the own-molly death for the wrap-up.
+          const cause =
+            burning >= BURNING_DEATH_MIN && !ownFire ? "fire" : flashed >= FLASHED_BLIND_MIN ? "blind" : undefined;
+          events.push({ type: "death", cause });
+          this.memory.recordDeath(this.liveRound);
           if (flashed >= FLASHED_BLIND_MIN) {
             this.memory.recordNotable(this.liveRound, "died while flashed");
           }
           if (burning >= BURNING_DEATH_MIN) {
-            const ownFire =
-              this.lastNadeThrows.fire !== undefined && now - this.lastNadeThrows.fire <= OWN_MOLLY_BLAME_MS;
             // The own-molly variant states only what's knowable: the player's
             // own fire nade went out seconds before they burned down. GSI has
             // no damage attribution, so the string must not over-claim.
@@ -777,34 +795,61 @@ export class GsiTracker {
 
     if (active?.name === "weapon_taser") return { kind: "zeus" };
 
-    // Most recent throw whose kill window is still open, per kind — a molly can
-    // still be burning after a follow-up HE's window has already expired.
+    // Which throws still have an open kill window.
+    const heAt = this.lastNadeThrows.he;
+    const fireAt = this.lastNadeThrows.fire;
+    const openHe = heAt !== undefined && now - heAt <= NADE_KILL_WINDOW_MS.he;
+    const openFire = fireAt !== undefined && now - fireAt <= NADE_KILL_WINDOW_MS.fire;
     let throwKind: "he" | "fire" | undefined;
     let throwAt = 0;
-    for (const kind of ["he", "fire"] as const) {
-      const at = this.lastNadeThrows[kind];
-      if (at !== undefined && now - at <= NADE_KILL_WINDOW_MS[kind] && at > throwAt) {
-        throwKind = kind;
-        throwAt = at;
+    if (openHe && openFire && killsDelta >= 2) {
+      // A MULTI-kill with both a frag and a fire nade in flight is almost always
+      // the molotov burning a clustered group — a single HE rarely doubles, fire
+      // routinely does (a live session mis-called exactly this molly double as an
+      // HE because the frag was thrown a beat later). Credit the fire.
+      throwKind = "fire";
+      throwAt = fireAt!;
+    } else {
+      // Otherwise the most recent open throw wins — a molly can still be burning
+      // after a follow-up HE's window has already expired.
+      if (openHe && heAt! > throwAt) {
+        throwKind = "he";
+        throwAt = heAt!;
+      }
+      if (openFire && fireAt! > throwAt) {
+        throwKind = "fire";
+        throwAt = fireAt!;
       }
     }
 
+    // Did a gun actually fire right before this kill? A clip dropping within ~2s
+    // means the GUN got the kill and the knife is just out for movement — that
+    // recent gunfire is the SOLE suppressor of a knife verdict. Cash can only
+    // CONFIRM a knife (+$1500/kill), never veto one: a real knife kill at the
+    // $16k cap (or any frame GSI sends no money for) reads a ~$0 delta, and
+    // letting a small delta force a gun verdict would lose genuine knife kills —
+    // the same "when cash can't prove it, keep the visible-weapon call" logic the
+    // nade branch above already uses.
+    const cashSaysKnife = cashDelta !== undefined && cashDelta >= killsDelta * KNIFE_KILL_REWARD;
+    const gunFiredJustNow = this.lastGunfireAt !== null && now - this.lastGunfireAt <= GUN_KILL_RECENT_MS;
+
     // Knife in hand while a nade still cooks is genuinely ambiguous — both are
-    // plausible play. The kill cash settles it: the reward lands on the same
-    // GSI tick as round_kills, so +$1500/kill proves the knife. When cash can't
-    // prove a knife — reward truncated within $1500 of the $16k cap, a same-
-    // frame buy eating the delta, or an unreadable over-phase frame — the nade
-    // keeps the credit: the pre-cash behavior, and the safer hype to be wrong
-    // about (the knife was at least visibly in hand).
+    // plausible. Cash settles it: +$1500/kill proves the knife. When it can't
+    // (truncated near the $16k cap, a same-frame buy, an unreadable over-phase
+    // frame), the nade keeps the credit — the safer thing to be wrong about.
     if (throwKind && active?.type === "Knife") {
-      if (cashDelta !== undefined && cashDelta >= killsDelta * KNIFE_KILL_REWARD) return { kind: "knife" };
+      if (cashSaysKnife) return { kind: "knife" };
       return { kind: "grenade", nade: throwKind };
     }
 
     const holdingNoGun = !active || active.type === "Grenade" || active.type === "C4";
     const firedSinceThrow = this.lastGunfireAt !== null && this.lastGunfireAt >= throwAt;
     if (throwKind && (holdingNoGun || !firedSinceThrow)) return { kind: "grenade", nade: throwKind };
-    if (active?.type === "Knife") return { kind: "knife" };
+    // A bare knife in hand is a knife kill UNLESS a gun fired in the last couple
+    // seconds — then the gun got it and the knife is just out for movement (the
+    // cause of a live false "knife kill" on a plain AK frag). A readable +$1500
+    // cash still confirms it outright even if a stray shot was fired nearby.
+    if (active?.type === "Knife" && (cashSaysKnife || !gunFiredJustNow)) return { kind: "knife" };
     if (health > 0 && health <= 20) return { kind: "lowhp", hp: health };
     return null;
   }
