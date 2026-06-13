@@ -348,16 +348,23 @@ async function handleSetup(interaction: ChatInputCommandInteraction, deps: BotDe
       "📬 Check your DMs — I sent your config file and the (2-minute, no-software) setup steps. Drop it in, restart CS2, then run `/coach status` to confirm.",
     );
   } catch (err) {
-    // 50007 = "Cannot send messages to this user" → their DMs are closed. Fall
-    // back to the ephemeral reply (still private to just this person).
-    if (err instanceof DiscordAPIError && err.code === 50007) {
-      await interaction.editReply({
-        content: `Your DMs are closed, so here it is privately (only you can see this) 👇\n\n${guide}`,
-        files: [makeFile()],
-      });
-      return;
-    }
-    throw err;
+    // The DM didn't go through. Usually the user has "Allow direct messages from
+    // server members" off, or blocked the bot (DiscordAPIError 50007) — but
+    // whatever the reason, still hand them the file: fall back to the ephemeral
+    // reply, which only this person can see, right here in the channel. So a
+    // friend can always grab the cfg and install it themselves, DMs or not.
+    const dmsClosed = err instanceof DiscordAPIError && err.code === 50007;
+    const reason = err instanceof Error ? err.message : String(err);
+    log.warn("bot", `/coach setup: DM failed (${dmsClosed ? "DMs closed" : "unexpected"}: ${reason}) — using ephemeral fallback`);
+    await interaction.editReply({
+      content:
+        (dmsClosed
+          ? "I couldn't DM you — your **direct messages from server members** are off (or the bot's blocked)."
+          : "I couldn't DM you for some reason.") +
+        " No worries, here's your config privately (only you can see this) 👇\n\n" +
+        guide,
+      files: [makeFile()],
+    });
   }
 }
 
