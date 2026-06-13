@@ -218,11 +218,6 @@ async function main(): Promise<void> {
         log.info("main", on ? "Coach muted via /coach quiet" : "Coach unmuted");
       },
     },
-    squad: {
-      get: () => roster.squadSize(),
-      set: (n) => roster.setSquadSize(n),
-    },
-    setPrimary: (steamid) => roster.setPrimary(steamid),
     status: () => ({
       gsiAgeMs: gsi.lastPayloadAgeMs(),
       ttsProviders: tts.activeNames,

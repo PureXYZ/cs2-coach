@@ -1445,7 +1445,7 @@ console.log("\n=== scenario: llm-prompt — visibility verdict + squad-aware fre
 }
 
 // ---------------------------------------------------------------------------
-console.log("\n=== scenario: ops — live squad size, quarantine surfacing, primary swap gates ===");
+console.log("\n=== scenario: ops — quarantine surfacing + configured squad size + primary presence ===");
 {
   const ENEMY = "76561198000000011";
   const { r, run } = rosterRig(P1);
@@ -1462,31 +1462,6 @@ console.log("\n=== scenario: ops — live squad size, quarantine surfacing, prim
   expect(!quarantined.some((q) => q.name === "Mouse"), "the confirmed teammate is NOT quarantined");
   expect(r.squadSize() === 3, "squad size reads the configured COACH_SQUAD_SIZE");
   expect(r.context().team?.rosterComplete === false, "2 confirmed of a 3-stack → not roster-complete");
-
-  // Live squad-size override drives the whole-team license.
-  r.setSquadSize(2);
-  expect(r.squadSize() === 2, "squad size override applied");
-  expect(r.context().team?.rosterComplete === true, "override to 2 makes the 2 wired feeds roster-complete");
-  r.setSquadSize(0);
-  expect(r.squadSize() === undefined, "squad size 0 clears the override (always hedge)");
-  expect(r.context().team?.rosterComplete === false, "cleared squad size → never roster-complete");
-
-  // setPrimary gates: a live round, a malformed id, and a non-member all refuse.
-  expect(r.setPrimary(P2).ok === false, "setPrimary is refused mid-round (it repoints session memory)");
-  expect(r.setPrimary("not-a-steamid").ok === false, "setPrimary rejects a malformed SteamID");
-  expect(r.setPrimary(ENEMY).ok === false, "setPrimary rejects a non-confirmed (enemy) feed");
-
-  // At a freeze the swap is accepted; once the former primary re-confirms against
-  // the new anchor, the teammate carries isPrimary.
-  run("P1 r2 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 1, team: "CT", ctScore: 1 }));
-  run("P2 r2 freeze", payload({ provider: P2, roundPhase: "freezetime", round: 1, name: "Mouse", team: "CT", ctScore: 1 }));
-  expect(r.setPrimary(P2).ok === true, "setPrimary accepted at a freeze");
-  // The swap repoints the anchor, so the old primary must re-cast a same-side vote
-  // against the new one before it re-enters the roster (it had no votes as primary).
-  run("P2 revote", payload({ provider: P2, roundPhase: "freezetime", round: 1, name: "Mouse", team: "CT", ctScore: 1 }));
-  run("P1 revote", payload({ provider: P1, roundPhase: "freezetime", round: 1, team: "CT", ctScore: 1 }));
-  const mouse = r.context().team?.members.find((m) => m.name === "Mouse");
-  expect(mouse?.isPrimary === true, "the promoted teammate now carries the primary flag");
 }
 
 // ---------------------------------------------------------------------------

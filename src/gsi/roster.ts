@@ -124,10 +124,6 @@ export class RosterManager {
   /** Events ITEM 16: spectated kills narrated through a STALE teammate's feed, keyed
    *  `${steamid}:${round}:${roundKills}`, so the catch-up duplicate is dropped. */
   private specNarratedLatch = new Set<string>();
-  /** Ops ITEM 5: live COACH_SQUAD_SIZE override (session-only). undefined => always hedge. */
-  private squadSizeOverride: number | undefined = config.coach.squadSize;
-  /** Ops ITEM 15: live primary override; consulted FIRST in primaryId(). */
-  private overridePrimary: string | null = null;
   /** Ops ITEM 14: whether the CONFIGURED primary produced a feed THIS match. */
   private primaryEverSeen = false;
 
@@ -240,8 +236,7 @@ export class RosterManager {
   }
 
   private primaryId(): string | null {
-    // The live /coach primary override wins over both configured and adopted.
-    return this.overridePrimary ?? this.configuredPrimary ?? this.adoptedPrimary;
+    return this.configuredPrimary ?? this.adoptedPrimary;
   }
 
   private isPrimary(steamid: string): boolean {
@@ -708,15 +703,8 @@ export class RosterManager {
     return n;
   }
 
-  /** Ops ITEM 5: set the live COACH_SQUAD_SIZE override (session-only). A non-positive
-   *  value clears it back to always-hedge. */
-  setSquadSize(n: number): void {
-    this.squadSizeOverride = n > 0 ? n : undefined;
-    log.info("roster", `Squad size set to ${this.squadSizeOverride ?? "unset (always hedge)"} via /coach squad`);
-  }
-
-  /** Ops ITEM 5: the effective squad size (override; undefined => always hedge). */
-  squadSize(): number | undefined { return this.squadSizeOverride; }
+  /** The configured squad size (COACH_SQUAD_SIZE; undefined => always hedge). */
+  squadSize(): number | undefined { return config.coach.squadSize; }
 
   /** Ops ITEM 9: feeds currently connected but NOT confirmed members, with the reason
    *  (stale/off-map/vote state) — for /coach status. */
@@ -734,25 +722,6 @@ export class RosterManager {
 
   /** Ops ITEM 14: whether the CONFIGURED primary produced a feed this match. */
   primaryEverSeenThisMatch(): boolean { return this.primaryEverSeen; }
-
-  /** Ops ITEM 15: live /coach primary override. Refuses a bad id, a non-confirmed
-   *  feed, or a swap mid-round (it repoints session memory; deferred to a break). */
-  setPrimary(steamid: string): { ok: true } | { ok: false; reason: string } {
-    if (!STEAMID64_RE.test(steamid)) return { ok: false, reason: "that's not a valid SteamID64" };
-    const now = Date.now();
-    const refMap = this.refMap(now);
-    const feed = this.feeds.get(steamid);
-    if (!feed || !this.isTeammate(feed, steamid, now, refMap)) {
-      return { ok: false, reason: "that SteamID isn't a currently-confirmed wired teammate" };
-    }
-    if (this.mergedCtx(this.buildTeam(now, refMap)).roundPhase === "live") {
-      return { ok: false, reason: "round's live — I'll swap it at the next freeze/round end" };
-    }
-    this.overridePrimary = steamid;
-    this.setAuthority(null);
-    log.info("roster", `Primary → ${this.shortId(steamid)} (${feed.tracker.ownName() ?? "?"}) via /coach primary`);
-    return { ok: true };
-  }
 
   /** Merged context snapshot (timer callouts + status), recomputed live. */
   context(): MatchContext {
