@@ -146,6 +146,14 @@ export interface TeamMember {
   tier: "fresh" | "lagging";
   /** ms since this feed's last payload — the freshness the honesty gates key on. */
   staleMs: number;
+  /**
+   * A short, NUMBER-FREE qualitative debrief tag synthesized from this feed's own
+   * match so far ("kept dying early on the entry", "dropped an ace this match") —
+   * the per-friend coaching hook for the break-moment jab and the wrap-up. Never a
+   * raw stat: a teammate number here would violate the matchEnd K/D guardrail.
+   * Present only for fresh members (the stale appendees carry no note).
+   */
+  note?: string;
 }
 
 /**

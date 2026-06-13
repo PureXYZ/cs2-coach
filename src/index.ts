@@ -91,6 +91,11 @@ async function main(): Promise<void> {
     const endedAt = Date.now();
     const recapToken = ++recapSeq;
     const report = roster.matchReport();
+    // The confirmed wired crew, snapshotted SYNCHRONOUSLY now — confirmedEver is
+    // wiped by the next match's start and feeds idle out during the long Leetify
+    // poll below. Feeds both the session squad-tag and the squad recap.
+    const squad = roster.confirmedSquad();
+    const friendNames = squad.filter((m) => !m.isPrimary && m.name).map((m) => m.name as string);
 
     // Friend-only match (the primary user never played this one): nothing of the
     // user's to record, and the Leetify lookup would key on the wrong account.
@@ -119,17 +124,15 @@ async function main(): Promise<void> {
       log.info("sessions", `Practice match (${why}) — not recording it`);
       return;
     }
-    const record = buildMatchRecord(event, ctx, report);
+    const record = buildMatchRecord(event, ctx, report, friendNames);
     sessions.record(record);
 
     const steam64 = roster.steamId();
     if (!config.leetify.enabled || !steam64) return;
 
     // Squad recap: when friends are wired and team tactics are on, keep the
-    // per-match rows Leetify already returns for the whole crew. The squad MUST
-    // be snapshotted SYNCHRONOUSLY here — confirmedEver is wiped by the next
-    // match's start and feeds idle out during the minutes-long poll below.
-    const squad = roster.confirmedSquad();
+    // per-match rows Leetify already returns for the whole crew (squad captured
+    // synchronously above).
     const wantSquad =
       config.leetify.squadRecap !== "off" && config.coach.teamTactics && squad.some((m) => !m.isPrimary);
     const client = new LeetifyClient(config.leetify.apiKey);

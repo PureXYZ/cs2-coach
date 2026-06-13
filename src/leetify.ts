@@ -232,12 +232,13 @@ export function spokenStatsSentence(stats: LeetifyMatchStats): string | null {
 /**
  * The squad comparison as ONE spoken sentence, to sit ALONGSIDE the player's own
  * stats line — every value lifted VERBATIM from the API (Leetify's verbatim rule
- * forbids a recomputed delta, so we only name leaders and read their given value).
- * "leaders" (default) names just whoever topped each stat — never a friend's WORST
- * number; "full" reads a short line per wired friend. Null when there's no wired
- * friend to compare against (the caller then speaks the solo line alone).
+ * forbids a recomputed delta). "full" (default) reads a short line per wired friend
+ * so the coach can roast the whole board, bottom-fraggers included; "leaders" only
+ * names whoever topped each stat (gentler — for a crew that doesn't want a friend's
+ * worst number aired). Null when there's no wired friend to compare against (the
+ * caller then speaks the solo line alone).
  */
-export function spokenSquadSentence(squad: LeetifySquadStats, mode: "leaders" | "full" = "leaders"): string | null {
+export function spokenSquadSentence(squad: LeetifySquadStats, mode: "leaders" | "full" = "full"): string | null {
   const named = squad.squad.filter((r) => r.name);
   const friends = named.filter((r) => !r.isPrimary);
   if (friends.length === 0) return null;

@@ -34,6 +34,13 @@ export interface SessionMatchRecord {
   /** Match highlights, e.g. "R7: knife kill". */
   notables?: string[];
   roundsPlayed?: number;
+  /**
+   * Display names of the wired FRIENDS present this match (the primary excluded).
+   * Names only — never their stats — so a trend line can be tagged with WHO was
+   * wired ("with Sam in, you're 3-1") while staying an assertion about the
+   * primary's own results. Absent when the user played solo / unwired.
+   */
+  squad?: string[];
 }
 
 /** Keep the file small and the trends honest — old matches stop being "form". */
@@ -149,6 +156,24 @@ export class SessionStore {
       if (onMap.length >= 2) {
         const w = onMap.filter((r) => r.won).length;
         out.push(`On ${mapDisplayName(currentMap)} specifically: ${w} won, ${onMap.length - w} lost in recent matches.`);
+      }
+    }
+
+    // Squad-tagged form (C2): if a friend has been wired for 2+ of the recent
+    // matches, note the PRIMARY's record alongside them. It's an assertion about
+    // your OWN win/loss, merely tagged with who was wired — never a claim about
+    // the friend's play. Phrased "with X wired in", since an unwired X is invisible.
+    const tagged = recent.filter((r) => r.squad?.length && r.won !== undefined);
+    if (tagged.length >= 2) {
+      const counts = new Map<string, number>();
+      for (const r of tagged) for (const n of r.squad!) counts.set(n, (counts.get(n) ?? 0) + 1);
+      let mate: string | undefined;
+      let best = 1; // need a friend present in 2+ tagged matches
+      for (const [n, c] of counts) if (c > best) { mate = n; best = c; }
+      if (mate) {
+        const withMate = tagged.filter((r) => r.squad!.includes(mate!));
+        const w = withMate.filter((r) => r.won).length;
+        out.push(`With ${mate} wired in, you're ${w} and ${withMate.length - w} over your last ${withMate.length} together.`);
       }
     }
 

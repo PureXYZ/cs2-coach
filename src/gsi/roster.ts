@@ -113,6 +113,9 @@ export class RosterManager {
   private lastGlobalAt = new Map<CoachEvent["type"], number>();
   /** Round number a last-man-standing call last fired for (once per round). */
   private lastManRound: number | null = null;
+  /** C3: offenders (steamids) already called out as the entry-trade weak link THIS
+   *  match — a code latch so the nudge fires once per friend and never nags. */
+  private weakLinkCalled = new Set<string>();
   /** Connection-blip ITEM 1: when the primary's feed first went non-fresh (null while fresh). */
   private primaryStaleSince: number | null = null;
   /** Connection-blip ITEM 1: when the primary first became continuously fresh again. */
@@ -220,6 +223,8 @@ export class RosterManager {
     const team = this.buildTeam(now, refMap);
     const lastMan = this.deriveLastMan(team, now, refMap);
     if (lastMan) out.push(lastMan);
+    const weakLink = this.deriveWeakLink(now, refMap);
+    if (weakLink) out.push(weakLink);
 
     return { events: out, ctx: this.mergedCtx(team) };
   }
@@ -406,6 +411,7 @@ export class RosterManager {
       this.lastManRound = null;
       this.econRing = [];            // Econ ITEM 17: don't leak a buy pattern across games
       this.primaryEverSeen = false;  // Ops ITEM 14: re-arm 'primary never connected'
+      this.weakLinkCalled.clear();   // C3: re-arm the per-friend weak-link nudge each match
     }
     // Events ITEM 16: the spectate-narration latch is per-round — clear at every boundary.
     if (ev.type === "freezetime" || ev.type === "roundEnd" || ev.type === "matchStart") {
@@ -482,13 +488,17 @@ export class RosterManager {
       const caughtUp = c.round !== undefined && refRound !== undefined && c.round >= refRound;
       const alive = !caughtUp ? undefined : c.playerIsSelf ? (c.health ?? 0) > 0 : false;
       const staleMs = now - f.lastSeen;
+      const tier: "fresh" | "lagging" = staleMs <= FRESH_READ_MS ? "fresh" : "lagging";
       return {
         name: f.tracker.ownName(),
         isPrimary: id === primaryId,
         alive,
         money: c.playerIsSelf ? c.money : undefined,
-        tier: staleMs <= FRESH_READ_MS ? "fresh" : "lagging",
+        tier,
         staleMs,
+        // B1: per-friend debrief tag for the break-moment jab + wrap-up — fresh
+        // members only (a lagging feed's match read is stale), synthesized number-free.
+        note: tier === "fresh" ? debriefNote(f.tracker.matchReport()) : undefined,
       };
     });
 
@@ -605,6 +615,32 @@ export class RosterManager {
     // The primary survivor is addressed in the second person ("you're the last
     // one up"); a teammate survivor is named.
     return { type: "lastManStanding", who: { name: survivor.isPrimary ? undefined : survivor.name }, rosterComplete: true };
+  }
+
+  /** C3 — the squad's entry-trade weak link: a CONFIRMED, fresh, non-primary
+   *  teammate whose OWN feed shows a real opening-death habit this match (>=2),
+   *  surfaced ONCE per offender per match and only at a freezetime (the calm moment
+   *  to fix it). Reads each friend's own earlyDeaths (never ctx.earlyDeaths, which
+   *  is undefined at 0) and never the primary (their entries are coached directly).
+   *  Names the single worst offender; the anti-nag/rotation IS this code latch,
+   *  never an LLM ask — this surface names a friend's bad pattern. */
+  private deriveWeakLink(now: number, refMap: string | undefined): CoachEvent | null {
+    if (!config.coach.teamTactics) return null;
+    if (this.authorityFeed()?.tracker.context().roundPhase !== "freezetime") return null;
+    let worst: { id: string; name: string; deaths: number } | null = null;
+    for (const [id, f] of this.feeds) {
+      if (id === this.primaryId()) continue;
+      if (this.weakLinkCalled.has(id)) continue;
+      if (!this.isTeammate(f, id, now, refMap)) continue;
+      const name = f.tracker.ownName();
+      if (!name) continue;
+      const deaths = f.tracker.matchReport().earlyDeaths;
+      if (deaths < 2) continue;
+      if (!worst || deaths > worst.deaths) worst = { id, name, deaths };
+    }
+    if (!worst) return null;
+    this.weakLinkCalled.add(worst.id);
+    return { type: "weakLink", who: { name: worst.name } };
   }
 
   /** Econ ITEM 17 — read the last few rounds' buy snapshots for a recurring out-of-sync
@@ -849,6 +885,29 @@ export class RosterManager {
   private shortId(steamid: string): string {
     return `…${steamid.slice(-5)}`;
   }
+}
+
+/** B1 — a short, NUMBER-FREE qualitative debrief tag for one wired feed's match so
+ *  far, synthesized (never a raw notable, which can carry a teammate number the
+ *  matchEnd K/D guardrail forbids). One phrase, most salient first: a teamkill or bad
+ *  habit is roast fodder (friends are fair game), an ace or knife is grudging respect.
+ *  undefined when nothing stands out. */
+function debriefNote(report: { earlyDeaths: number; notables: string[] }): string | undefined {
+  // Drop the spectate notable ("<name> triple while you watched") before the
+  // substring scan — it's the ONE notable carrying an arbitrary OTHER player's
+  // name, so a spectated "Grace"/"Ace"/"Knifer" would otherwise fabricate an
+  // "ace"/"knife" tag for the friend who merely watched. Everything else is a
+  // fixed marker or the player's own count.
+  const own = report.notables.filter((n) => !n.includes("while you watched"));
+  const tags = own.join(" ").toLowerCase();
+  if (tags.includes("teamkill")) return "teamkilled one of their own";
+  if (tags.includes("ace")) return "dropped an ace this match";
+  if (tags.includes("knife")) return "got a cheeky knife kill in";
+  if (report.earlyDeaths >= 2) return "kept dying early on the entry";
+  if (tags.includes("unthrown")) return "died sitting on their utility";
+  if (tags.includes("flashed")) return "kept dying flashed";
+  if (tags.includes("burning")) return "cooked themselves in a molly";
+  return undefined;
 }
 
 /** Econ ITEM 17 — coarse buy bucket for the cross-round buy-sync read. */

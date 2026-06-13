@@ -49,7 +49,8 @@ export type CoachEvent =
   // Down to one alive among the squad. Only emitted with whole-team certainty
   // (rosterComplete) — in always-hedge mode the coach can't know un-wired
   // teammates are dead, so it stays silent.
-  | { type: "lastManStanding"; who: { name?: string }; rosterComplete: boolean };
+  | { type: "lastManStanding"; who: { name?: string }; rosterComplete: boolean }
+  | { type: "weakLink"; who: { name: string } };
 
 /** Snapshot of everything we know, used by rules and serialized for the LLM. */
 export interface MatchContext {
@@ -186,6 +187,19 @@ export function winTarget(ourScore: number, theirScore: number): number {
   return target;
 }
 
+/** Raw match-memory snapshot returned by GsiTracker.matchReport(). */
+export interface MatchReportData {
+  rounds: readonly RoundRecord[];
+  pistols: { first?: "won" | "lost"; second?: "won" | "lost" };
+  earlyDeaths: number;
+  notables: string[];
+  /** Own K/A/D/MVPs from the last self frame — present even when the player
+   *  died in the final round (the gameover context fields would be empty). */
+  stats?: { kills: number; assists: number; deaths: number; mvps: number };
+  /** A spectated teammate had a bot steamid — practice match, don't persist. */
+  botsDetected: boolean;
+}
+
 export class GsiTracker {
   private prev: GsiPayload | null = null;
   private prevSelf: PrevSelf | null = null;
@@ -213,6 +227,9 @@ export class GsiTracker {
    *  spectate switch and the gameover baseline wipe, so the post-match record
    *  keeps the K/D even when the player died in the final round. */
   private lastOwnStats: { kills: number; assists: number; deaths: number; mvps: number } | null = null;
+  /** matchReport() memo, invalidated each update() — the report is immutable
+   *  between payloads but read often (per fresh member in buildTeam + deriveWeakLink). */
+  private reportCache: MatchReportData | null = null;
   private readonly memory = new MatchMemory();
   /**
    * The user's side survives death here: once dead, the player block describes a
@@ -230,6 +247,7 @@ export class GsiTracker {
     const prev = this.prev;
     const now = Date.now();
     this.lastUpdateAt = now;
+    this.reportCache = null; // this payload may change the match memory — recompute on next read
 
     const map = payload.map;
     const round = payload.round;
@@ -693,19 +711,13 @@ export class GsiTracker {
     return this.memory.history(Number.MAX_SAFE_INTEGER);
   }
 
-  /** Raw match-memory data for the spoken match wrap-up and the session store. */
-  matchReport(): {
-    rounds: readonly RoundRecord[];
-    pistols: { first?: "won" | "lost"; second?: "won" | "lost" };
-    earlyDeaths: number;
-    notables: string[];
-    /** Own K/A/D/MVPs from the last self frame — present even when the player
-     *  died in the final round (the gameover context fields would be empty). */
-    stats?: { kills: number; assists: number; deaths: number; mvps: number };
-    /** A spectated teammate had a bot steamid — practice match, don't persist. */
-    botsDetected: boolean;
-  } {
-    return {
+  /** Raw match-memory data for the spoken match wrap-up and the session store.
+   *  Memoized per update(): immutable between payloads, but read often (per fresh
+   *  member in buildTeam + per non-primary feed in deriveWeakLink), so the
+   *  flatMap/spread allocations must not run on every heartbeat frame. */
+  matchReport(): MatchReportData {
+    if (this.reportCache) return this.reportCache;
+    this.reportCache = {
       rounds: this.memory.allRounds(),
       pistols: this.memory.pistolResults(),
       earlyDeaths: this.memory.earlyDeaths(),
@@ -713,6 +725,7 @@ export class GsiTracker {
       stats: this.lastOwnStats ?? undefined,
       botsDetected: this.botsSeen,
     };
+    return this.reportCache;
   }
 
   /** SteamID64 of the local player (from the GSI provider block), once seen. */
