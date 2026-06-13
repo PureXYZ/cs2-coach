@@ -304,10 +304,15 @@ export class GsiTracker {
     const roundPhase = round?.phase;
     const roundNum = (map?.round ?? 0) + 1; // map.round is the count of completed rounds
 
-    // Joined mid-round (no freezetime transition seen): adopt the round number
-    // now, while the phase makes map.round trustworthy — memory records and the
-    // LLM snapshot would otherwise file everything under round 0.
-    if (this.liveRound === 0 && mapPhase === "live" && (roundPhase === "live" || roundPhase === "freezetime")) {
+    // Adopt/advance the live round from map.round during live & freezetime. This
+    // covers a mid-round join (no freezetime transition seen) AND a MISSED
+    // freezetime payload (a packet gap spanning the freeze window) that would
+    // otherwise latch liveRound a round behind for the whole next round — which
+    // the multi-feed roster's equal-round vote gate relies on being tight.
+    // Monotonic catch-up only (never backwards), and NOT during 'over': map.round
+    // increments early there, so a round-end snapshot would wrongly claim the next
+    // round (context() prefers liveRound for exactly that reason).
+    if (mapPhase === "live" && (roundPhase === "live" || roundPhase === "freezetime") && roundNum > this.liveRound) {
       this.liveRound = roundNum;
     }
 

@@ -128,10 +128,18 @@ export class RosterManager {
     this.adoptPrimaryIfNeeded(steamid);
     const isPrimary = this.isPrimary(steamid);
 
-    // A new match for THIS feed (its own tracker says so, even when the global
-    // matchStart was suppressed because the previous match was abandoned without a
-    // gameover): its side votes from the previous match no longer apply.
-    if (rawEvents.some((e) => e.type === "matchStart")) {
+    // A genuinely NEW match for THIS feed: its tracker emitted matchStart AND the
+    // scoreboard is 0-0 (a fresh game). Its side votes from the previous match no
+    // longer apply. The score gate is what separates a real new match (including an
+    // abandon→requeue whose global matchStart was suppressed) from a mid-match
+    // menu/warmup/gameover blip that also re-emits matchStart but resumes at the
+    // live score — wiping a confirmed teammate's tally there would briefly drop
+    // them from the squad and from authority-fallback eligibility.
+    if (
+      rawEvents.some((e) => e.type === "matchStart") &&
+      (feed.ctx.ourScore ?? 0) === 0 &&
+      (feed.ctx.theirScore ?? 0) === 0
+    ) {
       feed.sameSide = 0;
       feed.oppSide = 0;
     }

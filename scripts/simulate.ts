@@ -1165,6 +1165,25 @@ console.log("\n=== scenario: multi-feed — side votes reset between matches (fo
 }
 
 // ---------------------------------------------------------------------------
+console.log("\n=== scenario: multi-feed — a mid-match blip doesn't wipe a teammate's confirmation ===");
+{
+  const { r, run } = rosterRig(P1);
+  run("P1 r5 live", payload({ provider: P1, roundPhase: "live", round: 4, team: "CT", ctScore: 3, tScore: 1 }));
+  run("P2 r5 live", payload({ provider: P2, roundPhase: "live", round: 4, name: "Mouse", team: "CT", ctScore: 3, tScore: 1 }));
+  run("P2 r5 live 2", payload({ provider: P2, roundPhase: "live", round: 4, name: "Mouse", team: "CT", ctScore: 3, tScore: 1 }));
+  expect(r.context().team?.members.some((m) => m.name === "Mouse") === true, "P2 confirmed teammate mid-match");
+  // Primary moves on to round 6; P2 has a network blip (one menu frame) and
+  // resumes a round behind — so its resume casts no fresh vote. The vote tally
+  // must survive the spurious matchStart (scoreboard is 3-1, not a new game),
+  // or P2 would drop out of the squad for the gap.
+  run("P1 r6 freeze", payload({ provider: P1, roundPhase: "freezetime", round: 5, team: "CT", ctScore: 3, tScore: 1 }));
+  run("P1 r6 live", payload({ provider: P1, roundPhase: "live", round: 5, team: "CT", ctScore: 3, tScore: 1 }));
+  run("P2 menu blip", { provider: { name: "cs2", appid: 730, version: 1, steamid: P2, timestamp: 0 } } as GsiPayload);
+  run("P2 resume (a round behind)", payload({ provider: P2, roundPhase: "live", round: 4, name: "Mouse", team: "CT", ctScore: 3, tScore: 1 }));
+  expect(r.context().team?.members.some((m) => m.name === "Mouse") === true, "P2 stays a teammate through a mid-match blip (votes not wiped at 3-1)");
+}
+
+// ---------------------------------------------------------------------------
 console.log("\n=== scenario: multi-feed — abandoning a match still announces the NEXT one ===");
 {
   const { run } = rosterRig(P1);
