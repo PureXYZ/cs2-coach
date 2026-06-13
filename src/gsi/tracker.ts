@@ -47,9 +47,11 @@ export interface MatchContext {
   ourSide?: Team;
   ourScore?: number;
   theirScore?: number;
-  /** Consecutive losses for our team — drives loss-bonus economy advice. */
+  /** Our team's loss counter (GSI decays it on a win rather than zeroing it —
+   *  treat it as the loss-bonus level, not a literal in-a-row count). */
   ourLossStreak?: number;
-  /** Consecutive losses for THEIR team — the only enemy-economy signal GSI gives. */
+  /** THEIR loss counter, same decaying semantics — the only enemy-economy
+   *  signal GSI gives. */
   theirLossStreak?: number;
   /** Tactical timeouts our team still has available. */
   ourTimeoutsLeft?: number;
@@ -57,9 +59,12 @@ export interface MatchContext {
   hasBomb?: true;
   /** Own deaths inside the first ~20s of a round this match (present when > 0). */
   earlyDeaths?: number;
-  /** Cross-session trend lines from past matches — attached by the engine on
-   *  smart-tier moments only, so mid-round prompts stay lean. */
+  /** Cross-session trend lines from past matches — attached by the engine at
+   *  the storytelling moments only (match start, halftime, match end). */
   recentForm?: string[];
+  /** One-shot engine flag: this freezetime's line should call the tactical
+   *  timeout (set at most once per cooldown window, so the LLM can't nag). */
+  suggestTimeout?: true;
   /** Someone is one round from taking the match — saving is pointless, say so. */
   matchPoint?: "us" | "them";
   /** Last round before a half/OT money reset (MR12 round 12/24, then every 3rd) — saving is pointless. */
@@ -129,6 +134,9 @@ const KNIFE_KILL_REWARD = 1_500;
 // Death forensics: facts go into match memory as notables; the LLM does the roasting.
 /** state.flashed is a 0-255 whiteout intensity; above this the player was effectively blind. */
 const FLASHED_BLIND_MIN = 160;
+/** state.burning is 0-255 too and decays — a residual tail from clipping a fire
+ *  edge shouldn't read as burning to death, so require real intensity. */
+const BURNING_DEATH_MIN = 150;
 /** A molly flies ~1s and burns ~7s — fire deaths inside this window after our own
  *  fire-nade throw get blamed on the player's own molly. */
 const OWN_MOLLY_BLAME_MS = 10_000;
@@ -169,9 +177,10 @@ export class GsiTracker {
   private roundLiveAt: number | null = null;
   private bombPlantedAt: number | null = null;
   private lastUpdateAt: number | null = null;
-  /** When the current/last match went live — kept after gameover so the
-   *  post-match Leetify lookup can match the right game. */
-  private matchStartAt: number | null = null;
+  /** Last own match_stats seen on any self frame — survives the death-cam
+   *  spectate switch and the gameover baseline wipe, so the post-match record
+   *  keeps the K/D even when the player died in the final round. */
+  private lastOwnStats: { kills: number; assists: number; deaths: number; mvps: number } | null = null;
   private readonly memory = new MatchMemory();
   /**
    * The user's side survives death here: once dead, the player block describes a
@@ -204,14 +213,16 @@ export class GsiTracker {
 
     // A tactical timeout flips map.phase to timeout_ct/timeout_t and back to
     // live — that resume must not read as a fresh match (it would wipe the
-    // match memory mid-game and announce "match found").
+    // match memory mid-game and announce "match found"). Gated on inMatch so a
+    // COLD start during a timeout/halftime still adopts the match properly.
     const midMatchPhase =
-      prevMapPhase === "live" || prevMapPhase === "intermission" || prevMapPhase === "timeout_ct" || prevMapPhase === "timeout_t";
+      this.inMatch &&
+      (prevMapPhase === "live" || prevMapPhase === "intermission" || prevMapPhase === "timeout_ct" || prevMapPhase === "timeout_t");
     if (map && mapPhase === "live" && !midMatchPhase) {
       this.inMatch = true;
       this.announcedMatchPointAt = null;
       this.liveRound = 0;
-      this.matchStartAt = now;
+      this.lastOwnStats = null;
       this.memory.reset();
       events.push({ type: "matchStart", map: map.name ?? "unknown", mode: map.mode ?? "unknown" });
     }
@@ -220,7 +231,10 @@ export class GsiTracker {
       events.push({ type: "halftime" });
     }
 
-    if (mapPhase === "gameover" && prevMapPhase !== "gameover") {
+    // prev must exist: a process restart during the post-match scoreboard would
+    // otherwise re-fire matchEnd for a match this process never saw — and now
+    // persist a junk session record and post a duplicate debrief.
+    if (prev && mapPhase === "gameover" && prevMapPhase !== "gameover") {
       const { ourScore, theirScore } = this.scores(payload, ourSide);
       events.push({
         type: "matchEnd",
@@ -333,6 +347,10 @@ export class GsiTracker {
         burning: s.burning,
         nadesCarried: this.allNadeCount(payload.player),
       };
+      // Cached past death/spectate/gameover for the post-match record — the
+      // gameover-frame player block usually describes a spectated teammate.
+      const ms = payload.player.match_stats;
+      if (ms) this.lastOwnStats = { kills: ms.kills, assists: ms.assists, deaths: ms.deaths, mvps: ms.mvps };
 
       // Grenade throws first: the inventory shrinks seconds before the kill lands,
       // so by the time round_kills ticks up the throw is already on record.
@@ -343,7 +361,10 @@ export class GsiTracker {
       // Known limitation: dropping a grenade to a teammate (rare mid-live) also
       // shrinks the inventory and could mis-credit a knife kill to "the nade" —
       // GSI can't tell a drop from a throw, and the wrong call is harmless hype.
-      if (roundPhase === "live" || roundPhase === "over") {
+      // Alive only: the death frame EMPTIES the weapons list, and diffing it
+      // would register every carried nade as a phantom "throw" — which the
+      // death forensics below would then read as dying in your own molly.
+      if ((roundPhase === "live" || roundPhase === "over") && s.health > 0) {
         const nades = this.nadeUnits(payload.player);
         if (this.prevNades) {
           for (const [name, units] of Object.entries(this.prevNades)) {
@@ -426,10 +447,16 @@ export class GsiTracker {
           if (flashed >= FLASHED_BLIND_MIN) {
             this.memory.recordNotable(this.liveRound, "died while flashed");
           }
-          if (burning > 0) {
+          if (burning >= BURNING_DEATH_MIN) {
             const ownFire =
               this.lastNadeThrows.fire !== undefined && now - this.lastNadeThrows.fire <= OWN_MOLLY_BLAME_MS;
-            this.memory.recordNotable(this.liveRound, ownFire ? "died in their own molly fire" : "died burning");
+            // The own-molly variant states only what's knowable: the player's
+            // own fire nade went out seconds before they burned down. GSI has
+            // no damage attribution, so the string must not over-claim.
+            this.memory.recordNotable(
+              this.liveRound,
+              ownFire ? "died burning seconds after throwing their own molly" : "died burning",
+            );
           }
           if (this.prevSelf.nadesCarried >= 2) {
             this.memory.recordNotable(this.liveRound, `died with ${this.prevSelf.nadesCarried} unthrown grenades`);
@@ -601,24 +628,22 @@ export class GsiTracker {
     pistols: { first?: "won" | "lost"; second?: "won" | "lost" };
     earlyDeaths: number;
     notables: string[];
+    /** Own K/A/D/MVPs from the last self frame — present even when the player
+     *  died in the final round (the gameover context fields would be empty). */
+    stats?: { kills: number; assists: number; deaths: number; mvps: number };
   } {
     return {
       rounds: this.memory.allRounds(),
       pistols: this.memory.pistolResults(),
       earlyDeaths: this.memory.earlyDeaths(),
       notables: this.memory.notables(12),
+      stats: this.lastOwnStats ?? undefined,
     };
   }
 
   /** SteamID64 of the local player (from the GSI provider block), once seen. */
   steamId(): string | undefined {
     return this.prev?.provider?.steamid;
-  }
-
-  /** Epoch ms when the current/last match went live — kept after gameover so
-   *  the post-match Leetify lookup can identify the right game. */
-  matchStartedAtMs(): number | null {
-    return this.matchStartAt;
   }
 
   isInMatch(): boolean {

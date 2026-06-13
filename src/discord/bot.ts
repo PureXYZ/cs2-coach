@@ -252,16 +252,21 @@ export async function postDebrief(client: Client, channelId: string, data: Debri
  * nothing stored — this posts and forgets.
  */
 export async function postLeetifyFollowup(message: Message, stats: LeetifyMatchStats): Promise<void> {
+  // != null on purpose: the API uses JSON null for unscored fields, and
+  // "K/D **null**" in the embed would be the bug.
   const parts = [
-    stats.kdRatio !== undefined ? `K/D **${stats.kdRatio}**` : undefined,
-    stats.adr !== undefined ? `ADR **${stats.adr}**` : undefined,
-    stats.hsKills !== undefined ? `**${stats.hsKills}** HS kills` : undefined,
-    stats.tradeKills !== undefined ? `**${stats.tradeKills}** trade kills` : undefined,
-    stats.leetifyRating !== undefined
+    stats.kdRatio != null
+      ? `K/D **${stats.kdRatio}**${stats.totalKills != null && stats.totalDeaths != null ? ` (${stats.totalKills}/${stats.totalDeaths})` : ""}`
+      : undefined,
+    stats.adr != null ? `ADR **${stats.adr}**` : undefined,
+    stats.hsKills != null ? `**${stats.hsKills}** HS kills` : undefined,
+    stats.accuracyHead != null ? `HS accuracy **${stats.accuracyHead}%**` : undefined,
+    stats.tradeKills != null ? `**${stats.tradeKills}** trade kills` : undefined,
+    stats.leetifyRating != null
       ? `Leetify rating **${stats.leetifyRating >= 0 ? "+" : ""}${stats.leetifyRating}**`
       : undefined,
-    stats.reactionTimeMs !== undefined ? `TTD **${stats.reactionTimeMs}ms**` : undefined,
-    stats.preaim !== undefined ? `preaim **${stats.preaim}°**` : undefined,
+    stats.reactionTimeMs != null ? `TTD **${stats.reactionTimeMs}ms**` : undefined,
+    stats.preaim != null ? `preaim **${stats.preaim}°**` : undefined,
   ].filter(Boolean);
   if (parts.length === 0) return;
   try {

@@ -185,7 +185,8 @@ feed("r2 over", payload({ roundPhase: "over", round: 2, winTeam: "T", ctScore: 1
 console.log("\n=== scenario: death → spectate teammate's triple kill ===");
 feed("r3 freeze", payload({ roundPhase: "freezetime", round: 2, ctScore: 1, tScore: 1 }));
 feed("r3 live", payload({ roundPhase: "live", round: 2, ctScore: 1, tScore: 1, kills: 1 }));
-feed("death", payload({ roundPhase: "live", round: 2, ctScore: 1, tScore: 1, state: { health: 0 }, kills: 1 }));
+// Real GSI empties the weapons list on the death frame — model that.
+feed("death", payload({ roundPhase: "live", round: 2, ctScore: 1, tScore: 1, state: { health: 0 }, kills: 1, weapons: {} }));
 expect(has("death"), "own death detected");
 feed("spectating mate (their 1k = baseline)", payload({ roundPhase: "live", round: 2, ctScore: 1, tScore: 1, steamid: MATE, state: { round_kills: 1 }, kills: 3 }));
 feed("mate 2nd kill", payload({ roundPhase: "live", round: 2, ctScore: 1, tScore: 1, steamid: MATE, state: { round_kills: 2 }, kills: 3 }));
@@ -585,15 +586,53 @@ console.log("\n=== scenario: enemy loss streak + timeout call (LLM-less) at free
   const e = new CoachEngine((req) => out.push(req), null, { getCtx: () => t.context() });
   const run = (p: GsiPayload) => { const ev = t.update(p); if (ev.length) e.handle(ev, t.context()); };
   run(payload({ mapPhase: "warmup" }));
-  run(payload({ roundPhase: "freezetime", round: 6, ctScore: 1, tScore: 5, ctLosses: 5, tLosses: 0 }));
+  // matchStart alone first — a same-batch round-1 freezetime is suppressed by design.
+  run(payload({ roundPhase: "live", round: 5, ctScore: 1, tScore: 5, ctLosses: 5 }));
+  run(payload({ roundPhase: "freezetime", round: 5, ctScore: 1, tScore: 5, ctLosses: 5, tLosses: 0 }));
   const ctxT = t.context();
   expect(ctxT.ourLossStreak === 5, `our loss streak read (${ctxT.ourLossStreak})`);
   expect(ctxT.theirLossStreak === 0, `enemy loss streak exposed in context (${ctxT.theirLossStreak})`);
   expect(ctxT.ourTimeoutsLeft === 1, `timeouts remaining exposed (${ctxT.ourTimeoutsLeft})`);
   const timeoutLine = out.find((s) => s.category === "timeout");
   expect(timeoutLine !== undefined, "canned timeout call spoken on a 5-loss streak (no LLM)");
-  expect(timeoutLine !== undefined && /timeout|tac\b/i.test(timeoutLine.text), `timeout line makes the call ("${timeoutLine?.text.slice(0, 60)}")`);
+  expect(timeoutLine !== undefined && /timeout|\btac\b|tactical/i.test(timeoutLine.text), `timeout line makes the call ("${timeoutLine?.text.slice(0, 60)}")`);
   expect(out.some((s) => s.category === "economy"), "economy line still speaks alongside it");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: matchStart + round-1 freezetime → ONE line that carries the pistol call ===");
+{
+  const { out, engine: e } = freshEngine();
+  e.handle(
+    [
+      { type: "matchStart", map: "de_mirage", mode: "competitive" },
+      { type: "freezetime", round: 1 },
+    ],
+    { ...tracker.context(), roundPhase: "freezetime", roundKind: "pistol", money: 800, playerIsSelf: true },
+  );
+  const matchLines = out.filter((s) => s.category === "match");
+  expect(matchLines.length === 1, "exactly one line for the matchStart+freezetime batch");
+  expect(!out.some((s) => s.category === "economy"), "no separate economy line racing the greeting");
+  expect(
+    /armor|util|kevlar|flash|nade|pistol|pack|group|together|five/i.test(matchLines[0]?.text ?? ""),
+    `the one line still carries the pistol call ("${matchLines[0]?.text.slice(0, 80)}")`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: LLM timeout directive rides the snapshot as a one-shot flag ===");
+{
+  const captured: MatchContext[] = [];
+  const fakeLlm = {
+    line: (c: MatchContext) => { captured.push(c); return Promise.resolve(null); },
+    recordSpoken: () => {},
+  } as unknown as LlmCoach;
+  const e = new CoachEngine(() => {}, fakeLlm, { getCtx: () => tracker.context() });
+  const lossCtx = { ...tracker.context(), ourLossStreak: 5, ourTimeoutsLeft: 1, money: 4000, playerIsSelf: true, roundPhase: "freezetime" };
+  e.handle([{ type: "freezetime", round: 7 }], lossCtx);
+  expect(captured[0]?.suggestTimeout === true, "freezetime prompt carries the timeout directive");
+  e.handle([{ type: "teamkill" }], lossCtx);
+  expect(captured[1]?.suggestTimeout === undefined, "non-freezetime prompts never carry it");
 }
 
 // ---------------------------------------------------------------------------
@@ -628,7 +667,9 @@ console.log("\n=== scenario: death forensics — flashed, full pockets, own moll
     w2: { name: "weapon_smokegrenade", type: "Grenade", state: "holstered", ammo_reserve: 1 },
   } as const;
   run(payload({ roundPhase: "live", round: 0, weapons: nadePockets, state: { flashed: 255 } }));
-  run(payload({ roundPhase: "live", round: 0, weapons: nadePockets, state: { flashed: 255, health: 0 } }));
+  // Real GSI empties the weapons list on the death frame — the forensics must
+  // come from the last ALIVE frame, so the sim models the wipe.
+  run(payload({ roundPhase: "live", round: 0, weapons: {}, state: { flashed: 255, health: 0 } }));
   const ctxF = t.context();
   expect(ctxF.notables?.some((n) => n.includes("died while flashed")) === true, "blind death recorded as notable");
   expect(ctxF.notables?.some((n) => n.includes("2 unthrown grenades")) === true, "full-pockets death recorded");
@@ -643,8 +684,50 @@ console.log("\n=== scenario: death forensics — flashed, full pockets, own moll
   run(payload({ roundPhase: "live", round: 1, weapons: mollyHand }));
   run(payload({ roundPhase: "live", round: 1, weapons: rifleOnly })); // molly left the inventory
   run(payload({ roundPhase: "live", round: 1, weapons: rifleOnly, state: { burning: 200 } }));
-  run(payload({ roundPhase: "live", round: 1, weapons: rifleOnly, state: { burning: 200, health: 0 } }));
+  run(payload({ roundPhase: "live", round: 1, weapons: {}, state: { burning: 200, health: 0 } }));
   expect(t.context().notables?.some((n) => n.includes("own molly")) === true, "burning death inside own molly window blamed on the player");
+
+  // Enemy fire with an UNTHROWN incendiary in pocket: the death-frame wipe
+  // must not register a phantom throw and blame the player's own molly.
+  run(payload({ roundPhase: "freezetime", round: 2 }));
+  const rifleAndInc = {
+    w0: { name: "weapon_ak47", type: "Rifle", state: "active", ammo_clip: 30 },
+    w1: { name: "weapon_incgrenade", type: "Grenade", state: "holstered", ammo_reserve: 1 },
+  } as const;
+  run(payload({ roundPhase: "live", round: 2, weapons: rifleAndInc }));
+  run(payload({ roundPhase: "live", round: 2, weapons: rifleAndInc, state: { burning: 255 } }));
+  run(payload({ roundPhase: "live", round: 2, weapons: {}, state: { burning: 255, health: 0 } }));
+  const r3Notes = (t.context().notables ?? []).filter((n) => n.startsWith("R3:"));
+  expect(r3Notes.some((n) => n.includes("died burning")), "enemy-fire death recorded as died burning");
+  expect(!r3Notes.some((n) => n.includes("own molly")), "enemy-fire death NOT blamed on the player's own molly");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: dead at gameover — K/D falls back to the last own frame ===");
+{
+  const { buildMatchRecord } = await import("../src/coach/debrief.js");
+  const t = new GsiTracker();
+  const run = (p: GsiPayload) => t.update(p);
+  run(payload({ mapPhase: "warmup" }));
+  run(payload({ roundPhase: "freezetime", round: 0 }));
+  run(payload({ roundPhase: "live", round: 0 }));
+  run(payload({ roundPhase: "live", round: 0, kills: 9 })); // last alive own frame
+  run(payload({ roundPhase: "live", round: 0, kills: 9, state: { health: 0 }, weapons: {} }));
+  run(payload({ roundPhase: "live", round: 0, steamid: MATE, kills: 23, state: { round_kills: 2 } }));
+  run(payload({ roundPhase: "over", round: 1, winTeam: "CT", ctScore: 13, tScore: 7, steamid: MATE, kills: 23, roundWins: { "1": "ct_win_elimination" } }));
+  const evs = run(payload({ mapPhase: "gameover", ctScore: 13, tScore: 7, steamid: MATE, kills: 23 }));
+  const endEv = evs.find((e) => e.type === "matchEnd") as Extract<CoachEvent, { type: "matchEnd" }>;
+  expect(endEv !== undefined, "matchEnd fires with the spectated-teammate player block");
+  const rec = buildMatchRecord(endEv, t.context(), t.matchReport());
+  expect(rec.kills === 9, `K/D from the last own frame, not the spectated teammate (got ${rec.kills})`);
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: restart during the gameover screen must not re-fire matchEnd ===");
+{
+  const t = new GsiTracker();
+  const evs = t.update(payload({ mapPhase: "gameover", ctScore: 13, tScore: 7 }));
+  expect(!evs.some((e) => e.type === "matchEnd"), "first-ever payload on the scoreboard is a baseline sync, not a matchEnd");
 }
 
 // ---------------------------------------------------------------------------

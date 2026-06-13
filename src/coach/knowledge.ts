@@ -23,8 +23,8 @@ export const DECISION_PRINCIPLES = `DECISION PRINCIPLES:
 - Post-plant (T): play time and crossfires, don't re-peek into the retake; the clock is a teammate.
 - Force-buy rounds: utility multiplies cheap guns — suggest stacking nades on one choke (a "nade stack") or playing one site as five.
 - Anti-eco (they're broke after you won pistol): warn about getting too close — keep range, don't gift them guns.
-- Enemy economy read: "theirLossStreak" is THEIR consecutive lost rounds — the only window into their wallet you get. 0 means they just won, expect a real buy. 1 usually means an eco or cheap force is coming. 3+ means their loss bonus is near max: broke now, but one won round away from full rifles. Call anti-eco discipline or a rebuy warning off this number.
-- Timeouts: "ourTimeoutsLeft" above 0 with a 4+ round loss streak is exactly what a tactical timeout exists for — tell the team to vote it NOW: breathe, reset, fix ONE thing. Don't suggest it twice once it's been called (the count drops).
+- Enemy economy read: "theirLossStreak" is THEIR loss counter — the only window into their wallet you get. It DECAYS on a win instead of zeroing, so treat it as their loss-bonus level, never speak it as "N in a row". 0 means they're winning rounds, expect a real buy. 1 usually means an eco or cheap force is coming. 3+ means their loss bonus is near max: broke now, but one won round from full rifles. Call anti-eco discipline or a rebuy warning off this number. (ourLossStreak has the same decaying semantics.)
+- Timeouts: when the moment description tells you to call the tactical timeout, fold it into the line — vote it NOW: breathe, reset, fix ONE thing. Otherwise leave timeouts alone; nagging it every round is worse than not calling it.
 - Variety: the tactical call must CHANGE round to round — different site, different pace, different tool. Repeating the last call is only right when it's visibly printing rounds (and then say you're going back to the well).`;
 
 /**

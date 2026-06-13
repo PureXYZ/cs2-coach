@@ -73,6 +73,9 @@ async function main(): Promise<void> {
   // Session recording + the text debrief + the Leetify follow-up. Runs on its
   // own (the voice wrap-up line goes out in parallel); latency doesn't matter.
   const handleMatchEnd = async (event: Extract<CoachEvent, { type: "matchEnd" }>, ctx: MatchContext) => {
+    // Captured at the gameover frame — the Leetify lookup matches finished_at
+    // against this instant (±10 min) to identify the right game.
+    const endedAt = Date.now();
     const report = tracker.matchReport();
     // Snapshot the PAST-sessions form before recording this match into the store.
     const pastForm = sessions.recentForm(ctx.map);
@@ -101,9 +104,8 @@ async function main(): Promise<void> {
     // Leetify parses the demo server-side — poll until the match appears
     // (usually 5-15 min), then reply to the debrief with their numbers.
     const steam64 = tracker.steamId();
-    const since = tracker.matchStartedAtMs();
-    if (message && config.leetify.enabled && steam64 && since) {
-      const stats = await pollForLeetifyStats(new LeetifyClient(config.leetify.apiKey), steam64, since, ctx.map);
+    if (message && config.leetify.enabled && steam64) {
+      const stats = await pollForLeetifyStats(new LeetifyClient(config.leetify.apiKey), steam64, endedAt, ctx.map);
       if (stats) await postLeetifyFollowup(message, stats);
     }
   };

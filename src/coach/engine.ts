@@ -135,31 +135,51 @@ export class CoachEngine {
       return true;
     }
     if (batch.has("roundEnd") && ["bombDefused", "bombExploded", "mvp"].includes(type)) return true;
+    // matchStart owns round 1: the greeting line IS the pistol call too (the
+    // prompt and fallback fold it in) — a separate freezetime line would race
+    // the greeting for the same 15 seconds and one of them usually died stale.
+    if (batch.has("matchStart") && type === "freezetime") return true;
     return false;
   }
 
   private handleOne(event: CoachEvent, ctx: MatchContext, batch: Set<CoachEvent["type"]>): void {
     switch (event.type) {
-      case "matchStart":
+      case "matchStart": {
         this.cancelTimers();
-        // Smart tier so the greeting can call back to past sessions (recentForm) —
-        // the match is in warmup/first freezetime, latency doesn't matter here.
-        this.tacticalMoment(event, ctx, () => lines.matchStartLine(event.map), "match", 15_000, "smart", 2);
+        // Smart tier so the greeting can call back to past sessions (recentForm).
+        // When the round-1 freezetime rides in the same GSI frame (the usual
+        // case), that event is suppressed and THIS line carries the pistol
+        // call too — one moment, one line.
+        const fallback = () => {
+          const greet = lines.matchStartLine(event.map);
+          const eco = ctx.roundPhase === "freezetime" ? lines.economyLine(ctx) : null;
+          return eco ? `${greet} ${eco}` : greet;
+        };
+        this.tacticalMoment(event, ctx, fallback, "match", 15_000, "smart", 2);
         break;
+      }
 
-      case "freezetime":
+      case "freezetime": {
         this.cancelTimers();
-        this.tacticalMoment(event, ctx, () => lines.economyLine(ctx), "economy", 12_000, "smart");
-        // With the LLM on, the freezetime prompt folds the timeout call into the
-        // buy line; the LLM-less setup still has to make the call somehow.
-        if (!this.llm && (ctx.ourTimeoutsLeft ?? 0) > 0 && (ctx.ourLossStreak ?? 0) >= 4) {
-          this.say(() => lines.timeoutCallLine(ctx.ourLossStreak ?? 4), {
-            category: "timeout",
-            priority: 2,
-            maxAgeMs: 12_000,
-          });
+        // The timeout call: the LLM path folds it into the buy line via a
+        // ONE-SHOT context flag on the "timeout" cooldown bucket — without it
+        // the directive would re-fire at every freezetime of the same streak
+        // and the coach would nag the timeout round after round.
+        const wantTimeout =
+          (ctx.ourTimeoutsLeft ?? 0) > 0 && (ctx.ourLossStreak ?? 0) >= 4 && !this.deps.isQuiet?.();
+        let ftCtx = ctx;
+        if (wantTimeout && this.llm && this.passesCooldown("timeout")) {
+          this.lastSpokenAt.set("timeout", Date.now());
+          ftCtx = { ...ctx, suggestTimeout: true };
+        }
+        this.tacticalMoment(event, ftCtx, () => lines.economyLine(ctx), "economy", 12_000, "smart");
+        // The LLM-less setup still has to make the call somehow (same bucket,
+        // so it doesn't repeat either).
+        if (!this.llm && wantTimeout) {
+          this.say(() => lines.timeoutCallLine(), { category: "timeout", priority: 2, maxAgeMs: 12_000 });
         }
         break;
+      }
 
       case "roundLive":
         this.scheduleLateRoundCallout();
@@ -260,13 +280,16 @@ export class CoachEngine {
 
       case "matchEnd":
         this.cancelTimers();
+        // The spoken wrap-up snapshots its context (and recentForm) FIRST —
+        // the hook below records this match into the session store, and the
+        // wrap-up must not see the match it's announcing as "past form".
+        this.tacticalMoment(event, ctx, () => lines.matchEndLine(event.won, event.ourScore, event.theirScore), "match", 30_000, "smart");
         // Quiet or not: the session store and the text debrief still want the match.
         try {
           this.deps.onMatchEnd?.(event, ctx);
         } catch (err) {
           log.error("coach", "onMatchEnd hook failed", err);
         }
-        this.tacticalMoment(event, ctx, () => lines.matchEndLine(event.won, event.ourScore, event.theirScore), "match", 30_000, "smart");
         break;
 
       case "kill": {
@@ -386,11 +409,13 @@ export class CoachEngine {
     // Snapshot the context now; the game moves on while Claude thinks. Staleness
     // is anchored to eventAt, so a slow response gets dropped instead of spoken late.
     const snapshot = { ...ctx };
-    if (tier === "smart") {
-      // Slow moments get the expensive extras: cross-session form for callbacks,
-      // and — at the two storytelling moments — the unabridged round history.
+    // The storytelling moments get the expensive extras: cross-session form
+    // for callbacks (NOT every freezetime — past-session roast material in
+    // every buy call invites callback chatter at routine moments), and the
+    // unabridged round history at halftime/match end.
+    if (event.type === "matchStart" || event.type === "halftime" || event.type === "matchEnd") {
       snapshot.recentForm = this.deps.recentForm?.();
-      if (event.type === "halftime" || event.type === "matchEnd") {
+      if (event.type !== "matchStart") {
         const full = this.deps.fullHistory?.();
         if (full && full.length > (snapshot.history?.length ?? 0)) snapshot.history = full;
       }

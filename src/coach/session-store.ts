@@ -46,7 +46,8 @@ const STORE_FILE = process.env.SESSION_STORE_FILE ?? "state/sessions.json";
 function dayLabel(iso: string, now: Date): string {
   const then = new Date(iso);
   if (Number.isNaN(then.getTime())) return "";
-  const days = Math.floor((now.setHours(0, 0, 0, 0), now.getTime() - new Date(then).setHours(0, 0, 0, 0)) / 86_400_000);
+  // Round, not floor: a DST shift makes midnight-to-midnight 23 or 25 hours.
+  const days = Math.round((now.setHours(0, 0, 0, 0), now.getTime() - new Date(then).setHours(0, 0, 0, 0)) / 86_400_000);
   if (days <= 0) return "today";
   if (days === 1) return "yesterday";
   return `${days} days ago`;

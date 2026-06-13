@@ -513,7 +513,7 @@ export function lateRoundLine(side: string | undefined, hasBomb = false): string
       "Walking the bomb around like a dog. Thirty seconds. It needs a site, now.",
       "A or B, your pick, but pick one. You're carrying. Thirty-ish seconds.",
       "It's you, the bomb, and thirty seconds. One of you better fucking commit.",
-      "Holy shit, you still have it. Half a minute. Get it down somewhere.",
+      "Holy shit, you still have the bomb. Half a minute. Get it down somewhere.",
       "The bomb doesn't plant from your pocket. Find a site, walk it in.",
       "You've got the C4. That makes you the plan. Clock's at thirty-five. Plant.",
       "Quit scouting. You're the delivery guy and the package is late. Any site. Go.",
@@ -588,9 +588,11 @@ export function bombTenLine(side: string | undefined, fighting = false): string 
  * losses with a timeout in the bank. With the LLM enabled the freezetime
  * prompt folds the timeout into the buy call instead.
  */
-export function timeoutCallLine(lossStreak: number): string {
+export function timeoutCallLine(): string {
+  // No "N in a row" claims here: GSI's loss counter decays on a win instead of
+  // resetting, so a literal streak number could be wrong out loud.
   return pick("timeoutCall", [
-    `That's ${lossStreak} in a row. Timeout, please. Even I need a minute, and I'm sitting down.`,
+    "Take the timeout, please. Even I need a minute, and I'm sitting down.",
     "Scoreboard looks like a crime scene. Take the fucking tac and stop donating rounds.",
     "Vote the timeout, people. A short break where nobody dies. Imagine that.",
     "Saving the tactical for what, another ass-kicking? Use it. Catch your breath.",
