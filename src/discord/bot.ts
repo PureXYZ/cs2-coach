@@ -2,11 +2,13 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import {
   ActionRowBuilder,
+  AttachmentBuilder,
   ButtonBuilder,
   ButtonInteraction,
   ButtonStyle,
   ChatInputCommandInteraction,
   Client,
+  DiscordAPIError,
   Events,
   GatewayIntentBits,
   GuildMember,
@@ -14,6 +16,7 @@ import {
   SlashCommandBuilder,
 } from "discord.js";
 import { log } from "../log.js";
+import { buildCfg, resolveUri } from "../gsi/cfg.js";
 import type { VoiceCoach } from "./voice.js";
 import { clearVoiceChannel, saveVoiceChannel } from "./voice-state.js";
 
@@ -23,14 +26,21 @@ export interface BotDeps {
   voice: VoiceCoach;
   /** /coach quiet's flag — owned by index.ts so the engine shares it. */
   quiet: { get: () => boolean; set: (on: boolean) => void };
+  /** Inputs for /coach setup — builds the GSI cfg handed to a friend. A falsy
+   *  publicHost disables the command (the container can't self-detect its public
+   *  address; emitting a Docker-bridge IP would be confidently wrong). */
+  cfg: { publicHost?: string; token: string; port: number };
   status: () => {
     gsiAgeMs: number | null;
     ttsProviders: string[];
     llmModel: string | null;
     /** Cross-session memory size, for the status readout. */
     sessionsOnFile: number;
-    /** How many player feeds (you + friends) are currently wired in. */
+    /** How many CONFIRMED teammate feeds (same match + side) are wired in. */
     wiredFeeds: number;
+    /** Every feed POSTing right now (raw presence), newest first — the honest
+     *  "is your CS2 talking to the coach?" signal for a friend confirming setup. */
+    connectedFeeds: { name: string; ageMs: number }[];
   };
 }
 
@@ -91,6 +101,9 @@ const commands = [
   new SlashCommandBuilder()
     .setName("coach")
     .setDescription("CS2 AI coach")
+    .addSubcommand((sub) =>
+      sub.setName("setup").setDescription("Get connected — DMs you the CS2 config file (no software to install)"),
+    )
     .addSubcommand((sub) => sub.setName("join").setDescription("Join your current voice channel"))
     .addSubcommand((sub) => sub.setName("leave").setDescription("Leave the voice channel"))
     .addSubcommand((sub) =>
@@ -170,6 +183,11 @@ export async function startBot(deps: BotDeps): Promise<Client> {
 
 async function handleCommand(interaction: ChatInputCommandInteraction, deps: BotDeps): Promise<void> {
   switch (interaction.options.getSubcommand()) {
+    case "setup": {
+      await handleSetup(interaction, deps);
+      return;
+    }
+
     case "join": {
       const member = interaction.member;
       const channel = member instanceof GuildMember ? member.voice.channel : null;
@@ -254,15 +272,22 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
       const s = deps.status();
       const gsi =
         s.gsiAgeMs === null
-          ? "❌ no game state received yet — is CS2 running with the cfg installed?"
+          ? "❌ no game state received yet — is CS2 running with the cfg installed? Run `/coach setup` to (re)install it."
           : s.gsiAgeMs < 60_000
             ? `✅ live (last update ${(s.gsiAgeMs / 1000).toFixed(1)}s ago)`
             : `⚠️ stale (last update ${Math.round(s.gsiAgeMs / 1000)}s ago)`;
+      const feeds = s.connectedFeeds;
+      const squad =
+        feeds.length === 0
+          ? "no game feeds connected right now — launch CS2 with the cfg installed (`/coach setup`) and you'll show up here"
+          : `${feeds.length} connected: ${feeds
+              .map((f) => `**${f.name}** (${Math.max(0, Math.round(f.ageMs / 1000))}s ago)`)
+              .join(", ")}${s.wiredFeeds > 1 ? ` — team coaching live (${s.wiredFeeds} on your squad)` : ""}`;
       await interaction.reply({
         content: [
           `**GSI:** ${gsi}`,
           `**Voice:** ${deps.voice.connected ? "✅ connected" : "❌ not in a channel"} (queue: ${deps.voice.queueLength})`,
-          `**Squad:** ${s.wiredFeeds} player feed${s.wiredFeeds === 1 ? "" : "s"} wired in${s.wiredFeeds > 1 ? " (team coaching live)" : ""}`,
+          `**Feeds:** ${squad}`,
           `**Coach:** ${deps.quiet.get() ? "🔇 muted (`/coach quiet` to unmute)" : "🎙️ speaking"}`,
           `**TTS:** ${s.ttsProviders.join(" → ")}`,
           `**LLM:** ${s.llmModel ?? "disabled (rule-based lines only)"}`,
@@ -272,6 +297,67 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
       });
       return;
     }
+  }
+}
+
+/** The friend-facing install steps. Deliberately uses Steam's own "Browse local
+ *  files" to open the right folder — that works no matter which drive/library CS2
+ *  lives in, with NO script for the friend to run (the cfg is plain data, never a
+ *  program). `host` is shown so they can sanity-check where their game will post. */
+function setupInstructions(host: string): string {
+  return [
+    "**CS2 Coach — get connected (about 2 minutes, nothing to install)**",
+    "",
+    "I've attached `gamestate_integration_coach.cfg`. It's a plain text config that tells CS2 to send its game state to the coach — it is **not** a program, it just sits in a folder.",
+    "",
+    "1. **Save** the attached file.",
+    "2. In **Steam**, right-click **Counter-Strike 2** → **Manage** → **Browse local files**.",
+    "3. In the window that opens, go into **`game`** → **`csgo`** → **`cfg`**.",
+    "4. **Move the file** into that `cfg` folder.",
+    "5. **Fully close and reopen CS2** — the config is only read at launch, so alt-tabbing isn't enough.",
+    "6. Back here, run **`/coach status`** — your name should appear under **Feeds** within ~10 seconds.",
+    "",
+    `_(Your game will post to \`${host}\`. Same file for everyone in the squad — the coach tells you apart by Steam ID.)_`,
+  ].join("\n");
+}
+
+/** /coach setup — hands the friend their GSI cfg as a file (data, not an
+ *  executable) via DM, with an ephemeral fallback if their DMs are closed. The cfg
+ *  carries the shared token, so it must stay private to the invoker — never a
+ *  public channel. */
+async function handleSetup(interaction: ChatInputCommandInteraction, deps: BotDeps): Promise<void> {
+  const { publicHost, token, port } = deps.cfg;
+  if (!publicHost) {
+    await interaction.reply({
+      content:
+        "Self-setup isn't switched on for this coach yet — whoever hosts the bot needs to set `COACH_PUBLIC_HOST` (the address CS2 should send game state to). Give them a nudge.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const buf = Buffer.from(buildCfg({ host: publicHost, port, token }), "utf8");
+  const makeFile = () => new AttachmentBuilder(buf, { name: "gamestate_integration_coach.cfg" });
+  const guide = setupInstructions(resolveUri(publicHost, port));
+
+  try {
+    await interaction.user.send({ content: guide, files: [makeFile()] });
+    await interaction.editReply(
+      "📬 Check your DMs — I sent your config file and the (2-minute, no-software) setup steps. Drop it in, restart CS2, then run `/coach status` to confirm.",
+    );
+  } catch (err) {
+    // 50007 = "Cannot send messages to this user" → their DMs are closed. Fall
+    // back to the ephemeral reply (still private to just this person).
+    if (err instanceof DiscordAPIError && err.code === 50007) {
+      await interaction.editReply({
+        content: `Your DMs are closed, so here it is privately (only you can see this) 👇\n\n${guide}`,
+        files: [makeFile()],
+      });
+      return;
+    }
+    throw err;
   }
 }
 
