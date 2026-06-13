@@ -1019,6 +1019,26 @@ export function squadOpeningDeathsLine(name: string): string {
   ]);
 }
 
+/**
+ * One-shot freezetime jab when the player is on an opening-deaths spiral (three-
+ * plus rounds dying in the first ten seconds). Roasts the over-peeking and tells
+ * them to slow down THIS round — hold an angle, let the fight come, reset the
+ * head. Fired as a short canned ADD alongside the buy call, gated by a long
+ * cooldown upstream so it scolds once, not every freezetime.
+ */
+export function tiltLine(): string {
+  return pick("tilt", [
+    "Third round straight you have died in the first ten seconds. Stop W-keying into them — hold an angle and let them come.",
+    "You keep dying the second the round starts. Take a breath. Hold a spot, don't go hunting. Let them peek you for once.",
+    "Same death every round — first ten seconds, dry peek, gone. Slow the hell down. Park on an angle and wait.",
+    "You're feeding openers like it's a job. Quit running it down. Hold your angle, trade, reset your damn head.",
+    "Every round you sprint out and die before I finish talking. Stop. Hold a corner, let the fight come to you.",
+    "That's a pattern now: peek, die, repeat. Break it. Sit on an angle this round and make them earn it.",
+    "You die first every single round 'cause you can't stop W-keying. Hold. Wait. Let some other idiot peek first.",
+    "Dying in the opening ten again. Breathe, hold an angle, and for once let them come to your crosshair.",
+  ]);
+}
+
 export function deathLine(cause?: "fire" | "blind"): string | null {
   // A burned/blind death is a named, roast-worthy way to go — speak it reliably
   // (a live session burned to death and the coach said nothing). The 25s death

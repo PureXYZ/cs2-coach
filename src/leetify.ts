@@ -49,6 +49,12 @@ export interface LeetifyMatchStats {
   adr?: number;
   hsKills?: number;
   tradeKills?: number;
+  /**
+   * QUALITATIVE multi-match direction only — no invented numbers, no altered
+   * values, so this respects Leetify's verbatim/no-rescale rules: it states a
+   * trend ("preaim creeping up") without ever quoting a changed figure.
+   */
+  trend?: string;
 }
 
 /** The wired crew's rows from ONE match — the primary's full stats plus each
@@ -92,6 +98,74 @@ function applyDetail(stats: LeetifyMatchStats, row: PlayerStats): void {
  */
 const MATCH_WINDOW_MS = 10 * 60_000;
 
+/** Mean of the present (non-null) numbers, or undefined when none qualify. */
+function mean(nums: number[]): number | undefined {
+  return nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : undefined;
+}
+
+/**
+ * A short QUALITATIVE form clause comparing the matched game to the up-to-3
+ * games that finished BEFORE it in the same recent_matches list — direction
+ * only, never a number, so it adds no value Leetify would object to (and it is
+ * spoken once and forgotten like the rest of the recap).
+ *
+ * Polarity matters: higher preaim = worse crosshair placement, lower
+ * reaction_time_ms = faster, higher accuracy_head = better. We only speak a
+ * metric when both the current game and the recent average for it are present.
+ */
+function buildTrend(match: RecentMatch, recent: RecentMatch[]): string | undefined {
+  const matchedAt = match.finished_at ? Date.parse(match.finished_at) : NaN;
+  if (Number.isNaN(matchedAt)) return undefined;
+
+  // Older games only, most recent first, capped at three so a single rough
+  // night doesn't get drowned out by ancient history.
+  const prior = recent
+    .filter((m) => {
+      if (m === match || !m.finished_at) return false;
+      const at = Date.parse(m.finished_at);
+      return !Number.isNaN(at) && at < matchedAt;
+    })
+    .sort((a, b) => Date.parse(b.finished_at!) - Date.parse(a.finished_at!))
+    .slice(0, 3);
+  if (!prior.length) return undefined;
+
+  const clauses: string[] = [];
+
+  const preaimNow = val(match.preaim);
+  const preaimWas = mean(prior.map((m) => val(m.preaim)).filter((n): n is number => n != null));
+  if (preaimNow != null && preaimWas != null && preaimNow !== preaimWas) {
+    clauses.push(
+      preaimNow > preaimWas
+        ? "your preaim has been creeping up the last few games"
+        : "your preaim has been tightening up the last few games",
+    );
+  }
+
+  const rtNow = val(match.reaction_time_ms);
+  const rtWas = mean(prior.map((m) => val(m.reaction_time_ms)).filter((n): n is number => n != null));
+  if (rtNow != null && rtWas != null && rtNow !== rtWas) {
+    clauses.push(
+      rtNow < rtWas
+        ? "your reaction time is trending faster lately"
+        : "your reaction time is trending slower lately",
+    );
+  }
+
+  const accNow = val(match.accuracy_head);
+  const accWas = mean(prior.map((m) => val(m.accuracy_head)).filter((n): n is number => n != null));
+  if (accNow != null && accWas != null && accNow !== accWas) {
+    clauses.push(
+      accNow > accWas
+        ? "your headshot accuracy has been climbing across recent games"
+        : "your headshot accuracy has been slipping across recent games",
+    );
+  }
+
+  if (!clauses.length) return undefined;
+  // One direction is plenty to speak — most actionable (aim) first.
+  return clauses[0]!.charAt(0).toUpperCase() + clauses[0]!.slice(1) + ".";
+}
+
 export class LeetifyClient {
   constructor(private readonly apiKey?: string) {}
 
@@ -106,10 +180,14 @@ export class LeetifyClient {
     endedAtEpochMs: number,
     map?: string,
   ): Promise<LeetifyMatchStats | null | undefined> {
-    const match = await this.findMatchEntry(steam64, endedAtEpochMs, map);
-    if (!match) return match; // undefined (unregistered) or null (not parsed yet)
+    const found = await this.findMatchEntry(steam64, endedAtEpochMs, map);
+    if (!found) return found; // undefined (unregistered) or null (not parsed yet)
 
+    const { match, recent } = found;
     const stats = profileStats(match);
+    // Qualitative form-trend (direction only, no quoted figure) — Leetify's
+    // no-rescale/verbatim rule is untouched and it's spoken once, never stored.
+    stats.trend = buildTrend(match, recent);
     // Match detail adds ADR/K/D/trades; the lightweight entry already carries
     // the headline numbers, so a detail failure is not a deal-breaker.
     try {
@@ -138,10 +216,12 @@ export class LeetifyClient {
   ): Promise<LeetifySquadStats | null | undefined> {
     const primary = squad.find((m) => m.isPrimary) ?? squad[0];
     if (!primary) return null;
-    const match = await this.findMatchEntry(primary.steam64, endedAtEpochMs, map);
-    if (!match) return match;
+    const found = await this.findMatchEntry(primary.steam64, endedAtEpochMs, map);
+    if (!found) return found;
 
+    const { match, recent } = found;
     const me = profileStats(match);
+    me.trend = buildTrend(match, recent); // the primary's multi-match form, spoken once
     const rows: LeetifySquadStats["squad"] = [];
     try {
       const detail = await this.get(`/v2/matches/${encodeURIComponent(match.id!)}`);
@@ -172,7 +252,7 @@ export class LeetifyClient {
     steam64: string,
     endedAtEpochMs: number,
     map?: string,
-  ): Promise<RecentMatch | null | undefined> {
+  ): Promise<{ match: RecentMatch; recent: RecentMatch[] } | null | undefined> {
     const profile = await this.get(`/v3/profile?steam64_id=${encodeURIComponent(steam64)}`);
     if (profile === null) return undefined;
     const recent = (profile as { recent_matches?: RecentMatch[] }).recent_matches ?? [];
@@ -191,7 +271,10 @@ export class LeetifyClient {
         bestDelta = delta;
       }
     }
-    return match ?? null;
+    // Return the matched entry AND the recent array — callers build the stats
+    // (profileStats + applyDetail) and the qualitative form-trend (buildTrend,
+    // which needs the whole recent window) from it.
+    return match ? { match, recent } : null;
   }
 
   private async get(path: string): Promise<unknown | null> {

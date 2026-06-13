@@ -13,7 +13,11 @@ export interface RoundRecord {
   /** GSI round-win token, e.g. "t_win_bomb", "ct_win_elimination". */
   how?: string;
   myKills: number;
+  /** How many of myKills were headshots — feeds the headshot-rate habit. */
+  myHeadshots: number;
   myDeath: boolean;
+  /** Own death inside the first ~10s of the round — drives the tilt/over-peek read. */
+  earlyDeath?: boolean;
   bombPlanted: boolean;
   /** Memorable moments, e.g. "knife kill", "ace", "teamkilled someone". */
   notable: string[];
@@ -69,6 +73,7 @@ export class MatchMemory {
       round,
       side,
       myKills: 0,
+      myHeadshots: 0,
       myDeath: false,
       bombPlanted: false,
       notable: [],
@@ -86,21 +91,40 @@ export class MatchMemory {
     else cur.buy = "full";
   }
 
-  recordKill(round: number): void {
-    this.ensure(round).myKills++;
+  recordKill(round: number, headshot?: boolean): void {
+    const cur = this.ensure(round);
+    cur.myKills++;
+    if (headshot) cur.myHeadshots++;
   }
 
   recordDeath(round: number): void {
     this.ensure(round).myDeath = true;
   }
 
-  recordEarlyDeath(): void {
+  recordEarlyDeath(round: number): void {
+    // Flag the round itself (so the streak walk can see it) as well as the
+    // running tally that earlyDeaths() reports to the snapshot.
+    this.ensure(round).earlyDeath = true;
     this.earlyDeathCount++;
   }
 
   /** Deaths inside the first ~20s of a round, across the match so far. */
   earlyDeaths(): number {
     return this.earlyDeathCount;
+  }
+
+  /**
+   * Consecutive most-recent rounds where the user died in the opening seconds.
+   * Walk from the newest record back, counting earlyDeath rounds until the
+   * first that is not — this is the "tilt spiral" the freezetime jab keys off.
+   */
+  earlyDeathStreak(): number {
+    let n = 0;
+    for (let i = this.rounds.length - 1; i >= 0; i--) {
+      if (this.rounds[i].earlyDeath === true) n++;
+      else break;
+    }
+    return n;
   }
 
   recordBombPlanted(round: number): void {
@@ -171,6 +195,45 @@ export class MatchMemory {
     return `${last} last ${n}`;
   }
 
+  /**
+   * Short spoken-register own-data patterns the coach can lean on this match,
+   * most actionable first, capped at 3. Every line is derived ONLY from the
+   * recorded rounds — never fabricated — so the coach can state them as fact.
+   */
+  habits(): string[] {
+    const all = this.allRounds();
+    const out: string[] = [];
+
+    // Buy-type win rate (pistols excluded — those are coin-flips, not a habit).
+    // A cold force/eco half is the most actionable thing to call, so it leads.
+    for (const buy of ["force", "eco"] as const) {
+      const attempts = all.filter((r) => r.buy === buy && r.result);
+      if (attempts.length < 2) continue;
+      const wins = attempts.filter((r) => r.result === "won").length;
+      const rate = wins / attempts.length;
+      if (rate > 0.25) continue;
+      if (buy === "force") out.push(`${wins} and ${attempts.length - wins} on force buys`);
+      // Only a genuine 0-fer earns "died for nothing"; one stolen eco still gets
+      // the count, so the roast never overstates the record into a lie.
+      else out.push(wins === 0 ? `every eco this half died for nothing` : `${wins} and ${attempts.length - wins} on ecos`);
+    }
+
+    // Opening-seconds deaths — the over-peek tell.
+    const opens = this.earlyDeaths();
+    if (opens >= 3) out.push(`${opens} opening-seconds deaths this match — stop over-peeking`);
+
+    // Died holding util (notable carries the "unthrown grenades" substring).
+    const nadeRounds = all.filter((r) => r.notable.some((n) => n.includes("unthrown grenades"))).length;
+    if (nadeRounds >= 2) out.push(`died with nades in the bag ${nadeRounds} rounds`);
+
+    // Headshot rate — only with enough kills to be a real read, not a fluke.
+    const kills = all.reduce((s, r) => s + r.myKills, 0);
+    const hs = all.reduce((s, r) => s + r.myHeadshots, 0);
+    if (kills >= 5) out.push(`${hs} of ${kills} kills were headshots`);
+
+    return out.slice(0, 3);
+  }
+
   /** Highlights from the whole match, capped, for banter callbacks. */
   notables(max = 6): string[] {
     const all = this.rounds.flatMap((r) => r.notable.map((n) => `R${r.round}: ${n}`));
@@ -187,6 +250,7 @@ export class MatchMemory {
     this.current = {
       round,
       myKills: 0,
+      myHeadshots: 0,
       myDeath: false,
       bombPlanted: false,
       notable: [],

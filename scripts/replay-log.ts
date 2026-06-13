@@ -10,6 +10,10 @@
  *
  * Run:  npm run replay -- logs/gsi-2026-06-10T22-01-22.ndjson
  *
+ * For a multi-feed capture, pass a provider.steamid as the second arg to keep
+ * only that player's frames before replaying:
+ *   npm run replay -- logs/gsi-....ndjson 7656119xxxxxxxxxx
+ *
  * NOTE: this replays through a SINGLE GsiTracker, so it's meaningful for a
  * single-player capture. A multi-feed log interleaves several friends' payloads
  * (distinguished by provider.steamid); feeding those through one tracker mixes
@@ -28,9 +32,11 @@ import type { CoachEvent } from "../src/gsi/tracker.js";
 
 const file = process.argv[2];
 if (!file) {
-  console.error("usage: npm run replay -- <logs/gsi-*.ndjson>");
+  console.error("usage: npm run replay -- <logs/gsi-*.ndjson> [provider.steamid]");
   process.exit(2);
 }
+// Optional: keep only one player's frames out of a multi-feed capture.
+const providerFilter = process.argv[3];
 
 interface LoggedFrame {
   at: string;
@@ -38,11 +44,34 @@ interface LoggedFrame {
   payload: GsiPayload;
 }
 
-const frames: LoggedFrame[] = fs
+let frames: LoggedFrame[] = fs
   .readFileSync(file, "utf8")
   .split("\n")
   .filter(Boolean)
   .map((line) => JSON.parse(line));
+
+// A single GsiTracker can only honestly replay ONE player's feed. Multi-feed
+// logs interleave several friends' payloads (one provider.steamid each); pushed
+// through one tracker they mix players, and the logged events are the fused
+// RosterManager output — so the diff is noise, not regression signal. Detect
+// that up front and either filter to a chosen provider or warn loudly.
+const providers = [...new Set(frames.map((f) => f.payload.provider?.steamid).filter(Boolean))];
+if (providerFilter) {
+  frames = frames.filter((f) => f.payload.provider?.steamid === providerFilter);
+  console.log(`Filtered to provider ${providerFilter}: ${frames.length} frame(s) kept.`);
+  if (frames.length === 0) {
+    console.error(`No frames matched provider ${providerFilter}. Present providers: ${providers.join(", ")}`);
+    process.exit(2);
+  }
+} else if (providers.length > 1) {
+  console.warn(
+    `WARNING: this log mixes ${providers.length} provider feeds (${providers.join(", ")}).\n` +
+      "  Replaying a multi-feed capture through a single tracker mixes players and the\n" +
+      "  logged events are the fused roster output, so every diff below will mislead.\n" +
+      "  Re-run with one of those ids as the second arg to filter, e.g.\n" +
+      `    npm run replay -- ${file} ${providers[0]}`,
+  );
+}
 
 const realNow = Date.now;
 let frameNow = realNow();

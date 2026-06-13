@@ -118,7 +118,9 @@ const engine = new CoachEngine(
     console.log(`  [say:${req.category}] ${req.text}`);
   },
   null,
-  { getCtx: () => tracker.context() },
+  // payloadAgeMs is required now that payloadFresh() treats a never-received feed
+  // as STALE (the old `?? 0` fix): timer callouts (bomb/late-round) bail without it.
+  { getCtx: () => tracker.context(), payloadAgeMs: () => 0 },
 );
 
 const seen: CoachEvent[] = [];

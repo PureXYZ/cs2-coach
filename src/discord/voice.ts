@@ -88,6 +88,13 @@ export class VoiceCoach {
     stream.on("error", (err) => log.error("voice", `Song stream error: ${err.message}`));
     this.songPlaying = true;
     log.info("voice", `Playing song file: ${filePath}`);
+    // A song is an explicit play-this-now — drop every in-flight/prefetched/queued
+    // coach line so none of it fires when the song ends (same clearing as
+    // clearCoachLines, but WITHOUT player.stop(): the play() call below replaces
+    // the current audio itself, and the song must keep playing).
+    this.queue = [];
+    this.discardPrefetch();
+    if (this.inFlight) this.inFlight.superseded = true;
     this.player.play(createAudioResource(stream, { inputType: StreamType.OggOpus }));
   }
 
