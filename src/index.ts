@@ -179,14 +179,21 @@ async function main(): Promise<void> {
     const soloStats = wantSquad ? null : await pollForLeetifyStats(client, steam64, endedAt, ctx.map);
     if (!squadStats && !soloStats) return;
 
-    // NEVER talk over play: the numbers land 5-15+ minutes after the match,
-    // which can be mid-way through the next one. Hold for a quiet moment
-    // (between games, warmup, menu, game closed), re-check around the slow
-    // LLM call, and keep the same guard live in the voice queue so it's
-    // re-verified right before synthesis AND right before playback.
+    // NEVER talk over play OR over a song: the numbers land 5-15+ minutes after
+    // the match, which can be mid-way through the next one (or a /coach song the
+    // user kicked off for fun). Hold for a quiet moment — between games, warmup,
+    // menu, game closed, AND no song occupying the player — re-check around the
+    // slow LLM call, and keep the same guard live in the voice queue so it's
+    // re-verified right before synthesis AND right before playback. Without the
+    // songActive gate the recap would queue behind the song and silently age out
+    // (maxAgeMs), or get wiped when playFile() clears the coach queue.
     const deadline = Date.now() + 60 * 60_000;
     const canSpeak = () =>
-      !quiet.on && voice.connected && roster.quietMomentForSpeech() && recapToken === recapSeq;
+      !quiet.on &&
+      voice.connected &&
+      !voice.songActive &&
+      roster.quietMomentForSpeech() &&
+      recapToken === recapSeq;
     const hold = async () => {
       while (!canSpeak() && recapToken === recapSeq && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 30_000));
