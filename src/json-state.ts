@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { log } from "./log.js";
 
@@ -15,7 +15,11 @@ import { log } from "./log.js";
 export function saveJsonState(file: string, tag: string, data: unknown): void {
   try {
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, JSON.stringify(data), "utf8");
+    // Atomic write: a crash/power-loss mid-write leaves either the old or the new
+    // complete file, never truncated JSON that loadJsonState would have to discard.
+    const tmp = file + ".tmp";
+    writeFileSync(tmp, JSON.stringify(data), "utf8");
+    renameSync(tmp, file);
   } catch (err) {
     log.warn(tag, `Could not save state ${file}: ${err instanceof Error ? err.message : err}`);
   }

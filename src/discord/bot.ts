@@ -428,9 +428,12 @@ async function handleCommand(interaction: ChatInputCommandInteraction, deps: Bot
  *  offers two ways in: the attached file, OR — for a friend who'd rather not
  *  download anything — pasting the cfg text shown inline. `host` is shown so they
  *  can sanity-check where their game will post; `cfg` is the file contents to
- *  paste. Stays well under Discord's 2000-char limit at any realistic token size. */
+ *  paste. Stays under Discord's 2000-char limit: at a realistic token size the
+ *  inline-cfg form is used, but if an unusually long token would push the message
+ *  past the cap we drop the inline paste block (option B) and lean on the attached
+ *  file (option A) instead — the file is sent regardless, so it always works. */
 function setupInstructions(host: string, cfg: string): string {
-  return [
+  const guide = [
     "**CS2 Coach — connect your game** (2 min, nothing to install)",
     "",
     "Open your CS2 config folder: in **Steam**, right-click **Counter-Strike 2 → Manage → Browse local files**, then open `game\\csgo\\cfg`. Get the config in there either way:",
@@ -445,6 +448,23 @@ function setupInstructions(host: string, cfg: string): string {
     "Then **fully restart CS2** and run **`/coach status`** — you'll show up under **Feeds** in ~10s.",
     `_Points your game at \`${host}\`._`,
   ].join("\n");
+
+  // Length guard: an unusually long GSI token inflates the inline cfg block enough
+  // to blow past Discord's 2000-char cap. Rather than let the whole message fail,
+  // fall back to a shorter form that drops the inline paste path (option B) and
+  // points at the always-sent attached file (option A) instead. Stays under 1900.
+  if (guide.length > 1900) {
+    return [
+      "**CS2 Coach — connect your game** (2 min, nothing to install)",
+      "",
+      "Open your CS2 config folder: in **Steam**, right-click **Counter-Strike 2 → Manage → Browse local files**, then open `game\\csgo\\cfg`, and **drop in the attached file** (`gamestate_integration_coach.cfg`).",
+      "",
+      "Then **fully restart CS2** and run **`/coach status`** — you'll show up under **Feeds** in ~10s.",
+      `_Points your game at \`${host}\`._`,
+    ].join("\n");
+  }
+
+  return guide;
 }
 
 /** /coach setup — hands the friend their GSI cfg as a file (data, not an

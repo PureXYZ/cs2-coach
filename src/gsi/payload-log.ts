@@ -44,10 +44,34 @@ export class GsiPayloadLog {
       }
     }
     // Drop the auth block — it carries the shared GSI secret, which must never reach disk.
-    const safe = { ...payload };
+    // CS2's `previously`/`added` delta blocks can mirror that auth block too, so strip it
+    // from those nested copies as well — but without mutating the original payload, which the
+    // tracker still holds a reference to.
+    const stripAuth = (v: unknown): unknown => {
+      if (v && typeof v === "object" && !Array.isArray(v) && "auth" in (v as Record<string, unknown>)) {
+        const c = { ...(v as Record<string, unknown>) };
+        delete c.auth;
+        return c;
+      }
+      return v;
+    };
+    const safe: GsiPayload = { ...payload };
     delete safe.auth;
+    if (safe.previously !== undefined) safe.previously = stripAuth(safe.previously);
+    if (safe.added !== undefined) safe.added = stripAuth(safe.added);
     this.stream.write(
       JSON.stringify({ at: new Date().toISOString(), events: events.length > 0 ? events : undefined, payload: safe }) + "\n",
     );
+  }
+
+  /** Flush and close the stream — called on shutdown so the final frames hit disk. */
+  async close(): Promise<void> {
+    const s = this.stream;
+    this.stream = null;
+    this.disabled = true;
+    if (!s) return;
+    await new Promise<void>((resolve) => {
+      s.end(() => resolve());
+    });
   }
 }

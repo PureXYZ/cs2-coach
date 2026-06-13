@@ -1,11 +1,9 @@
 import { Readable } from "node:stream";
 import { StreamType } from "@discordjs/voice";
+import { STREAM_IDLE_MS, TTS_TTFB_MS } from "./constants.js";
 import { idleGuarded } from "./idle.js";
 import { currentVoiceId } from "./voices.js";
 import type { SynthOptions, TtsProvider, TtsResult } from "./types.js";
-
-/** Mid-stream stall watchdog window — the per-fetch abort now guards only TTFB. */
-const STREAM_IDLE_MS = 5_000;
 
 /**
  * ElevenLabs Flash v2.5 over the streaming REST endpoint with native 48 kHz
@@ -50,7 +48,7 @@ export class ElevenLabsTts implements TtsProvider {
     // idleGuarded watchdog / the voice queue's synth deadline, which drop the
     // line and advance the queue rather than retrying on Deepgram/Edge.
     const controller = new AbortController();
-    const ttfbTimer = setTimeout(() => controller.abort(), 10_000);
+    const ttfbTimer = setTimeout(() => controller.abort(), TTS_TTFB_MS);
     let res: Response;
     try {
       res = await fetch(url, {

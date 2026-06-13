@@ -30,6 +30,8 @@ function intEnv(name: string, fallback: number, min?: number, max?: number): num
 function floatEnv(name: string, fallback: number, min?: number, max?: number): number {
   const raw = process.env[name];
   if (!raw) return fallback;
+  // Reject trailing garbage ("1.2abc") — parseFloat is lenient and would silently truncate.
+  if (!/^-?\d+(?:\.\d+)?$/.test(raw.trim())) throw new Error(`${name} must be a number, got "${raw}"`);
   const n = Number.parseFloat(raw);
   if (Number.isNaN(n)) throw new Error(`${name} must be a number, got "${raw}"`);
   // Fail at startup, not as a silent per-request 422 that demotes the provider.
@@ -119,11 +121,38 @@ function steamId64Env(name: string): string | undefined {
   return raw;
 }
 
+// COACH_LLM_EFFORT is passed straight to the Anthropic API; a typo'd value would
+// otherwise reach the provider and fail per-request. Validate it loudly at startup
+// instead. Empty string is allowed (it means "omit the effort field").
+function effortEnv(name: string, fallback: string): string {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  if (raw === "") return "";
+  const valid = ["low", "medium", "high", "max"];
+  if (!valid.includes(raw)) {
+    throw new Error(`${name} must be one of ${valid.join(", ")} (or empty to omit), got "${raw}"`);
+  }
+  return raw;
+}
+
+// GSI_TOKEN is interpolated verbatim into the generated KeyValues cfg; a quote,
+// space or newline would break that file's syntax. Restrict it to cfg-safe chars
+// and fail at startup rather than emit a malformed cfg.
+function tokenEnv(name: string): string {
+  const raw = process.env[name] ?? "";
+  if (raw !== "" && !/^[A-Za-z0-9._-]+$/.test(raw)) {
+    throw new Error(
+      `${name} must contain only letters, digits, dot, dash or underscore (no quotes/spaces/newlines), got an invalid value`,
+    );
+  }
+  return raw;
+}
+
 export const config = {
   gsi: {
     port: intEnv("GSI_PORT", 3000, 1, 65535),
     // Echoed by CS2 in every payload (from the cfg's auth block). Empty = accept all.
-    token: optional("GSI_TOKEN"),
+    token: tokenEnv("GSI_TOKEN"),
     // Append every payload (+ derived events) to logs/gsi-*.ndjson for offline analysis.
     logPayloads: optional("GSI_LOG_PAYLOADS", "true") !== "false",
     // Multi-feed: a teammate's feed counts as "connected/fresh" (toward alive
@@ -212,7 +241,7 @@ export const config = {
     // Reasoning effort for the smart tier (low | medium | high | max). Opus 4.8
     // defaults to "high"; "low" is ~20% faster for these one-liner replies.
     // Only sent on smart-tier calls (Haiku errors on it); empty string = omit.
-    effort: optional("COACH_LLM_EFFORT", "low"),
+    effort: effortEnv("COACH_LLM_EFFORT", "low"),
     maxTokens: intEnv("COACH_LLM_MAX_TOKENS", 150),
     // Freezetime is ~15s; if Claude hasn't answered by then the line is useless.
     timeoutMs: intEnv("COACH_LLM_TIMEOUT_MS", 9000),
@@ -245,7 +274,7 @@ export const config = {
     // coach speak with whole-team certainty ("you're the last one alive",
     // "everyone's broke"). Leave it unset and the coach always hedges to "the
     // players I can see" — safe even when someone forgets to launch the cfg.
-    squadSize: intEnv("COACH_SQUAD_SIZE", 0) || undefined,
+    squadSize: intEnv("COACH_SQUAD_SIZE", 0, 0, 5) || undefined,
     // Team-economy tactics: buy-sync calls and named drop suggestions at
     // freezetime, plus last-man framing. On by default; set false to keep the
     // coach focused on the primary player and skip the team-econ calls.
