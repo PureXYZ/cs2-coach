@@ -79,7 +79,19 @@ async function main(): Promise<void> {
     // against this instant (±10 min) to identify the right game.
     const endedAt = Date.now();
     const recapToken = ++recapSeq;
-    const record = buildMatchRecord(event, ctx, tracker.matchReport());
+    const report = tracker.matchReport();
+
+    // Only real matchmaking games belong in the cross-session history the
+    // recap lines are built from. Premier and competitive both report mode
+    // "competitive" — and so do bot matches, which is what the spectated-bot
+    // flag is for. Practice games also never reach Leetify (no demo), so the
+    // recap poll is skipped along with the record.
+    if (report.botsDetected || ctx.mode !== "competitive") {
+      const why = report.botsDetected ? "bots detected" : `mode ${ctx.mode ?? "unknown"}`;
+      log.info("sessions", `Practice match (${why}) — not recording it`);
+      return;
+    }
+    const record = buildMatchRecord(event, ctx, report);
     sessions.record(record);
 
     const steam64 = tracker.steamId();

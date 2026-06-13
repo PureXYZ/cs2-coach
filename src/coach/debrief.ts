@@ -12,6 +12,8 @@ export interface MatchReport {
   /** Own K/A/D/MVPs from the last self frame — the gameover context fields are
    *  empty whenever the player died in the final round (spectate switch). */
   stats?: { kills: number; assists: number; deaths: number; mvps: number };
+  /** A spectated teammate had a bot steamid — practice match, don't persist. */
+  botsDetected: boolean;
 }
 
 // Forensic notable markers — must match the strings tracker.ts records.

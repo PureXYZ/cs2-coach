@@ -175,6 +175,8 @@ export class GsiTracker {
   /** Spectated-teammate baseline while the user is dead. */
   private prevSpec: { steamid: string; roundKills: number } | null = null;
   private inMatch = false;
+  /** A spectated teammate carried a fake steamid — this is a bot match. */
+  private botsSeen = false;
   private announcedMatchPointAt: string | null = null;
   /** Round number as of its freezetime — map.round's increment timing at round end is unreliable. */
   private liveRound = 0;
@@ -224,6 +226,7 @@ export class GsiTracker {
       (prevMapPhase === "live" || prevMapPhase === "intermission" || prevMapPhase === "timeout_ct" || prevMapPhase === "timeout_t");
     if (map && mapPhase === "live" && !midMatchPhase) {
       this.inMatch = true;
+      this.botsSeen = false;
       this.announcedMatchPointAt = null;
       this.liveRound = 0;
       this.lastOwnStats = null;
@@ -495,6 +498,14 @@ export class GsiTracker {
 
       // ...but the spectated teammate's kills are real information: cheer them on.
       const p = payload.player;
+      // Bots carry fake short steamids (observed: "822") instead of a real
+      // 17-digit Steam64 — spectating one proves this is a bot match. CS2
+      // never backfills leavers with bots in competitive/Premier, so a single
+      // sighting is conclusive, and "competitive with bots" reports the same
+      // map.mode as the real thing — this flag is the only separator.
+      if (this.inMatch && p?.steamid && !/^7656\d{13}$/.test(p.steamid)) {
+        this.botsSeen = true;
+      }
       if (roundPhase === "live" && p?.steamid && p.state) {
         if (this.prevSpec?.steamid === p.steamid) {
           if (p.state.round_kills > this.prevSpec.roundKills) {
@@ -647,6 +658,8 @@ export class GsiTracker {
     /** Own K/A/D/MVPs from the last self frame — present even when the player
      *  died in the final round (the gameover context fields would be empty). */
     stats?: { kills: number; assists: number; deaths: number; mvps: number };
+    /** A spectated teammate had a bot steamid — practice match, don't persist. */
+    botsDetected: boolean;
   } {
     return {
       rounds: this.memory.allRounds(),
@@ -654,6 +667,7 @@ export class GsiTracker {
       earlyDeaths: this.memory.earlyDeaths(),
       notables: this.memory.notables(12),
       stats: this.lastOwnStats ?? undefined,
+      botsDetected: this.botsSeen,
     };
   }
 
