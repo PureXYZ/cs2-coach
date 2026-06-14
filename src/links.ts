@@ -89,6 +89,12 @@ export class LinkStore {
       linkedAt: pairingChanged ? Date.now() : existing!.linkedAt,
     };
     this.bySteam.set(steam64, rec);
+    // If this steam64 just MOVED off another Discord user (a manual /coachadmin link set
+    // override, or an auto-capture migration), repair THAT user's reverse pointer so the
+    // one-steam64-per-id invariant holds — without it byDiscord[oldOwner] would dangle at
+    // an account they no longer own. Runs after the set above so the scan can't re-pick
+    // this steam64 (now owned by discordId).
+    if (existing && pairingChanged) this.repairReverse(existing.discordId, steam64);
     this.persist();
     return true;
   }
@@ -133,17 +139,24 @@ export class LinkStore {
     const rec = this.bySteam.get(steam64);
     if (!rec) return false;
     this.bySteam.delete(steam64);
-    if (this.byDiscord.get(rec.discordId) === steam64) {
-      let survivor: { steam64: string; linkedAt: number } | undefined;
-      for (const [sid, r] of this.bySteam) {
-        if (r.discordId !== rec.discordId) continue;
-        if (!survivor || r.linkedAt > survivor.linkedAt) survivor = { steam64: sid, linkedAt: r.linkedAt };
-      }
-      if (survivor) this.byDiscord.set(rec.discordId, survivor.steam64);
-      else this.byDiscord.delete(rec.discordId);
-    }
+    this.repairReverse(rec.discordId, steam64);
     this.persist();
     return true;
+  }
+
+  /** Repair the reverse map after `steam64` stopped belonging to `discordId`: if byDiscord
+   *  still points at it, re-point to that user's newest remaining account, or drop the
+   *  entry when none is left. Shared by remove() and record()'s owner-change path. The
+   *  caller must have already updated/removed `steam64` in bySteam. */
+  private repairReverse(discordId: string, steam64: string): void {
+    if (this.byDiscord.get(discordId) !== steam64) return;
+    let survivor: { steam64: string; linkedAt: number } | undefined;
+    for (const [sid, r] of this.bySteam) {
+      if (r.discordId !== discordId) continue;
+      if (!survivor || r.linkedAt > survivor.linkedAt) survivor = { steam64: sid, linkedAt: r.linkedAt };
+    }
+    if (survivor) this.byDiscord.set(discordId, survivor.steam64);
+    else this.byDiscord.delete(discordId);
   }
 
   /** Remove EVERY pairing for a Discord user (their main + any alt SteamID64s), and

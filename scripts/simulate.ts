@@ -1979,6 +1979,18 @@ console.log("\n=== scenario: LinkStore — manual set/remove + reverse-map repai
   expect(reloaded.size === 1 && reloaded.discordIdFor(C) === E, "remaining pairing survives a reload");
   expect(reloaded.steam64For(D) === undefined, "the removed Discord user is absent after reload");
 
+  // record() on an owner CHANGE (e.g. a /coachadmin link set override) must repair the
+  // OLD owner's reverse pointer, not just set the new one — else byDiscord[oldOwner] dangles.
+  const F = "76561198000000009";
+  const X = "333333333333333333";
+  const Y = "444444444444444444";
+  store.record(F, X, "mainX");
+  expect(store.steam64For(X) === F, "X owns F after record");
+  store.record(F, Y, "nowY"); // F moves from X to Y
+  expect(store.discordIdFor(F) === Y, "F is now linked to Y");
+  expect(store.steam64For(Y) === F, "Y's reverse pointer points at F");
+  expect(store.steam64For(X) === undefined, "X's stale reverse pointer was cleared on the owner change");
+
   try { fs.unlinkSync(tmp); } catch { /* best effort */ }
 }
 
@@ -2003,7 +2015,13 @@ console.log("\n=== scenario: SessionStore — recent / delete-last / clear (owne
   expect(removed?.map === "de_map2" && store.count === 2, "deleteLast drops the most recent record");
   expect(new SessionStore(tmp).count === 2, "deleteLast persisted across reload");
 
-  expect(store.clear() === 2 && store.count === 0, "clear wipes all and reports the count");
+  // deleteByEndedAt targets a SPECIFIC record (the delete-last confirm binds to its
+  // timestamp), so a match recorded during the confirm window can't get deleted instead.
+  expect(store.deleteByEndedAt(base)?.map === "de_map0", "deleteByEndedAt removes the targeted record");
+  expect(store.count === 1, "only the targeted record was removed");
+  expect(store.deleteByEndedAt(999) === undefined, "deleteByEndedAt is a no-op for an unknown timestamp");
+
+  expect(store.clear() === 1 && store.count === 0, "clear wipes all and reports the count");
   expect(new SessionStore(tmp).count === 0, "clear persisted across reload");
   expect(store.clear() === 0, "clearing an empty store is a no-op");
 

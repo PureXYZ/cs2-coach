@@ -96,28 +96,35 @@ export function buildSettingsControl(deps: { llm: LlmCoach | null; voice: VoiceC
           return { ok: false, message: `\`squad-recap\` takes off / leaders / full — got "${raw ?? "(nothing)"}".` };
         }
         runtime.setSquadRecap(v as SquadRecapMode);
-        return { ok: true, message: `✅ Squad recap mode is now **${v}**.` };
+        // The recap is also gated on team-tactics (index.ts), so flag the coupling rather
+        // than claim it's live when it can't actually fire.
+        const coupled =
+          v !== "off" && !runtime.teamTactics
+            ? " _(heads up: team-tactics is off, so the recap won't play until you turn it on)_"
+            : "";
+        return { ok: true, message: `✅ Squad recap mode is now **${v}**.${coupled}` };
       },
     },
     {
       key: "llm-model",
       label: "llm-model",
       current: () => llm?.currentModel ?? "(LLM disabled)",
-      envDefault: () => config.llm.model,
+      // Match current() when disabled so renderSettings doesn't flag it as "changed".
+      envDefault: () => (llm ? config.llm.model : "(LLM disabled)"),
       apply: (raw) => applyModel(raw, (m) => llm!.setModel(m), "smart-tier model"),
     },
     {
       key: "llm-fast-model",
       label: "llm-fast-model",
       current: () => llm?.currentFastModel ?? "(LLM disabled)",
-      envDefault: () => config.llm.fastModel,
+      envDefault: () => (llm ? config.llm.fastModel : "(LLM disabled)"),
       apply: (raw) => applyModel(raw, (m) => llm!.setFastModel(m), "mid-round model"),
     },
     {
       key: "llm-effort",
       label: "llm-effort",
       current: () => (llm ? llm.currentEffort || "(omitted)" : "(LLM disabled)"),
-      envDefault: () => config.llm.effort || "(omitted)",
+      envDefault: () => (llm ? config.llm.effort || "(omitted)" : "(LLM disabled)"),
       apply: (raw) => {
         if (!llm) return { ok: false, message: "LLM is disabled (no ANTHROPIC_API_KEY) — nothing to set." };
         const v = raw?.trim().toLowerCase();

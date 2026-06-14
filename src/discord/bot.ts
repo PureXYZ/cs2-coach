@@ -86,7 +86,7 @@ export interface BotDeps {
       deaths?: number;
     }>;
     clear: () => number;
-    deleteLast: () => { map?: string; ourScore: number; theirScore: number } | null;
+    deleteByEndedAt: (endedAtMs: number) => { map?: string; ourScore: number; theirScore: number } | null;
   };
   /** Owner-only TTS audio-cache ops (`/coachadmin tts`). cacheStats is null when the
    *  cache is disabled; prewarm is fire-and-forget. */
@@ -370,6 +370,12 @@ export async function startBot(deps: BotDeps): Promise<Client> {
     // Owner-only admin command: registered ADDITIVELY to the private admin guild only,
     // so it's invisible in the public server. Its OWN try/catch (inside the function) so a
     // missing-membership error there can't mask the public registration above.
+    if (adminGuildId && deps.guildId && adminGuildId === deps.guildId) {
+      log.warn(
+        "bot",
+        "COACH_ADMIN_GUILD_ID equals DISCORD_GUILD_ID — /coachadmin will be visible in that (public) server; use a SEPARATE private guild so the owner controls stay hidden.",
+      );
+    }
     await registerAdminCommand(ready, adminGuildId);
     // Ambient mute indicator — the coach always boots speaking (mute is
     // session-scoped, not persisted), so this lands on the live presence.
@@ -675,9 +681,12 @@ async function handleAdminCommand(interaction: ChatInputCommandInteraction, deps
           await interaction.reply({ content: "No recorded matches on file.", flags: MessageFlags.Ephemeral });
           return;
         }
+        // Bind the confirm to THIS record's timestamp (epoch ms — no colons, so it
+        // survives the customId split) so the click deletes the previewed match, not
+        // whatever is newest at click time if a match records during the confirm window.
         await interaction.reply({
           content: `⚠️ Delete the most recent match — **${last.ourScore}-${last.theirScore}** ${last.map ?? "?"}?`,
-          components: [adminConfirmRow("admin:sessdel", "Delete")],
+          components: [adminConfirmRow(`admin:sessdel:${Date.parse(last.endedAt)}`, "Delete")],
           flags: MessageFlags.Ephemeral,
         });
         return;
@@ -703,13 +712,18 @@ async function handleAdminCommand(interaction: ChatInputCommandInteraction, deps
       case "stats":
         await interaction.reply({ content: renderTts(deps), flags: MessageFlags.Ephemeral });
         return;
-      case "prewarm":
+      case "prewarm": {
+        if (!deps.tts.cacheStats()) {
+          await interaction.reply({ content: "TTS audio cache is disabled (`TTS_CACHE_ENABLED=false`) — nothing to prewarm.", flags: MessageFlags.Ephemeral });
+          return;
+        }
         deps.tts.prewarm();
         await interaction.reply({
           content: "🔥 Re-prewarm started in the background — already-cached lines are skipped. Check `/coachadmin tts stats` in a bit.",
           flags: MessageFlags.Ephemeral,
         });
         return;
+      }
       case "clear": {
         const stats = deps.tts.cacheStats();
         if (!stats) {
@@ -873,9 +887,14 @@ async function handleLinkRemove(interaction: ChatInputCommandInteraction, deps: 
     await interaction.reply({ content: `No links on file for <@${user!.id}>.`, flags: MessageFlags.Ephemeral });
     return;
   }
-  const which = owned.map((l) => `\`${l.steam64}\`${l.steamName ? ` (${l.steamName})` : ""}`).join(", ");
+  // Cap + clamp: a user with many alts could otherwise blow past Discord's 2000-char
+  // limit and the reply would throw (mirrors renderLinks' caps).
+  const CAP = 20;
+  const which =
+    owned.slice(0, CAP).map((l) => `\`${l.steam64}\`${l.steamName ? ` (${l.steamName})` : ""}`).join(", ") +
+    (owned.length > CAP ? ` +${owned.length - CAP} more` : "");
   await interaction.reply({
-    content: `⚠️ Remove **${owned.length}** link${owned.length === 1 ? "" : "s"} for <@${user!.id}>? ${which}`,
+    content: `⚠️ Remove **${owned.length}** link${owned.length === 1 ? "" : "s"} for <@${user!.id}>? ${which}`.slice(0, 1990),
     components: [adminConfirmRow(`admin:linkrm:u:${user!.id}`, "Remove all")],
     flags: MessageFlags.Ephemeral,
   });
@@ -923,9 +942,11 @@ async function handleAdminButton(interaction: ButtonInteraction, deps: BotDeps):
     return;
   }
   if (action === "sessdel") {
-    const r = deps.sessions.deleteLast();
+    const r = deps.sessions.deleteByEndedAt(Number(a));
     await interaction.update({
-      content: r ? `🗑️ Deleted the last match (**${r.ourScore}-${r.theirScore}** ${r.map ?? "?"}).` : "Nothing to delete.",
+      content: r
+        ? `🗑️ Deleted the match (**${r.ourScore}-${r.theirScore}** ${r.map ?? "?"}).`
+        : "That match is no longer on file — nothing deleted (re-run to see the current latest).",
       components: [],
     });
     return;
@@ -958,7 +979,13 @@ function renderAdminStatus(deps: BotDeps): string {
           return `• **${f.name ?? "?"}** \`${f.steam64}\` → ${who} — ${state}, ${Math.round(f.ageMs / 1000)}s ago${role}`;
         });
   const more = feeds.length > FEED_CAP ? [`_+${feeds.length - FEED_CAP} more_`] : [];
-  return [renderStatus(deps), "", `**Feeds (detailed) — ${feeds.length}**`, ...feedLines, ...more].join("\n").slice(0, 1990);
+  // The detailed feed table is the POINT of this command, so render it FIRST and let the
+  // base readout (also available via /coach status) take the leftover budget — otherwise a
+  // busy/griefed lobby's long base status would truncate the table. The "(incl. idle feeds)"
+  // note also explains why this count can exceed the base "Feeds:" line, which only counts
+  // feeds fresh within feedStaleMs while this lists everything not yet idle-reaped.
+  const detailed = [`**Feeds (detailed) — ${feeds.length}** _(incl. idle feeds)_`, ...feedLines, ...more].join("\n");
+  return `${detailed}\n\n${renderStatus(deps)}`.slice(0, 1990);
 }
 
 /** Owner `/coachadmin links`: every Steam↔Discord pairing on file (the read half of link

@@ -104,20 +104,27 @@ export class SessionStore {
   record(rec: SessionMatchRecord): void {
     this.records.push(rec);
     if (this.records.length > MAX_RECORDS) this.records = this.records.slice(-MAX_RECORDS);
-    this.persist();
-    log.info("sessions", `Recorded match ${rec.map ?? "?"} ${rec.ourScore}-${rec.theirScore} (${this.records.length} on file)`);
+    // Log success only when the write actually landed (the warn inside persist() covers
+    // a failure) — otherwise a full/read-only disk would print a misleading "Recorded
+    // match" line right after the failure warning.
+    if (this.persist()) {
+      log.info("sessions", `Recorded match ${rec.map ?? "?"} ${rec.ourScore}-${rec.theirScore} (${this.records.length} on file)`);
+    }
   }
 
-  /** Atomic write of the current records. A crash mid-write leaves either the old or
-   *  the new complete file, never truncated JSON the constructor would discard. */
-  private persist(): void {
+  /** Atomic write of the current records. A crash mid-write leaves either the old or the
+   *  new complete file, never truncated JSON the constructor would discard. Returns
+   *  whether the write succeeded so callers don't log a false success. */
+  private persist(): boolean {
     try {
       mkdirSync(dirname(this.file), { recursive: true });
       const tmp = this.file + ".tmp";
       writeFileSync(tmp, JSON.stringify(this.records, null, 2), "utf8");
       renameSync(tmp, this.file);
+      return true;
     } catch (err) {
       log.warn("sessions", `Could not persist session history: ${err instanceof Error ? err.message : err}`);
+      return false;
     }
   }
 
@@ -150,6 +157,19 @@ export class SessionStore {
       this.persist();
       log.info("sessions", `Deleted last match (${removed.map ?? "?"} ${removed.ourScore}-${removed.theirScore}) on owner request`);
     }
+    return removed;
+  }
+
+  /** Remove the record with this exact endedAt (epoch ms). The delete-last confirm binds
+   *  to a specific record's timestamp, so the click deletes the row that was PREVIEWED —
+   *  never whatever is newest at click time (a match could have recorded mid-confirm).
+   *  Returns the removed record, or undefined if it's no longer on file. */
+  deleteByEndedAt(endedAtMs: number): SessionMatchRecord | undefined {
+    const idx = this.records.findIndex((r) => Date.parse(r.endedAt) === endedAtMs);
+    if (idx === -1) return undefined;
+    const [removed] = this.records.splice(idx, 1);
+    this.persist();
+    log.info("sessions", `Deleted match (${removed.map ?? "?"} ${removed.ourScore}-${removed.theirScore}) on owner request`);
     return removed;
   }
 

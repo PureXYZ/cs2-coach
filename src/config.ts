@@ -278,7 +278,10 @@ export const config = {
     // so it never appears in the public server. Either unset => the surface is disabled
     // (nothing registered, every /coachadmin interaction rejected).
     ownerId: discordIdEnv("COACH_OWNER_ID"),
-    adminGuildId: optional("COACH_ADMIN_GUILD_ID") || undefined,
+    // Validated like ownerId — a guild id is the same 17–20 digit snowflake. A typo'd
+    // value must fail LOUDLY at startup, not silently fail registration (which only
+    // log.warns) and leave the owner locked out behind an "enabled" boot log.
+    adminGuildId: discordIdEnv("COACH_ADMIN_GUILD_ID"),
   },
 
   tts: {

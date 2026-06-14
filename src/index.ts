@@ -420,7 +420,7 @@ async function main(): Promise<void> {
       count: () => sessions.count,
       recent: (n) => sessions.recent(n),
       clear: () => sessions.clear(),
-      deleteLast: () => sessions.deleteLast() ?? null,
+      deleteByEndedAt: (ms) => sessions.deleteByEndedAt(ms) ?? null,
     },
     tts: {
       cacheStats: () => tts.cacheStats(),
