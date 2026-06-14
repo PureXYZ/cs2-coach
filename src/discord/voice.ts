@@ -73,7 +73,7 @@ export class VoiceCoach {
     if (this.volume !== 1) {
       log.info(
         "voice",
-        `Coach playback gain ${this.volume} — lines take the Opus re-encode path (opusscript), ~tens of ms extra latency`,
+        `Coach playback gain ${this.volume} — lines take the Opus re-encode path (opusscript), ~a few ms extra latency`,
       );
     }
     this.player.on(AudioPlayerStatus.Idle, () => {
@@ -423,8 +423,8 @@ export class VoiceCoach {
    * provider's pre-encoded Opus is demuxed straight to Discord — no codec runs.
    * A non-unity gain enables @discordjs/voice's inline volume, which can only act
    * on PCM, so the line is routed Opus-decode → gain → Opus-re-encode (via the
-   * opusscript codec). That costs a native-free codec dependency and ~one Opus
-   * frame of latency — hence it's opt-in and off by default. Songs don't go
+   * opusscript codec). That costs a native-free codec dependency and a few ms of
+   * latency (benchmarked ~5 ms) — hence it's opt-in and off by default. Songs don't go
    * through here, so they always play at source level.
    */
   private makeResource(stream: Readable, inputType: StreamType) {

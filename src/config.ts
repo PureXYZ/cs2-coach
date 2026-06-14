@@ -232,8 +232,10 @@ export const config = {
     // provider's Opus is demuxed straight to Discord — no codec, no re-encode. Any
     // OTHER value routes the audio through an Opus decode → gain → re-encode pass
     // (handled by @discordjs/voice's inline volume, which pulls in `opusscript`) and
-    // adds ~tens of ms of latency (an extra frame or two of Opus buffering), so only
-    // set it for a deliberate server-wide level change. 0.9 = 10% quieter; 2 = +6 dB
+    // adds only a few ms of latency (benchmarked ~5 ms to first audio; steady-state
+    // ~100x real-time), so only set it for a deliberate server-wide level change. The
+    // added lag is imperceptible next to the ~200-330 ms TTS time-to-first-audio.
+    // 0.9 = 10% quieter; 2 = +6 dB
     // (may clip). Range 0.1–2 — silencing the coach is /coach mute's job, not a 0 here.
     // This affects coach lines only — playlist songs always play at source level.
     // For a per-listener change, Discord's right-click → User Volume slider is better.
