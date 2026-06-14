@@ -625,6 +625,7 @@ export class RosterManager {
         .map(([id, f], i) => {
           const m = members[i]; // members[0..live.length-1] align with live by construction
           return {
+            steamid: id, // feed key = SteamID64; the drop latch dedups on this, not the name
             name: m.name,
             money: m.money,
             isPrimary: m.isPrimary,

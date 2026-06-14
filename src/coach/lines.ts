@@ -159,9 +159,12 @@ function appendDrop(line: string, ctx: MatchContext, droppedTo?: Set<string>): s
   const who = broke.name as string;
   // Anti-repeat: the economy cooldown is shorter than a round, so without a latch
   // this would re-name the same broke friend freezetime after freezetime. The caller
-  // owns the per-match set (cleared at matchStart), mirroring weakLinkCalled.
-  if (droppedTo?.has(who)) return line;
-  droppedTo?.add(who);
+  // owns the per-match set (cleared at matchStart), mirroring weakLinkCalled. Key on
+  // the stable SteamID64 (falling back to the name only when a fixture omits it) so a
+  // mid-match Steam-name change can't dodge the latch and re-fire the same drop call.
+  const key = (broke.steamid as string | undefined) ?? who;
+  if (droppedTo?.has(key)) return line;
+  droppedTo?.add(key);
   return `${line} ${pick("dropCoda", [
       `And ${who}'s broke, sling them a rifle, you can afford it.`,
       `${who}'s got nothing. Drop them a gun, quit hoarding.`,

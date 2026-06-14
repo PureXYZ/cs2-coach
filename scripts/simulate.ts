@@ -1558,6 +1558,20 @@ console.log("\n=== scenario: B6 â€” LLM-off economy drop coda (kitted primary â†
   const second = economyLine(kitted(econ), latch);
   expect(!!first && first.includes("Mouse"), "first drop call names the broke friend");
   expect(!/Mouse/.test(second ?? ""), "the drop latch suppresses re-naming the same friend next freeze");
+
+  // Mid-match Steam-name change: the latch keys on the stable SteamID64, so the same
+  // broke friend renaming between freezes still can't re-trigger the drop coda.
+  const renameLatch = new Set<string>();
+  const before = economyLine(kitted([
+    { isPrimary: true, money: 3000, equipValue: 4000, alive: true },
+    { steamid: "76561198000000001", isPrimary: false, name: "Mouse", money: 1000, alive: true },
+  ]), renameLatch);
+  const afterRename = economyLine(kitted([
+    { isPrimary: true, money: 3000, equipValue: 4000, alive: true },
+    { steamid: "76561198000000001", isPrimary: false, name: "m0use", money: 1000, alive: true },
+  ]), renameLatch);
+  expect(!!before && before.includes("Mouse"), "drop call fires before the rename");
+  expect(!/m0use/.test(afterRename ?? ""), "a mid-match Steam-name change doesn't dodge the drop latch (keyed on SteamID)");
 }
 
 // ---------------------------------------------------------------------------

@@ -188,9 +188,11 @@ export interface TeamContext {
    * gear and alive, so the coach can tell a kitted $5k from a force-buy $5k and
    * never name a drop to a dead teammate. equipValue is present only for the
    * primary's own feed (the only feed whose own gear we read); alive mirrors the
-   * member's. Present only when team tactics are enabled; covers only the wired subset.
+   * member's. steamid is the feed's stable SteamID64 — the key the drop latch dedups
+   * on so a mid-match Steam-name change can't re-fire the same drop call. Present only
+   * when team tactics are enabled; covers only the wired subset.
    */
-  econ?: { name?: string; money: number; isPrimary: boolean; equipValue?: number; alive?: boolean }[];
+  econ?: { steamid?: string; name?: string; money: number; isPrimary: boolean; equipValue?: number; alive?: boolean }[];
   /**
    * Cross-round buy-sync read for a coordinating squad — e.g. "Andy full-bought
    * while Mouse and Cadian saved". Present whenever 2+ wired buyers are visible at
