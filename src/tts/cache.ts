@@ -176,6 +176,31 @@ export class TtsCache {
     return tee;
   }
 
+  /** Current cache size — owner-only `/coachadmin tts stats`. */
+  stats(): { entries: number; bytes: number } {
+    let bytes = 0;
+    for (const e of this.index.values()) bytes += e.bytes;
+    return { entries: this.index.size, bytes };
+  }
+
+  /** Drop EVERY cached line — unlink the blobs, empty the index, rewrite the manifest —
+   *  and return what was removed. Owner-only `/coachadmin tts clear`, e.g. after editing
+   *  lines/voices so stale audio is regenerated; a re-prewarm refills it. */
+  clear(): { entries: number; bytes: number } {
+    const removed = this.stats();
+    for (const entry of this.index.values()) {
+      try {
+        unlinkSync(join(this.dir, entry.file));
+      } catch {
+        // Blob already gone — fine.
+      }
+    }
+    this.index.clear();
+    this.persist();
+    if (removed.entries > 0) log.info("tts", `cache cleared: ${removed.entries} line(s) removed on owner request`);
+    return removed;
+  }
+
   // --- persistence ---------------------------------------------------------
 
   private load(): void {

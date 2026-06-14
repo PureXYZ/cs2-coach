@@ -1,6 +1,7 @@
 import os from "node:os";
 import { Events } from "discord.js";
 import { config, STEAMID64_RE } from "./config.js";
+import { runtime } from "./runtime-overrides.js";
 import { log, pruneOldLogs, closeLog } from "./log.js";
 import { LinkStore, DISCORD_ID_RE } from "./links.js";
 import { startGsiServer } from "./gsi/server.js";
@@ -25,6 +26,7 @@ import { TtsChain } from "./tts/index.js";
 import { currentVoice, voices } from "./tts/voices.js";
 import { VoiceCoach } from "./discord/voice.js";
 import { startBot } from "./discord/bot.js";
+import { buildSettingsControl } from "./discord/admin-settings.js";
 import { clearVoiceChannel, loadVoiceChannel } from "./discord/voice-state.js";
 
 async function main(): Promise<void> {
@@ -104,6 +106,14 @@ async function main(): Promise<void> {
   const links = new LinkStore();
   log.info("main", `Account links: ${links.size} Steam↔Discord pairing(s) on file`);
 
+  // Owner-only admin surface (/coachadmin): on only when both ids are set.
+  log.info(
+    "main",
+    config.discord.ownerId && config.discord.adminGuildId
+      ? `Owner admin surface enabled (/coachadmin in guild ${config.discord.adminGuildId})`
+      : "Owner admin surface disabled (set COACH_OWNER_ID + COACH_ADMIN_GUILD_ID to enable)",
+  );
+
   // Cross-session match history (state/ volume) — what lets the coach remember
   // last night's pistols. Written at every matchEnd, read into smart prompts.
   const sessions = new SessionStore();
@@ -119,7 +129,7 @@ async function main(): Promise<void> {
   // Apply the preferred spoken name for the (primary) player to a context.
   const withNickname = (ctx: MatchContext): MatchContext => ({
     ...ctx,
-    playerName: config.coach.playerNickname ?? ctx.playerName,
+    playerName: runtime.nickname ?? ctx.playerName,
   });
   const fullContext = () => withNickname(roster.context());
 
@@ -195,7 +205,7 @@ async function main(): Promise<void> {
     // per-match rows Leetify already returns for the whole crew (squad captured
     // synchronously above).
     const wantSquad =
-      config.leetify.squadRecap !== "off" && config.coach.teamTactics && squad.some((m) => !m.isPrimary);
+      runtime.squadRecap !== "off" && runtime.teamTactics && squad.some((m) => !m.isPrimary);
     const client = new LeetifyClient(config.leetify.apiKey);
     const squadStats = wantSquad ? await pollForSquadLeetifyStats(client, squad, endedAt, ctx.map) : null;
     // Solo path is the default; a squad match-find failing means the primary's
@@ -233,7 +243,7 @@ async function main(): Promise<void> {
     const statsSentence = spokenStatsSentence(stats);
     if (!statsSentence) return;
     const squadSentence = squadStats
-      ? spokenSquadSentence(squadStats, config.leetify.squadRecap === "full" ? "full" : "leaders") ?? undefined
+      ? spokenSquadSentence(squadStats, runtime.squadRecap === "full" ? "full" : "leaders") ?? undefined
       : undefined;
     const llmText = llm
       ? await llm.leetifyLine({
@@ -296,7 +306,7 @@ async function main(): Promise<void> {
             const client = new LeetifyClient(config.leetify.apiKey);
             // Snapshot the connected crew now; with 2+ wired (and team tactics on) pull the
             // whole crew's form, else just the primary's.
-            const crew = config.coach.teamTactics ? roster.connectedSquad() : [];
+            const crew = runtime.teamTactics ? roster.connectedSquad() : [];
             const hasFriends = crew.some((m) => !m.isPrimary && m.name);
             const p = (hasFriends ? client.squadStartBrief(crew, map) : client.startBrief(steam64, map)).catch((err) => {
               log.warn("leetify", `Match-start brief failed (${err instanceof Error ? err.message : err}) — plain greeting`);
@@ -385,10 +395,54 @@ async function main(): Promise<void> {
     // and token `npm run cfg` uses, so the file is identical either way.
     cfg: { publicHost: config.coach.publicHost, token: config.gsi.token, port: config.gsi.port },
     ttsProviders: () => tts.activeNames,
+    // Owner-only admin surface: enabled only when BOTH ids are configured (otherwise the
+    // /coachadmin command is never registered and any invocation is rejected).
+    admin:
+      config.discord.ownerId && config.discord.adminGuildId
+        ? { ownerId: config.discord.ownerId, guildId: config.discord.adminGuildId }
+        : undefined,
+    links: {
+      list: () => links.list(),
+      get: (steam64) => links.linkFor(steam64),
+      set: (steam64, discordId) => {
+        links.record(steam64, discordId);
+      },
+      remove: (steam64) => links.remove(steam64),
+      removeAllForDiscord: (discordId) => links.removeAllForDiscord(discordId),
+    },
+    // Cross-reference each feed's SteamID64 against the link store here (the roster is a
+    // pure GSI fusion engine with no knowledge of Discord links).
+    feedsDetailed: () => roster.feedsDetailed().map((f) => ({ ...f, discordId: links.discordIdFor(f.steam64) })),
+    // Owner-only live settings (/coachadmin set / settings). Session-scoped: the runtime
+    // overrides reset to the env defaults on restart.
+    settings: buildSettingsControl({ llm, voice }),
+    sessions: {
+      count: () => sessions.count,
+      recent: (n) => sessions.recent(n),
+      clear: () => sessions.clear(),
+      deleteByEndedAt: (ms) => sessions.deleteByEndedAt(ms) ?? null,
+    },
+    tts: {
+      cacheStats: () => tts.cacheStats(),
+      clearCache: () => tts.clearCache(),
+      // Fire-and-forget, mirroring the startup prewarm: skips already-cached lines and
+      // yields while a live coach line is speaking so it never competes for the provider.
+      prewarm: () => {
+        void tts
+          .prewarm(
+            voices().map((v) => v.voiceId),
+            { busy: () => voice.queueLength > 0 || voice.songActive },
+          )
+          .then((r) => log.info("main", `TTS cache re-prewarm done: ${r.cached} synthesized, ${r.skipped} already cached, ${r.failed} failed`))
+          .catch((err) => log.warn("main", `TTS cache re-prewarm error: ${err instanceof Error ? err.message : err}`));
+      },
+    },
     status: () => ({
       gsiAgeMs: gsi.lastPayloadAgeMs(),
       ttsProviders: tts.activeNames,
-      llmModel: llm ? `${config.llm.model} (mid-round: ${config.llm.fastModel})` : null,
+      // Live values (the owner can swap the model via /coachadmin set) so the public
+      // status never shows a stale boot-time model after a runtime change.
+      llmModel: llm ? `${llm.currentModel} (mid-round: ${llm.currentFastModel})` : null,
       sessionsOnFile: sessions.count,
       wiredFeeds: roster.wiredCount(),
       connectedFeeds: roster.connectedFeeds(),

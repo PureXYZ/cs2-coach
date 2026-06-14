@@ -54,6 +54,10 @@ export class TtsChain {
   private providers: TtsProvider[];
   /** Audio cache for the static, latency-critical lines. null when disabled/unavailable. */
   private readonly cache: TtsCache | null;
+  /** Re-entrancy guard: only one prewarm loop runs at a time, so a repeated
+   *  /coachadmin tts prewarm (or overlap with the startup prewarm) can't double up
+   *  paid synth calls on the same not-yet-cached lines. */
+  private prewarming = false;
 
   constructor() {
     this.providers = config.tts.order
@@ -80,6 +84,17 @@ export class TtsChain {
 
   get activeNames(): string[] {
     return this.providers.map((p) => p.name);
+  }
+
+  /** Audio-cache size for the owner readout, or null when the cache is disabled. */
+  cacheStats(): { entries: number; bytes: number } | null {
+    return this.cache?.stats() ?? null;
+  }
+
+  /** Drop every cached line (owner-only, after confirm). Returns what was removed
+   *  ({0,0} when the cache is disabled). A prewarm() refills it. */
+  clearCache(): { entries: number; bytes: number } {
+    return this.cache?.clear() ?? { entries: 0, bytes: 0 };
   }
 
   async synth(text: string, opts?: SynthOptions): Promise<TtsResult> {
@@ -136,6 +151,28 @@ export class TtsChain {
   }
 
   /**
+   * Re-entrancy-guarded entry point: only one prewarm loop runs at a time, so a repeated
+   * `/coachadmin tts prewarm` — or one overlapping the startup prewarm — can't spawn a
+   * second loop that re-synthesizes the same not-yet-cached lines (duplicate paid calls +
+   * a rate-limit burst). A duplicate request is a no-op.
+   */
+  async prewarm(
+    voiceIds: string[],
+    opts?: { delayMs?: number; busy?: () => boolean; signal?: AbortSignal },
+  ): Promise<{ cached: number; skipped: number; failed: number }> {
+    if (this.prewarming) {
+      log.info("tts", "prewarm already in progress — ignoring the duplicate request");
+      return { cached: 0, skipped: 0, failed: 0 };
+    }
+    this.prewarming = true;
+    try {
+      return await this._prewarm(voiceIds, opts);
+    } finally {
+      this.prewarming = false;
+    }
+  }
+
+  /**
    * Pre-synthesize every cacheable static line for the given voices so the FIRST
    * live occurrence plays from cache with no delay (the user's explicit requirement).
    * Idempotent (skips lines already on disk), serial + spaced so it never bursts the
@@ -144,7 +181,7 @@ export class TtsChain {
    * fire-and-forget; non-ElevenLabs primaries collapse to one entry per line (their
    * signature ignores the voice), so the per-voice loop self-dedupes via peek().
    */
-  async prewarm(
+  private async _prewarm(
     voiceIds: string[],
     opts?: { delayMs?: number; busy?: () => boolean; signal?: AbortSignal },
   ): Promise<{ cached: number; skipped: number; failed: number }> {

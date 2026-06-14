@@ -218,6 +218,18 @@ function tokenEnv(name: string): string {
   return raw;
 }
 
+// COACH_OWNER_ID / COACH_ADMIN_GUILD_ID — the owner-only admin surface. A Discord
+// snowflake is a 17–20 digit numeric id; reject anything else loudly at startup (a
+// typo'd owner id would otherwise silently lock the owner out of /coachadmin).
+function discordIdEnv(name: string): string | undefined {
+  const raw = process.env[name];
+  if (!raw) return undefined;
+  if (!/^\d{17,20}$/.test(raw)) {
+    throw new Error(`${name} must be a Discord id (17–20 digits), got "${raw}"`);
+  }
+  return raw;
+}
+
 export const config = {
   gsi: {
     port: intEnv("GSI_PORT", 3000, 1, 65535),
@@ -259,6 +271,17 @@ export const config = {
     // If set, slash commands register instantly in this one server.
     // Without it, global registration can take up to an hour to appear.
     guildId: optional("DISCORD_GUILD_ID") || undefined,
+    // Owner-only admin surface (/coachadmin, src/discord/bot.ts). BOTH must be set to
+    // enable it: ownerId is the only Discord user allowed to use it (the gate keys on the
+    // gateway-authenticated interaction.user.id, NEVER the self-asserted Steam link), and
+    // adminGuildId is a PRIVATE guild (just you + the bot) the command is registered to,
+    // so it never appears in the public server. Either unset => the surface is disabled
+    // (nothing registered, every /coachadmin interaction rejected).
+    ownerId: discordIdEnv("COACH_OWNER_ID"),
+    // Validated like ownerId — a guild id is the same 17–20 digit snowflake. A typo'd
+    // value must fail LOUDLY at startup, not silently fail registration (which only
+    // log.warns) and leave the owner locked out behind an "enabled" boot log.
+    adminGuildId: discordIdEnv("COACH_ADMIN_GUILD_ID"),
   },
 
   tts: {

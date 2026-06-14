@@ -139,6 +139,31 @@ export class LlmCoach {
     this.fastTimeoutMs = opts.fastTimeoutMs;
   }
 
+  // --- live tuning (owner /coachadmin set) -----------------------------------
+  // line() reads this.model / this.fastModel / this.effort fresh on every call, so a
+  // swap takes effect on the next moment. Session-scoped: a restart reverts to the env.
+  // An unknown model id just makes the API call fail and the engine fall back to canned
+  // lines (no crash), so these accept any non-empty id.
+  setModel(model: string): void {
+    this.model = model;
+  }
+  setFastModel(model: string): void {
+    this.fastModel = model;
+  }
+  /** "" / undefined omits the effort field entirely (Haiku rejects it). */
+  setEffort(effort: string): void {
+    this.effort = (effort || undefined) as Anthropic.OutputConfig["effort"];
+  }
+  get currentModel(): string {
+    return this.model;
+  }
+  get currentFastModel(): string {
+    return this.fastModel;
+  }
+  get currentEffort(): string {
+    return (this.effort as string | undefined) ?? "";
+  }
+
   /**
    * One short coaching line for the given moment, or null on timeout/error
    * (callers fall back to the rule engine's canned lines).

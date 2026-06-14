@@ -42,8 +42,8 @@ export class LinkStore {
   private bySteam = new Map<string, SteamDiscordLink>();
   private byDiscord = new Map<string, string>(); // discordId -> steam64 (latest seen)
 
-  constructor() {
-    const saved = loadJsonState<StoredLinks>(STATE_FILE, "links", (raw) => {
+  constructor(private readonly stateFile = STATE_FILE) {
+    const saved = loadJsonState<StoredLinks>(this.stateFile, "links", (raw) => {
       if (!raw || typeof raw !== "object") return null;
       const out: StoredLinks = {};
       for (const [steam64, v] of Object.entries(raw as Record<string, unknown>)) {
@@ -89,6 +89,12 @@ export class LinkStore {
       linkedAt: pairingChanged ? Date.now() : existing!.linkedAt,
     };
     this.bySteam.set(steam64, rec);
+    // If this steam64 just MOVED off another Discord user (a manual /coachadmin link set
+    // override, or an auto-capture migration), repair THAT user's reverse pointer so the
+    // one-steam64-per-id invariant holds — without it byDiscord[oldOwner] would dangle at
+    // an account they no longer own. Runs after the set above so the scan can't re-pick
+    // this steam64 (now owned by discordId).
+    if (existing && pairingChanged) this.repairReverse(existing.discordId, steam64);
     this.persist();
     return true;
   }
@@ -113,9 +119,66 @@ export class LinkStore {
     return this.bySteam.size;
   }
 
+  /** Every pairing on file, newest-linked first — a read-only snapshot for the
+   *  owner-only `/coachadmin links` view. The SteamID64 is the canonical key. */
+  list(): Array<{ steam64: string; discordId: string; steamName?: string; linkedAt: number }> {
+    return [...this.bySteam.entries()]
+      .map(([steam64, rec]) => ({ steam64, ...rec }))
+      .sort((a, b) => b.linkedAt - a.linkedAt);
+  }
+
+  /**
+   * Remove a single SteamID64 pairing (owner-only `/coachadmin link remove`). Returns
+   * whether a pairing existed. Repairs the reverse map: byDiscord holds ONE steam64 per
+   * Discord id, so if it pointed at the removed account, re-point it to the newest OTHER
+   * account still linked to that same Discord user (an alt) — or drop the entry when none
+   * remains. Persists only when something changed. (record() never deletes, so this and
+   * removeAllForDiscord below are the only paths that prune the reverse map.)
+   */
+  remove(steam64: string): boolean {
+    const rec = this.bySteam.get(steam64);
+    if (!rec) return false;
+    this.bySteam.delete(steam64);
+    this.repairReverse(rec.discordId, steam64);
+    this.persist();
+    return true;
+  }
+
+  /** Repair the reverse map after `steam64` stopped belonging to `discordId`: if byDiscord
+   *  still points at it, re-point to that user's newest remaining account, or drop the
+   *  entry when none is left. Shared by remove() and record()'s owner-change path. The
+   *  caller must have already updated/removed `steam64` in bySteam. */
+  private repairReverse(discordId: string, steam64: string): void {
+    if (this.byDiscord.get(discordId) !== steam64) return;
+    let survivor: { steam64: string; linkedAt: number } | undefined;
+    for (const [sid, r] of this.bySteam) {
+      if (r.discordId !== discordId) continue;
+      if (!survivor || r.linkedAt > survivor.linkedAt) survivor = { steam64: sid, linkedAt: r.linkedAt };
+    }
+    if (survivor) this.byDiscord.set(discordId, survivor.steam64);
+    else this.byDiscord.delete(discordId);
+  }
+
+  /** Remove EVERY pairing for a Discord user (their main + any alt SteamID64s), and
+   *  drop the reverse-map entry. Returns how many were removed. Owner-only
+   *  `/coachadmin link remove <user>`. Persists only when something changed. */
+  removeAllForDiscord(discordId: string): number {
+    let removed = 0;
+    for (const [sid, r] of [...this.bySteam]) {
+      if (r.discordId !== discordId) continue;
+      this.bySteam.delete(sid);
+      removed++;
+    }
+    if (removed > 0) {
+      this.byDiscord.delete(discordId);
+      this.persist();
+    }
+    return removed;
+  }
+
   private persist(): void {
     const obj: StoredLinks = {};
     for (const [steam64, rec] of this.bySteam) obj[steam64] = rec;
-    saveJsonState(STATE_FILE, "links", obj);
+    saveJsonState(this.stateFile, "links", obj);
   }
 }

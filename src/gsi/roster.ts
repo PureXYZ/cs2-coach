@@ -1,6 +1,7 @@
 import { GsiTracker, type CoachEvent, type MatchContext } from "./tracker.js";
 import type { GsiPayload, TeamContext, TeamMember } from "./types.js";
 import { config, STEAMID64_RE } from "../config.js";
+import { runtime } from "../runtime-overrides.js";
 import { log } from "../log.js";
 
 /**
@@ -619,7 +620,7 @@ export class RosterManager {
     const bombCarrierName = carrier?.[1].tracker.ownName();
 
     let econ: TeamContext["econ"];
-    if (config.coach.teamTactics) {
+    if (runtime.teamTactics) {
       const econEntries = live
         .map(([id, f], i) => {
           const m = members[i]; // members[0..live.length-1] align with live by construction
@@ -665,7 +666,7 @@ export class RosterManager {
    *  known, and exactly one alive. In always-hedge mode (no squad size) the coach
    *  can't know un-wired teammates are dead, so it stays silent. */
   private deriveLastMan(team: TeamContext | undefined, now: number, refMap: string | undefined): CoachEvent | null {
-    if (!config.coach.teamTactics || !team) return null;
+    if (!runtime.teamTactics || !team) return null;
     // Connection-blip ITEM 2: a narrower gate than team.rosterComplete (left as-is for
     // the econ license). Armed when the high-water reached squadSize AND no member we're
     // actively hearing from is still behind the round.
@@ -721,7 +722,7 @@ export class RosterManager {
    *  Names the single worst offender; the anti-nag/rotation IS this code latch,
    *  never an LLM ask — this surface names a friend's bad pattern. */
   private deriveWeakLink(now: number, refMap: string | undefined): CoachEvent | null {
-    if (!config.coach.teamTactics) return null;
+    if (!runtime.teamTactics) return null;
     if (this.authorityFeed()?.tracker.context().roundPhase !== "freezetime") return null;
     let worst: { id: string; name: string; deaths: number } | null = null;
     for (const [id, f] of this.feeds) {
@@ -872,6 +873,46 @@ export class RosterManager {
       const ageMs = now - f.lastSeen;
       if (ageMs > config.gsi.feedStaleMs) continue;
       out.push({ name: f.tracker.ownName() ?? f.tracker.providerName() ?? "a player", ageMs });
+    }
+    return out.sort((a, b) => a.ageMs - b.ageMs);
+  }
+
+  /** Owner-only diagnostic: every feed known right now (within feedIdleMs), with its
+   *  SteamID64 EXPOSED — unlike connectedFeeds()/quarantinedFeeds(), which hide ids — plus
+   *  its role, freshness age, and confirmed/quarantine reason. index.ts cross-references the
+   *  steam64 against the Discord link so the admin surface can answer "who is this feed?". */
+  feedsDetailed(): Array<{
+    steam64: string;
+    name?: string;
+    ageMs: number;
+    confirmed: boolean;
+    reason?: string;
+    isPrimary: boolean;
+    isAuthority: boolean;
+  }> {
+    const now = Date.now();
+    const refMap = this.refMap(now);
+    const out: Array<{
+      steam64: string;
+      name?: string;
+      ageMs: number;
+      confirmed: boolean;
+      reason?: string;
+      isPrimary: boolean;
+      isAuthority: boolean;
+    }> = [];
+    for (const [id, f] of this.feeds) {
+      if (now - f.lastSeen > config.gsi.feedIdleMs) continue;
+      const confirmed = this.isTeammate(f, id, now, refMap);
+      out.push({
+        steam64: id,
+        name: f.tracker.ownName() ?? f.tracker.providerName(),
+        ageMs: now - f.lastSeen,
+        confirmed,
+        reason: confirmed ? undefined : (this.membershipReason(f, id, now, refMap) ?? undefined),
+        isPrimary: id === this.primaryId(),
+        isAuthority: id === this.authorityId,
+      });
     }
     return out.sort((a, b) => a.ageMs - b.ageMs);
   }
