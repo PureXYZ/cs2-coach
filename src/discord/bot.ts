@@ -90,6 +90,16 @@ const SONGS = {
     file: path.resolve("assets/sunshine-rainbow-white-pony.ogg"),
     reply: "🎵 **Sunshine Rainbow White Pony.** Don't ask.",
   },
+  "orange-smoke-rising": {
+    name: "Orange Smoke Rising",
+    file: path.resolve("assets/orange-smoke-rising.ogg"),
+    reply: "🎵 **Orange Smoke Rising.** Push the smoke, don't camp it.",
+  },
+  "stuck-in-the-lobby": {
+    name: "Stuck in the Lobby",
+    file: path.resolve("assets/stuck-in-the-lobby.ogg"),
+    reply: "🎵 **Stuck in the Lobby.** Too real.",
+  },
 } satisfies Record<string, { name: string; file: string; reply: string }>;
 
 /** One button per song, chunked into rows of five (Discord's per-row limit). */
