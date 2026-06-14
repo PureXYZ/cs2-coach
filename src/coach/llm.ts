@@ -440,6 +440,21 @@ function habitsNote(ctx: MatchContext): string {
     : "";
 }
 
+/**
+ * The qualitative Leetify pre-match brief as a prompt clause. Every field is a
+ * direction/recency phrase with NO number (built that way in leetify.ts), so it adds
+ * no value Leetify's verbatim/no-recompute rule would object to — the same basis the
+ * recap's buildTrend clause relies on. The model speaks it as a Leetify-attributed
+ * note and uses at most one item, never inventing a result beyond the list. Empty
+ * string when there's no brief (Leetify off / unregistered / fetch missed the window).
+ */
+function leetifyStartClause(brief?: MatchContext["leetifyStart"]): string {
+  if (!brief) return "";
+  const facts = [brief.lastOnMap, brief.mapForm, brief.recentForm, brief.trend].filter(Boolean);
+  if (!facts.length) return "";
+  return ` Leetify read on this player (THEIR data — speak it as a Leetify note and credit Leetify by name; you MAY work in ONE of these, never more, and never invent a past result beyond what's listed): ${JSON.stringify(facts)}.`;
+}
+
 /** True translation of GSI's win-condition token, relative to OUR side. */
 function methodStory(method: string, won: boolean): string {
   if (method.includes("bomb")) return won ? "your bomb detonated" : "their bomb detonated on you";
@@ -533,16 +548,28 @@ function describeMoment(
   ribTarget?: { name: string; note?: string },
 ): string {
   switch (event.type) {
+    case "mapLoading": {
+      // The warmup window: dead air, no buy to race, so the one moment with room for a
+      // proper pre-match scouting speech. The Leetify brief (map/recent form) is the
+      // centerpiece when it's present.
+      const brief = leetifyStartClause(ctx.leetifyStart);
+      const form = ctx.recentForm?.length
+        ? " The recentForm lines are this player's real past sessions — a dry callback fits a warmup speech."
+        : "";
+      return `The map is loading on ${ctx.map ?? event.map} and you've got the warmup to talk — there's no buy yet and nothing to talk over, so take the room: 40-70 words, three to five sentences (the one-line cap does NOT apply). A pre-match scouting brief in character: set the tone with suitably low expectations, ONE thing for this crew to actually focus on this match, and — when a Leetify read is given — make the map and recent form the spine of it, as a Leetify note. Spoken register the whole way; it's you talking before the match, not a writer.${brief}${form}`;
+    }
     case "matchStart": {
       const form = ctx.recentForm?.length
         ? " The recentForm lines are this player's actual previous sessions — a dry callback to the last result is gold here."
         : "";
+      const brief = leetifyStartClause(ctx.leetifyStart);
       // The usual case: round-1 freezetime arrives in the same GSI frame and
       // its event is suppressed — this one line is greeting AND pistol call.
       if (ctx.roundPhase === "freezetime" && ctx.roundKind === "pistol") {
-        return `A new match is starting on ${ctx.map ?? event.map} and the ROUND 1 PISTOL freezetime is already running. This ONE line is both the greeting and the pistol call: one concrete plan (where to go, armor vs util vs upgraded pistol, together as five). Don't let the greeting eat the call.${form}`;
+        const briefNote = brief ? " If a Leetify read is given, ONE quick jab off it at most — the pistol call still owns this line." : "";
+        return `A new match is starting on ${ctx.map ?? event.map} and the ROUND 1 PISTOL freezetime is already running. This ONE line is both the greeting and the pistol call: one concrete plan (where to go, armor vs util vs upgraded pistol, together as five). Don't let the greeting eat the call.${briefNote}${brief}${form}`;
       }
-      return `A new match is starting on ${ctx.map ?? event.map}. One greeting line in character: expectations appropriately low, plus ONE concrete focus point for the match (pistols, trading, util — pick from history if it shows a habit).${form}`;
+      return `A new match is starting on ${ctx.map ?? event.map}. One greeting line in character: expectations appropriately low, plus ONE concrete focus point for the match (pistols, trading, util — pick from history or the Leetify read if it shows a habit).${brief}${form}`;
     }
     case "freezetime": {
       // One-shot engine flag (cooldown-gated) — without it this directive

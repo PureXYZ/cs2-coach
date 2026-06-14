@@ -49,6 +49,10 @@ import { log } from "../log.js";
 /** Match-global events — every feed sees them identically, so only the AUTHORITY
  *  feed's copy is forwarded; the rest are per-player. */
 const GLOBAL_EVENTS: ReadonlySet<CoachEvent["type"]> = new Set([
+  // Match-lifecycle warmup signal — every feed sees it, so only the authority's copy
+  // is forwarded (one scouting speech, not one per wired friend). No globalSignature
+  // case needed: it falls through to the default (bare type), like matchStart/halftime.
+  "mapLoading",
   "matchStart",
   "freezetime",
   "roundLive",

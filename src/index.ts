@@ -18,6 +18,7 @@ import {
   pollForSquadLeetifyStats,
   spokenStatsSentence,
   spokenSquadSentence,
+  type LeetifyStartBrief,
 } from "./leetify.js";
 import { TtsChain } from "./tts/index.js";
 import { currentVoice, voices } from "./tts/voices.js";
@@ -251,6 +252,35 @@ async function main(): Promise<void> {
     decisionLog?.write({ snapshot: ctx, event, tier: "smart", text, source: llmText ? "llm" : "fallback", redact: true });
   };
 
+  // Leetify pre-match brief (map form / recency / aim trend) for the warmup + match-start
+  // lines. PRIMARY account only (roster.steamId()), one keyless /v3/profile fetch cached
+  // per map with a short TTL so warmup + round 1 share the round-trip while a later requeue
+  // refetches fresh. Best-effort: any failure resolves undefined so the greeting stays
+  // plain. Like the recap, the brief is qualitative, spoken once, and never stored.
+  const startBriefTtlMs = 2 * 60_000;
+  const startBriefCache = new Map<string, { at: number; p: Promise<LeetifyStartBrief | null | undefined> }>();
+  const leetifyStartBrief =
+    config.leetify.enabled && config.leetify.matchStart
+      ? (map: string): Promise<LeetifyStartBrief | undefined> => {
+          const steam64 = roster.steamId();
+          if (!steam64) return Promise.resolve(undefined); // primary not bound (friend-only / pre-bind)
+          const key = `${steam64}:${map}`;
+          const now = Date.now();
+          let entry = startBriefCache.get(key);
+          if (!entry || now - entry.at > startBriefTtlMs) {
+            const p = new LeetifyClient(config.leetify.apiKey)
+              .startBrief(steam64, map)
+              .catch((err) => {
+                log.warn("leetify", `Match-start brief failed (${err instanceof Error ? err.message : err}) — plain greeting`);
+                return undefined;
+              });
+            entry = { at: now, p };
+            startBriefCache.set(key, entry);
+          }
+          return entry.p.then((b) => b ?? undefined);
+        }
+      : undefined;
+
   const engine = new CoachEngine((req) => voice.say(req), llm, {
     getCtx: fullContext,
     payloadAgeMs: () => roster.lastUpdateAgeMs(),
@@ -261,7 +291,8 @@ async function main(): Promise<void> {
     roundLiveAt: () => roster.roundLiveAtMs(),
     bombPlantedAt: () => roster.bombPlantedAtMs(),
     fullHistory: () => roster.fullHistory(),
-    recentForm: () => sessions.recentForm(roster.context().map),
+    leetifyStartBrief,
+    recentForm: (opts) => sessions.recentForm(roster.context().map, opts),
     finalStats: () => roster.matchReport().stats,
     isQuiet: () => quiet.on,
     // Every decided line (LLM or fallback) lands in the decision log when it's

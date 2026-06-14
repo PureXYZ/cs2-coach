@@ -19,6 +19,10 @@ interface RecentMatch {
   id?: string;
   finished_at?: string;
   map_name?: string;
+  /** Per-match result string (e.g. "win"/"loss"/"tie") — present on every entry. */
+  outcome?: string | null;
+  /** Final score as [ours, theirs]-ish pair; unused by the qualitative brief. */
+  score?: [number, number] | null;
   leetify_rating?: number | null;
   preaim?: number | null;
   reaction_time_ms?: number | null;
@@ -62,6 +66,26 @@ export interface LeetifyMatchStats {
 export interface LeetifySquadStats {
   me: LeetifyMatchStats;
   squad: Array<{ name?: string; isPrimary: boolean; stats: LeetifyMatchStats }>;
+}
+
+/**
+ * A QUALITATIVE pre-match brief built from the player's Leetify profile
+ * (recent_matches), fetchable the moment the map is known — NO demo-parse wait,
+ * because it reads already-finished history, not the game still in Leetify's parse
+ * queue. Every field is a direction/recency PHRASE with no quoted figure (the same
+ * compliance basis the existing buildTrend() relies on: Leetify's verbatim/no-recompute
+ * rule polices numbers, and these introduce none). Like the recap, it is fetched,
+ * spoken once and never stored — it never reaches the session store or the logs.
+ */
+export interface LeetifyStartBrief {
+  /** Recent direction on THIS map — "you've been losing on Mirage lately". */
+  mapForm?: string;
+  /** The last game on this map: recency + result — "you last played Mirage earlier today, and lost". */
+  lastOnMap?: string;
+  /** Overall recent direction coming in — "you're walking in off a losing run". */
+  recentForm?: string;
+  /** Aim-trend direction (reuses buildTrend) — "your reaction time is trending faster lately". */
+  trend?: string;
 }
 
 /** Leetify's JSON uses null for unscored fields — normalize to undefined. */
@@ -166,6 +190,46 @@ function buildTrend(match: RecentMatch, recent: RecentMatch[]): string | undefin
   return clauses[0]!.charAt(0).toUpperCase() + clauses[0]!.slice(1) + ".";
 }
 
+/** Leetify's per-match outcome string → a coarse result. Tolerant of casing/wording
+ *  (win/won, loss/lost, tie/draw) since the exact tokens aren't contractual. */
+function matchResult(outcome: string | null | undefined): "win" | "loss" | "tie" | undefined {
+  if (!outcome) return undefined;
+  const s = outcome.toLowerCase();
+  if (s.startsWith("w")) return "win";
+  if (s.startsWith("l")) return "loss";
+  if (s.startsWith("t") || s.startsWith("d")) return "tie";
+  return undefined;
+}
+
+/** A number-light "how long ago" phrase for a past match — spoken words, not digits.
+ *  Time-since is derived arithmetic, not a Leetify metric, so loose wording here doesn't
+ *  touch the verbatim rule; it just keeps TTS natural. undefined when the time is unusable. */
+function agoPhrase(finishedAt: string | undefined, now: number): string | undefined {
+  if (!finishedAt) return undefined;
+  const at = Date.parse(finishedAt);
+  if (Number.isNaN(at)) return undefined;
+  const mins = (now - at) / 60_000;
+  if (mins < 0) return undefined;
+  if (mins < 75) return "in the last hour";
+  if (mins < 210) return "a couple hours ago";
+  if (mins < 7 * 60) return "earlier today";
+  if (mins < 24 * 60) return "today";
+  if (mins < 48 * 60) return "yesterday";
+  if (mins < 7 * 24 * 60) return "a few days back";
+  return "a while back";
+}
+
+/** Spoken map name from a GSI/Leetify token (de_mirage → "Mirage"). Local to leetify.ts
+ *  to avoid a cross-module import; the coach's mapDisplayName covers workshop/alias cases
+ *  the brief never needs (the brief always sees the canonical GSI token). */
+function prettyMap(raw: string): string {
+  const token = raw.split("/").pop() ?? raw;
+  return token
+    .replace(/^(de|cs|ar)_/i, "")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 export class LeetifyClient {
   constructor(private readonly apiKey?: string) {}
 
@@ -241,6 +305,74 @@ export class LeetifyClient {
       log.warn("leetify", `Squad match detail fetch failed (${err instanceof Error ? err.message : err}) — using the primary's profile summary only`);
     }
     return { me, squad: rows };
+  }
+
+  /**
+   * A QUALITATIVE pre-match brief from the player's profile, for the match-start /
+   * warmup speech. ONE keyless /v3/profile GET (the same call findMatchEntry makes)
+   * yields recent_matches — newest-first, each with outcome/map_name/finished_at and
+   * the aim fields — so map form, "last played this map / how long ago", recent
+   * direction and an aim trend all come from it with NO demo-parse latency. Every
+   * field is direction/recency only (no spoken number) to stay inside Leetify's
+   * verbatim/no-recompute rule, the same basis buildTrend already relies on. The
+   * caller speaks it once and never stores it.
+   *
+   * undefined = account not on Leetify (404); null = registered but nothing usable
+   * (no history / no clear signal) — both degrade cleanly to today's plain greeting.
+   */
+  async startBrief(steam64: string, map: string): Promise<LeetifyStartBrief | null | undefined> {
+    const profile = await this.get(`/v3/profile?steam64_id=${encodeURIComponent(steam64)}`);
+    if (profile === null) return undefined; // 404 — not a registered Leetify user
+    const recent = (profile as { recent_matches?: RecentMatch[] }).recent_matches ?? [];
+    if (!recent.length) return null;
+
+    const now = Date.now();
+    const where = prettyMap(map);
+    const onMap = recent.filter((m) => m.map_name && m.map_name.toLowerCase() === map.toLowerCase());
+    const brief: LeetifyStartBrief = {};
+
+    // The last game on this map: recency + result (a single restated outcome, no tally).
+    const last = onMap[0];
+    if (last) {
+      const res = matchResult(last.outcome);
+      const ago = agoPhrase(last.finished_at, now);
+      if (res && ago) {
+        const verb = res === "win" ? "and took it" : res === "loss" ? "and lost" : "and drew it";
+        brief.lastOnMap = `you last played ${where} ${ago}, ${verb}`;
+      }
+    }
+
+    // Recent DIRECTION on this map — a plain majority over the last several games here,
+    // spoken as a direction, never as an "X won Y lost" count (which would be a recompute).
+    if (onMap.length >= 2) {
+      let w = 0;
+      let l = 0;
+      for (const m of onMap.slice(0, 6)) {
+        const r = matchResult(m.outcome);
+        if (r === "win") w++;
+        else if (r === "loss") l++;
+      }
+      if (l > w) brief.mapForm = `you've been losing on ${where} lately`;
+      else if (w > l) brief.mapForm = `you've been winning on ${where} lately`;
+    }
+
+    // Overall streak coming in (consecutive from the newest) — direction only, no count.
+    const top = matchResult(recent[0]?.outcome);
+    if (top === "win" || top === "loss") {
+      let streak = 0;
+      for (const m of recent) {
+        if (matchResult(m.outcome) !== top) break;
+        streak++;
+      }
+      if (streak >= 2) brief.recentForm = top === "win" ? "you're walking in on a win streak" : "you're walking in off a losing run";
+    }
+
+    // Aim direction — reuse the recap's buildTrend, comparing the latest finished game
+    // to the prior few. Direction only (no numbers) by construction.
+    if (recent[0]) brief.trend = buildTrend(recent[0], recent);
+
+    // Nothing usable → null so the caller degrades to the plain greeting.
+    return brief.lastOnMap || brief.mapForm || brief.recentForm || brief.trend ? brief : null;
   }
 
   /**

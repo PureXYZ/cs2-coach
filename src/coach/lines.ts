@@ -112,6 +112,33 @@ export function matchStartLine(rawMap: string): string {
     ]);
 }
 
+/**
+ * Canned fallback for the warmup scouting speech (LLM off or failed) — a longer,
+ * multi-sentence cousin of matchStartLine for the pre-round-1 dead air. No Leetify
+ * data here (that only feeds the LLM prompt); just a dry pre-match brief in character.
+ */
+export function warmupSpeechLine(rawMap: string): string {
+  if (!rawMap || rawMap === "unknown") {
+    return pick("warmupSpeechNoMap", [
+      "Alright, warming up. Map's still a mystery, your bad habits aren't. Whatever we land on, win the pistol, trade your deaths, and stop peeking like you're immortal. Low bar. Clear it.",
+      "Here we go again. Don't know where yet, doesn't matter — same three things every map: armor on pistol, swing together, and quit dying first for free. Let's see if it sticks this time.",
+      "Loading in. I've watched enough of these to know how it goes, so let's skip the part where you forget the basics. Crosshair at head height, trade everything, and play the round in front of you.",
+      "Warmup's running. New lobby, fresh chance to disappoint me. Keep it simple — win pistol, hold your angles, don't lone-wolf. I'll yell about the rest when you inevitably ignore that.",
+    ]);
+  }
+  const map = mapDisplayName(rawMap);
+  return pick("warmupSpeech", [
+    `${map} it is. Warmup's the easy part, try not to peak here. Win the pistol, trade your deaths, and play the map you've theoretically practiced. Keep it boring and we steal a few.`,
+    `We drew ${map}. You know this map, so act like it for once. Group up on pistol, hold your crossfires, and stop entry-fragging yourself into the void. Simple plan. Execute it.`,
+    `Loading into ${map}. Here's the whole brief: armor on pistol, swing as a team, and don't give them first blood for free every round. Do that and I'll find something else to complain about.`,
+    `${map}. Cute. Last thing I need is you treating warmup like the highlight reel. Lock in — win pistol, trade, hold angles, and play the actual map instead of the one in your head.`,
+    `Back on ${map}. Same map, same shot at not embarrassing us. Take the pistol seriously, keep your util for the round that matters, and trade every kill. Crosshair up, ego down.`,
+    `Fresh game on ${map}. Warmup's for stretching, not for whiffing your whole match early. Win the pistol, play together, and quit dying in the opening five seconds. That's the bar. It's low.`,
+    `We're on ${map}. Good map to look competent on, big ask I know. Group up, win pistol, hold your angles and trade. Keep it disciplined and the rounds come. Get fancy and they bury us.`,
+    `${map} again. I remember how this usually goes, so let's rewrite it. Armor and util on pistol, swing the same fight together, and for the love of god stop dry-peeking. Set the bar at not-a-disaster.`,
+  ]);
+}
+
 /** B6 — append a named-drop coda to a buy line when the primary is already kitted
  *  with spare cash and a wired teammate is broke and ALIVE. Keyed on MONEY only (a
  *  friend's equipValue is never reported — only the primary's own gear is readable),

@@ -1736,5 +1736,96 @@ console.log("\n=== scenario: shuffle-bag pick() is fair and correct for interpol
 }
 
 // ---------------------------------------------------------------------------
+console.log("\n=== scenario: warmup emits mapLoading once; live still emits matchStart ===");
+{
+  const t = new GsiTracker();
+  const e1 = t.update(payload({ mapPhase: "warmup" }));
+  expect(e1.some((ev) => ev.type === "mapLoading"), "warmup frame emits mapLoading");
+  expect(e1.filter((ev) => ev.type === "mapLoading").length === 1, "exactly one mapLoading from the warmup frame");
+  const e2 = t.update(payload({ mapPhase: "warmup" }));
+  expect(!e2.some((ev) => ev.type === "mapLoading"), "a second warmup frame does NOT re-emit (latched)");
+  const e3 = t.update(payload({ roundPhase: "freezetime", round: 0 }));
+  expect(e3.some((ev) => ev.type === "matchStart"), "going live still emits matchStart");
+  expect(!e3.some((ev) => ev.type === "mapLoading"), "the live frame does not emit mapLoading");
+}
+{
+  // Cold start straight into a live frame (warmup skipped / connected late): no mapLoading.
+  const t = new GsiTracker();
+  const e1 = t.update(payload({ roundPhase: "live", round: 0 }));
+  expect(e1.some((ev) => ev.type === "matchStart"), "cold-start live frame still emits matchStart");
+  expect(!e1.some((ev) => ev.type === "mapLoading"), "cold start into live emits no mapLoading");
+}
+{
+  // A warmup-looking frame MID-MATCH must not re-fire mapLoading (the midMatchPhase guard).
+  const t = new GsiTracker();
+  t.update(payload({ mapPhase: "warmup" }));
+  t.update(payload({ roundPhase: "live", round: 0 })); // inMatch now
+  const mid = t.update(payload({ mapPhase: "warmup", ctScore: 3, tScore: 2 }));
+  expect(!mid.some((ev) => ev.type === "mapLoading"), "a warmup frame mid-match does not re-fire mapLoading");
+}
+{
+  // Back-to-back: gameover re-arms the latch, so a requeue warmup fires again.
+  const t = new GsiTracker();
+  t.update(payload({ mapPhase: "warmup" }));
+  t.update(payload({ roundPhase: "live", round: 0 }));
+  t.update(payload({ roundPhase: "over", round: 1, winTeam: "CT", ctScore: 13, tScore: 2, roundWins: { "1": "ct_win_elimination" } }));
+  t.update(payload({ mapPhase: "gameover", ctScore: 13, tScore: 2 }));
+  const requeue = t.update(payload({ mapPhase: "warmup", ctScore: 0, tScore: 0 }));
+  expect(requeue.some((ev) => ev.type === "mapLoading"), "a requeue warmup after gameover re-emits mapLoading");
+}
+{
+  // A transient map-less packet blip DURING warmup must NOT re-fire mapLoading — only a
+  // SUSTAINED menu return (a real dodge/requeue) re-arms the latch, and that's time-based
+  // (45s), so it's unit-reasoned rather than asserted in the synchronous sim.
+  const t = new GsiTracker();
+  const q1 = t.update(payload({ mapPhase: "warmup" }));
+  expect(q1.some((ev) => ev.type === "mapLoading"), "queue 1 warmup emits mapLoading");
+  const menu = payload({});
+  delete (menu as { map?: unknown }).map; // a brief map-less blip frame
+  t.update(menu);
+  const q2 = t.update(payload({ mapPhase: "warmup" }));
+  expect(!q2.some((ev) => ev.type === "mapLoading"), "a brief menu blip during warmup does NOT re-fire mapLoading (latched)");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: warmup mapLoading dispatches a (canned) scouting speech ===");
+{
+  const { out, engine: e } = freshEngine();
+  e.handle([{ type: "mapLoading", map: "de_mirage", mode: "competitive" }], { ...tracker.context(), mode: "competitive" });
+  const speech = out.find((s) => s.category === "warmupSpeech");
+  expect(speech !== undefined, "mapLoading dispatches a warmupSpeech line (canned, LLM-less)");
+  expect(speech !== undefined && /mirage|pistol|trade|warm/i.test(speech.text), `the speech is a real pre-match brief ("${speech?.text.slice(0, 60)}")`);
+  // The buy-call-race guard: the warmup speech is relevant during warmup but is dropped
+  // the instant round 1 begins (matchStart), so it can never be spoken over the pistol buy.
+  expect(speech?.stillRelevant?.() === true, "warmup speech is relevant during warmup");
+  e.handle(
+    [{ type: "matchStart", map: "de_mirage", mode: "competitive" }],
+    { ...tracker.context(), mode: "competitive", roundPhase: "freezetime", roundKind: "pistol", money: 800, playerIsSelf: true },
+  );
+  expect(speech?.stillRelevant?.() === false, "warmup speech goes stale the instant matchStart fires — never races the pistol buy call");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: recentForm suppresses map/streak lines when Leetify covers them ===");
+{
+  const { SessionStore } = await import("../src/coach/session-store.js");
+  const fs = await import("node:fs");
+  const tmp = path.join(os.tmpdir(), `sim-sessions-${process.pid}-${seen.length}.json`);
+  const store = new SessionStore(tmp);
+  const base = Date.now();
+  for (let i = 0; i < 4; i++) {
+    store.record({ endedAt: new Date(base - i * 3_600_000).toISOString(), map: "de_mirage", won: true, ourScore: 13, theirScore: i, kills: 20, deaths: 10 });
+  }
+  const full = store.recentForm("de_mirage") ?? [];
+  const trimmed = store.recentForm("de_mirage", { leetifyCoversForm: true }) ?? [];
+  expect(full.some((l) => /On Mirage specifically/i.test(l)), "default recentForm includes the per-map W/L line");
+  expect(full.some((l) => /in a row/i.test(l)), "default recentForm includes the streak line");
+  expect(!trimmed.some((l) => /On Mirage specifically/i.test(l)), "per-map line suppressed when Leetify covers form");
+  expect(!trimmed.some((l) => /in a row/i.test(l)), "streak line suppressed when Leetify covers form");
+  expect(trimmed.length < full.length, "trimmed recentForm is shorter than the default");
+  try { fs.unlinkSync(tmp); } catch { /* best effort */ }
+}
+
+// ---------------------------------------------------------------------------
 console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`} — config timings: round=${config.timings.roundSeconds}s bomb=${config.timings.bombSeconds}s`);
 process.exit(failures === 0 ? 0 : 1);

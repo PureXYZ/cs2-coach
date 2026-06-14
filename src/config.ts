@@ -279,6 +279,13 @@ export const config = {
     // freezetime, plus last-man framing. On by default; set false to keep the
     // coach focused on the primary player and skip the team-econ calls.
     teamTactics: optional("COACH_TEAM_TACTICS", "true") !== "false",
+    // A longer pre-match scouting SPEECH during the warmup window (before round 1),
+    // where there's no buy call to race. When the Leetify match-start feature is on
+    // (LEETIFY_MATCH_START) the speech leans on the player's map/recent form. On by
+    // default; safe even if CS2 sends little/no warmup (the speech is simply dropped
+    // the instant round 1 goes live, never played over the pistol buy). Set false to
+    // keep match start to the single round-1 greeting line.
+    warmupSpeech: optional("COACH_WARMUP_SPEECH", "true") !== "false",
     // Verbose tracing: turns on log.debug() output (the silent-drop reasons the
     // engine emits, etc.). Off by default — this is noisy and only for diagnosing
     // why a moment did or didn't speak.
@@ -296,6 +303,12 @@ export const config = {
     // works keyless at stricter rate limits.
     enabled: optional("LEETIFY_ENABLED", "true") !== "false",
     apiKey: optional("LEETIFY_API_KEY") || undefined,
+    // Enrich the match-start line / warmup speech with the player's Leetify form —
+    // a single keyless /v3/profile fetch (no demo-parse wait) gives map W/L, "you
+    // just played this map", recent direction and an aim trend, spoken QUALITATIVELY
+    // (no numbers) the moment the map is known. On by default; needs a Leetify
+    // account. Independent of the post-match recap (LEETIFY_ENABLED gates both).
+    matchStart: optional("LEETIFY_MATCH_START", "true") !== "false",
     // Squad recap mode, used only when friends are wired AND team tactics are on:
     // "full" (default) reads a short line for every wired friend so the coach can
     // roast the whole board; "leaders" only names whoever topped each stat (gentler
