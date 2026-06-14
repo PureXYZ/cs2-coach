@@ -199,6 +199,18 @@ export function economyLine(ctx: MatchContext, droppedTo?: Set<string>): string 
       "Opening pistol. Grab armor or a nade, then play together. Solo entries die for nothing here.",
       "Glock round. One purchase, armor or util, then group up and trade every kill.",
       "Pistols only, obviously. Armor or a flash each. Now move as one and don't lone-wolf it.",
+      "Round one. You get armor or you get util, never both. Then huddle up and hit one spot.",
+      "Eight hundred is eight hundred. One thing on the Glock, armor or a nade. And nobody peels off alone.",
+      "This is the cheapest round of the game. Buy armor or a flash, then five of you, same angle.",
+      "Skip the lone hero stuff. Kevlar or util, one each, and swing it as a wall.",
+      "Pistols. You can afford exactly one upgrade, so pick it. Then group and trade like adults.",
+      "Don't overthink eight hundred bucks. Armor or a nade, that's the menu. Now stick together.",
+      "First round and you're already drifting apart. Armor or util, one each, then bunch up and commit.",
+      "Pistol round math is real simple. One purchase, armor or a flash. After that, no splitting up.",
+      "Nobody's rich on pistol. Grab armor or a nade, not the both of them, and play it five wide.",
+      "Round starts, brains turn off. Armor or util, one apiece. Then group and take one fight together.",
+      "It's the pistol, treat it like one. One buy each, armor or util, and don't you dare go solo.",
+      "Keep it dead simple. Armor or a nade per guy, then five-man one fight and refrag your buddy.",
     ]);
   }
   // Their match point: lose this round and the match ends — "save for next
@@ -252,6 +264,18 @@ export function economyLine(ctx: MatchContext, droppedTo?: Set<string>): string 
       "You've got it all. Spend nothing and survive. Wild combo for you, I know.",
       "Geared to the teeth. Close the menu. Win the round, keep the gun.",
       "Locked and loaded. Buy zero. Play smart and that rifle sees next round.",
+      "You've got the rifle, you've got the nades. The store has nothing for you. Just don't die for nothing.",
+      "Full kit on the body. Hands off the menu, brain on the round. Walk it out alive.",
+      "Stacked already. The buy menu's a trap this round, close it and go win.",
+      "Rifle, util, the works. The only bad spend left is your life, so quit volunteering it.",
+      "Pockets full, menu shut. Survive the round and you do it all again next one. Easy math.",
+      "You walked in loaded. Now walk out the same way, with the gun still in your hands.",
+      "Everything's on you already. So the round comes down to one thing: don't get caught out and feed it.",
+      "Geared and ready, which means the buy menu does nothing for you. Trade smart, stay alive, keep it.",
+      "No buy this round, you're set. The whole job is not throwing the rifle in some pointless duel.",
+      "You've got it all packed already. The only way to bleed value here is dying with it. So don't.",
+      "Kitted top to bottom. Menu stays closed, head stays on, rifle comes home in one piece.",
+      "Nothing left to grab in there, so play it like the gun matters. Right now it's all you've got to lose.",
     ]), ctx, droppedTo);
   }
   if (money >= 4700) {
@@ -270,6 +294,20 @@ export function economyLine(ctx: MatchContext, droppedTo?: Set<string>): string 
       "Loaded wallet. Rifle and armor isn't a full buy, the nades are part of it. Get them.",
       "Max money round. Gun, kevlar, every grenade. Leave nothing in the bank.",
       "Rich and out of excuses. Full kit, full util, then go actually use it.",
+      "Bank's overflowing. So buy the gun, the armor, and the nades. All three, not two.",
+      "Max round. Drop the cash on a rifle, plates, and a full bag of util.",
+      "Stop staring at that number. Rifle, kevlar, smokes, flashes. Then walk out and use it.",
+      "Four grand plus and you wanna save? Nah. Full buy, every grenade. Go.",
+      "Treat yourself. The whole shop. And the nades aren't a treat, they're the buy.",
+      "You're loaded, so act like it. Gun, plates, every grenade slot filled. Move.",
+      "Easy round to buy. It's all of it or it's a chat about why you went cheap.",
+      "Top dollar in the bank. Rifle, kevlar, and yes the smokes count, buy them.",
+      "Rolling in it. So get the rifle, the armor, and a flash for every angle. Don't skimp.",
+      "Full pockets, full buy. Rifle, plates, nades, the lot. Then go put it to work.",
+      "Stacked this round. Spend it all. Gun, armor, grenades, and actually throw them.",
+      "Your bank's fat and your util bag is empty. Fix the second one. Buy the nades.",
+      "Loaded up. Rifle, kevlar, every grenade you keep pretending to forget.",
+      "All that cash and you're hovering on save? Full buy. Get the smokes. Get out there.",
     ]);
   }
   if (money >= 3700) {
@@ -288,6 +326,20 @@ export function economyLine(ctx: MatchContext, droppedTo?: Set<string>): string 
       "Rifle and plates, that's the round. Spare cash buys a flash, not a hole in the wallet.",
       "Enough for gun and armor. Util's optional, the kevlar isn't. Buy in that order.",
       "Comfortable buy. Rifle, armor, done. One grenade if the math says yes.",
+      "Half a wallet, half a buy. Rifle and armor, then stop. Util's not happening today.",
+      "Money's okay, not great. Plates and a gun lock in first. A nade only if there's scraps left.",
+      "Buy the rifle, buy the armor, then walk away from the menu. Nades wait for a richer round.",
+      "Rifle and plates, hard stop. You want full util, go win a round first and earn it.",
+      "Don't overbuy on a half-stack. Rifle, kevlar, and one nade only if the numbers actually clear.",
+      "Tight money. Lock the gun and plates, then see if a single flash survives the math. Probably won't.",
+      "Rifle and armor cover you. Skip the full kit, your bank can't write that check today.",
+      "You're sitting on a buyable rifle. Take it, take plates, and leave the nades for the big-money round.",
+      "Average money, average shopping. Gun, armor, done. A grenade's a bonus, not the goddamn plan.",
+      "Half-decent bank. Plates and a rifle, no negotiating. Everything else depends on what's left over.",
+      "This is a rifle-and-armor round, nothing fancier. Force a full kit here and you'll be broke next round, dumbass.",
+      "Enough to be armed, not enough to be greedy. Rifle, plates, and a flash if it squeaks in.",
+      "Lock plates and a rifle. Util's the first thing to cut when the money's only halfway there.",
+      "You can swing a rifle and armor clean. Past that, count your cash twice before buying a damn thing.",
     ]);
   }
   if (money <= 1800) {
@@ -305,6 +357,18 @@ export function economyLine(ctx: MatchContext, droppedTo?: Set<string>): string 
       "Park the wallet. We eat this round, the bonus funds rifles next. Buy nothing now.",
       "Save it. Forcing now wrecks the rifle round you've earned. Pistols only, no buys.",
       "Everyone saves. The bonus turns into a full buy next round if you don't touch it.",
+      "You're broke and losing. Good news, that's the formula for free money next round. Save it all.",
+      "Holster everything. The streak's been printing loss bonus this whole time. Cash it next round, not now.",
+      "Keep the cash. Forcing a pistol here just resets the bonus you've been bleeding for. Buy nothing.",
+      "Lose this one on purpose. The bonus tops off and we're loaded next round. Don't touch a thing.",
+      "Tuck the wallet away. Bonus is at the cap. One clean round of nothing and you've got a rifle next.",
+      "Don't spend a dime. The losing's finally good for something, it maxed the bonus. Real buy next.",
+      "Empty pockets, full bonus. That's the trade. Save this round and shop properly next one.",
+      "Pistols stay put. The bonus is maxed, so this round's already lost, just don't make it expensive.",
+      "You've lost enough to max the bonus. Don't throw it away forcing. Save five, buy five next.",
+      "Money stays in the pocket. The streak's the only reason next round's a full buy. Don't fumble it.",
+      "Save it all, even the pistol. The bonus is fat now, and forcing here just keeps you poor.",
+      "Skip the buy. The losing run capped the bonus, so we cash in next round. Spend nothing here.",
     ]);
     }
     return pick("ecoSave", [
@@ -328,6 +392,22 @@ export function economyLine(ctx: MatchContext, droppedTo?: Set<string>): string 
       "No money, no buy. Snag a free kill, then walk. Feeding doesn't help the bonus.",
       "Pistol round by force, not choice. Get a pick if you can, then get out clean.",
       "Bank's tapped. Cheap pistol, play for one frag, save your skin. Rifles come back next round.",
+      "Empty pockets. Pistol's all you got, so make peace with it. One pick if it's free, then bail.",
+      "Don't you dare throw your body at a save. Cheap pistol, sneaky frag, walk away clean.",
+      "Save means save, not trade your life for a kill you didn't even need. Pistol, pick, exit.",
+      "This round's already lost on paper. Steal a pistol frag, keep your skin, buy real next time.",
+      "You've got pocket lint and a pistol. Play it dirty, snag a frag, don't feed their full buy.",
+      "Hold an off angle, tap one, disappear. That's the whole eco. Don't overcook it.",
+      "Nothing in the bank, so nothing fancy. Pistol pick if it's handed to you, otherwise just live.",
+      "Broke round, so play it like a coward. Cheap frag if it shows, then run like rent's due.",
+      "Your wallet's a joke, don't make your death one too. Pistol, free pick, clean exit.",
+      "No rifle's coming this round. Lurk an angle, poke one head, then quietly leave the party.",
+      "Eco. Pistol up, brain on. Grab the gift kill if they hand it over, then exit before the trade.",
+      "Don't go feeding their economy on a save. Pistol, off angle, one pick, then vanish.",
+      "You can't shop, so don't pretend. Pistol only, snag a pick if it's lazy, get out alive.",
+      "Save round, not a sacrifice. Tap one if it's free, then take your pistol home in one piece.",
+      "Broke. So play scared and smart. Cheap kill if it falls in your lap, then run it out alive.",
+      "This is a save, so save. Grab a cheap frag if it's there, but the exit's the real job.",
     ]);
   }
   return pick("ecoAwkward", [
@@ -343,6 +423,18 @@ export function economyLine(ctx: MatchContext, droppedTo?: Set<string>): string 
       "Not broke, not loaded. Force together or save together, but pick one and all five commit.",
       "No-man's-land money. Whatever the team does, you do too. Solo buys lose rounds.",
       "Awkward stack. Don't be the one guy with a rifle on a save. Match the boys, period.",
+      "Tweener money. Force or save, your pick, but whatever you pick the other four pick it too.",
+      "This is matching-money, not freestyle hour. One Deagle off on your own and you just gift-wrapped it.",
+      "Buy menu's a trap right now. The team commits one way, you commit with them. No solo runs.",
+      "Wallet says maybe. Maybe means everybody agrees first, then we go. Don't drift off and buy alone.",
+      "Read the team's money before you read your own. Whatever the four do, you do, or shut your wallet.",
+      "Half-rich, half-broke. Pick force, pick save, but for once all five say the same thing.",
+      "Either we all dig deep or we all sit tight. The split-decision rounds are the ones we throw.",
+      "Talk it out fast. Force as five hits, save as five resets, you alone does jack shit.",
+      "Tough money round. The only wrong answer is five guys doing five different things.",
+      "You're not rich enough to freelance this. Match the boys or you're just target practice.",
+      "Awkward cash. Either dump it all together or keep it all together. No half-measures, period.",
+      "Quit buying like you're the only one on this server. Check the team, then match the damn buy.",
     ]);
 }
 
@@ -361,6 +453,18 @@ const PLANTED_CT = [
       "Forty on the clock means there's no rush. Group up and trade your damn teammates.",
       "Nobody peeks alone here. Five guns or we just hand them the round.",
       "Pop the util, breathe, push as one. The solo entry just feeds them a free kill.",
+      "They got the plant down. Now we get it back together, util first, guns second. Don't freelance.",
+      "Forty seconds is a lifetime if you stop sprinting in solo to get traded by nobody.",
+      "Five of you, one site. Walk in as a wall, not a damn conga line of corpses.",
+      "I see one of you creeping in early. Hold. We don't retake until all five are stacked.",
+      "Throw the flash, throw the molly, then swing. Naked dry peeks just gift them the kill.",
+      "This is a coordinated retake, not whoever-gets-bored-first. Wait for the call and go as one.",
+      "Slow it down. The bomb's not going anywhere and neither should you without your four buddies.",
+      "Whoever lurks in alone here is just a free frag with extra steps. Group up and push it clean.",
+      "We've got the time, so use it. Stack at the entry, count down, swing together, trade hard.",
+      "Quit peeking the same angle one by one. They love it. Hit it five-wide and make them choose.",
+      "You've got util for a reason, so throw the damn nades before you walk into their crossfire.",
+      "Stop staring at the timer and start staging the retake. Util ready, stacked up, then we go.",
 ];
 
 const PLANTED_T = [
@@ -380,6 +484,20 @@ const PLANTED_T = [
       "You planted it, so stop playing like you're the one who needs a kill.",
       "No hunting, no re-peeking. Just hold and trade. Let the timer do the work.",
       "Crossfire's set, now don't blow it by wandering off looking for a frag.",
+      "Bomb's in the ground. Now glue yourself to an angle and let them sweat it.",
+      "The hard part's done, so don't go inventing a new one. Sit on your crossfire.",
+      "They gotta come to you now. So hold tight and make them eat the doorway.",
+      "Quit itching to peek. The clock's already killing them, you don't have to.",
+      "You got the plant. Don't trade it back for a dumb solo swing into nothing.",
+      "Anchor on the bomb and shut up. Every tick you stay alive is theirs to panic over.",
+      "Round's basically won if you just don't die being a hero. So don't.",
+      "Let the beeps work on them. You sit still and hold what you got.",
+      "Hold the line and let them rush in panicked. Patience wins this, not your trigger.",
+      "Plant's down, so flip the brain off hunt mode and lock onto an angle.",
+      "Don't peek out looking for heroics. Let them come find the barrel instead.",
+      "Time's bleeding their side dry. So park it, watch the lane, and do nothing pretty.",
+      "You did your job planting. Now do the boring one and just stay alive on it.",
+      "Sit in your crossfire and wait. The round comes to you if you quit chasing it.",
 ];
 
 const PLANTED_NEUTRAL = [
@@ -413,6 +531,16 @@ const DEFUSED_CT = [
       "Cut the wire, took the round. They planted that thing for our benefit.",
       "Defused. Their plant, our W. I love a good robbery.",
       "That's a clean defuse. Whoever planted it just donated it to us.",
+      "Defused. They spent their whole buy planting us a free round.",
+      "Snipped it under the timer. Fine, that defuse was clean. Don't get used to it.",
+      "Defused, and we walked off with it. Thanks for the carry, guys.",
+      "Defuse landed. Their util, their entry, our scoreboard. Math checks out.",
+      "Stole that one clean off the plant. Somebody over there is uninstalling.",
+      "Took the wire off it. They did everything but win the round.",
+      "Defused dry, nobody even contested. They just gave it away.",
+      "That defuse held with no kit and no time. Okay, that one was filthy.",
+      "Defused it out from under their nose. They planted, we collected. Simple.",
+      "Wire's snipped, round's stolen. They bought that gun just to hand it over.",
 ];
 
 const DEFUSED_T = [
@@ -426,6 +554,16 @@ const DEFUSED_T = [
       "Free defuse for them. Not one of you kept eyes on it.",
       "They cut the wire uncontested. The bomb was begging for one babysitter.",
       "Plant down, eyes off, round lost. Watching the bomb is not optional.",
+      "Heard the defuse beeps the whole time and still nobody peeked back. Round's gone.",
+      "Post-plant is your job and you all ran off to find a fight somewhere else. Defused.",
+      "You let them sit on that bomb the entire defuse. Hold an angle on it, damn.",
+      "Seven seconds to swing the defuser and not one of you came back. That's a loss.",
+      "They walked up and tapped it like nobody was even on the server. Watch the post-plant.",
+      "You hear that wire cut? That's what no crossfire on the bomb sounds like.",
+      "You pushed for picks and gave up the whole post-plant. Defused. Round wasted.",
+      "You planted and treated it like the round was already over. It wasn't. It is now.",
+      "Not a single nade thrown to stop that defuse. They strolled in and cut it.",
+      "Stop chasing frags and watch the damn bomb. They just defused it in peace.",
 ];
 
 const DEFUSED_NEUTRAL = [
@@ -457,6 +595,16 @@ const EXPLODED_T = [
       "Detonation. Turns out patience pays better than a hero peek.",
       "There's the payday. Held the post-plant and never blinked.",
       "Bomb went off. Nobody re-peeked it away for once. Miracle.",
+      "Detonation. Sat on it and let the clock do the killing. Smart, for once.",
+      "Bomb cooked. Nobody got greedy and threw it on a dry peek. Wild.",
+      "That's the tick running out on them. We just shut up and let it pop.",
+      "Round's ours. You held your corner instead of chasing a frag. Took you long enough.",
+      "Plant held, bomb popped, round won. Three things in a row, who are you.",
+      "Bomb did the heavy lifting. All you had to do was not screw it up, and damn, you didn't.",
+      "Site's smoke. We never gave up the post-plant, so they never got a swing. Round's done.",
+      "That's it ticking down to nothing. We let them come to us and it cost them the round.",
+      "Boom. They wanted a retake, we wanted to stand still and win. We won.",
+      "Round's in the bag. Played the clock instead of your ego for once and look what happens.",
 ];
 
 const EXPLODED_CT = [
@@ -470,6 +618,16 @@ const EXPLODED_CT = [
       "Boom. That's what dragging your feet on a retake gets you.",
       "It went off. The retake was a rumor, not a plan.",
       "There it goes. We had forty seconds and used zero of them. Round's done.",
+      "Bomb beat us to the site. Retake's supposed to get there first, genius.",
+      "We let the timer do the killing for them. Swing the damn site next time.",
+      "You peeked the post-plant one at a time. They thanked you. Round's done.",
+      "That's a CT loss because nobody committed to the take. We trickle, we die.",
+      "Bomb's up, we're scattered, and now it's down. Stack and hit it together.",
+      "You waited for the perfect retake and got the loud one instead. Gone.",
+      "We had the numbers and used none of them. That's on the slow swing.",
+      "Site's a crater and so's the round. Retake means go, not gather.",
+      "You saved your util for the highlight reel. Should've spent it on the take.",
+      "They sat on that plant rent-free. Punish the post-plant or lose it.",
 ];
 
 const EXPLODED_NEUTRAL = [
@@ -508,6 +666,22 @@ export function roundWonLine(ourScore: number, theirScore: number): string {
       `There it is, ${ourScore}-${theirScore}. Save the celebration, the match isn't won.`,
       `Took the round, ${ourScore}-${theirScore}. Reset the angles and do it clean again.`,
       `Up ${ourScore}-${theirScore}. Good. Now play like you actually want the next one.`,
+      `Round goes to us, ${ourScore}-${theirScore}. Settle down, the scoreboard's not finished.`,
+      `Yeah, ${ourScore}-${theirScore}. Pocket it and shut up, we want the next one too.`,
+      `Banked, ${ourScore}-${theirScore}. Now buy smart and stop spending like it's free.`,
+      `Damn, that was actually clean. ${ourScore}-${theirScore}. Hate that I'm impressed, do it again.`,
+      `Eat the round, ${ourScore}-${theirScore}, and chase the next one before you start gloating.`,
+      `Hey, a win, ${ourScore}-${theirScore}. Hold the angles and quit overpeeking on the next.`,
+      `Number went up, ${ourScore}-${theirScore}. Doesn't mean you're good, means you held on.`,
+      `Round's done, ${ourScore}-${theirScore}. Reload the brain, we run the same setup again.`,
+      `Sure, ${ourScore}-${theirScore}. Now trade your teammates so the next one isn't a coin flip.`,
+      `Decent, ${ourScore}-${theirScore}. Now stack your util on the bombsite and close it out.`,
+      `You took it, ${ourScore}-${theirScore}. Big deal. Refrag clean and don't gift it back, dipshit.`,
+      `Stamp it, ${ourScore}-${theirScore}, and quit the victory lap, nobody's watching but me.`,
+      `Hell of a hold there, ${ourScore}-${theirScore}. Don't get used to me saying that, lock in.`,
+      `Got the round, ${ourScore}-${theirScore}. Now play it slow and don't gift the next one back.`,
+      `That's a point, ${ourScore}-${theirScore}. Save the swagger, your spray still scares nobody.`,
+      `On the board, ${ourScore}-${theirScore}. Breathe, set your crosshairs, go take another one.`,
     ]);
 }
 
@@ -539,6 +713,24 @@ export function roundLostLine(ourScore: number, theirScore: number): string {
       `Burned all your time deciding, then forced it. ${ourScore}-${theirScore}. Make the call early next round.`,
       `${ourScore}-${theirScore}. First contact, instant death, no trade behind you. Stagger it, don't all die solo.`,
       `Lost the man advantage doing nothing with it. ${ourScore}-${theirScore}. Trade hard when you're up bodies.`,
+      `${ourScore}-${theirScore}. You peeked three guys with a pistol out. Pick smarter fights.`,
+      `Solo entry, no flash, instant death. ${ourScore}-${theirScore}. Pop a flash before you swing, idiot.`,
+      `Backpedaled into your own teammate and both died. ${ourScore}-${theirScore}. Hold your damn lane.`,
+      `${ourScore}-${theirScore}. You reloaded mid-fight and ate the dink. Bank your shots, then reload.`,
+      `Chased one frag across the map and got cut off. ${ourScore}-${theirScore}. Stay with the group.`,
+      `${ourScore}-${theirScore}. You sat full HP in spawn the whole round. Get in the fight next time.`,
+      `Flashed your own team blind and walked into the trade. ${ourScore}-${theirScore}. Aim those flashes deep.`,
+      `${ourScore}-${theirScore}. You jiggled that corner ten times and still got picked. Just hold it.`,
+      `Plant went down, then everyone forgot to play post-plant. ${ourScore}-${theirScore}. Crossfire the retake.`,
+      `${ourScore}-${theirScore}. Bought a deagle on a full buy, missed, died. Buy the rifle, dipshit.`,
+      `Last alive, panicked, ran straight at the bomb. ${ourScore}-${theirScore}. Play the clock, not your nerves.`,
+      `${ourScore}-${theirScore}. You triple-peeked the same window. They knew. Vary it up.`,
+      `Saved your gun, ran into a knife, died anyway. ${ourScore}-${theirScore}. Save means leave, not sightsee.`,
+      `${ourScore}-${theirScore}. Whole team rushed one door and got mollied. Spread out before you commit.`,
+      `Dropped your nades on the floor and shot air instead. ${ourScore}-${theirScore}. Lineups exist, use them.`,
+      `${ourScore}-${theirScore}. You swung the AWPer dry, no smoke, no trade. Smoke him off first.`,
+      `${ourScore}-${theirScore}. You all stacked one site and they hit the other. Watch the map.`,
+      `Bomb was down and you went hunting exit frags. ${ourScore}-${theirScore}. Babysit the bomb, win the round.`,
     ]);
 }
 
@@ -563,6 +755,18 @@ export function killLine(roundKills: number, name?: string): string | null {
       `Five frags, ${who}. Mute the mic before you start narrating it, I'm begging.`,
       `All five to ${who}. Reset your crosshair and pretend this is normal for you.`,
       `Damn it, ${who}, that's an ace and I've got nothing snide. Round's banked, move.`,
+      `Five down, nobody traded you, round's yours. Banked. Don't let it go to your head, ${who}.`,
+      `Ugh. All five, no deaths, ${who}. That's the bar now. Hit it again or I take it back.`,
+      `Whole enemy team, gone, your name on every kill. Fine. It happened. Move to the next, ${who}.`,
+      "Clean ace. No bait, no luck, just frags. I hate that I noticed. Reset and do it again.",
+      `Yeah okay, ${who}, that was real. Five for nothing. Now make it boring instead of a fluke.`,
+      "Spray, dink, repeat, five times. Round's banked. Don't you spend the next ten asking if I saw it.",
+      `Aced the round, ${who}, didn't even get traded once. Cool. Prove it twice before I clap.`,
+      `Nobody on that team's alive and it's all you. Respect, briefly. Next round, ${who}, same energy.`,
+      `Every one of 'em ate your bullets, ${who}. Round's secured. Quit grinning and reload.`,
+      `An ace that actually held the site. Annoying. You can do it, so now do it every round, ${who}.`,
+      "Whole stack wiped by you. Okay. That counts. Don't get comfy, the next round's a coin flip again.",
+      `Clutched the whole thing into an ace, ${who}. I'll allow exactly one victory lap. Then back to work.`,
     ]);
   }
   if (roundKills === 4) {
@@ -584,6 +788,18 @@ export function killLine(roundKills: number, name?: string): string | null {
       `Four frags, ${who}. The ace is right there. Don't ego peek and fumble it.`,
       `${who} on four. Last guy's the only thing standing. Patience, not bravado.`,
       `Four down, ${who}. Reset, breathe, take the trade. Don't throw the ace away.`,
+      `Four for ${who}. Reload now, because finding the ace on an empty mag is peak you.`,
+      `There's the quad. One guy left, ${who}. Swing him wide, trade clean, don't gift it back.`,
+      `Four bodies down, ${who}. Top up that mag and pre-aim. The fifth doesn't tap itself.`,
+      `${who} sitting on four. Reset your crosshair, hold the lane, let him walk into it.`,
+      `Stack on the quad, ${who}. Reload, wide swing, refrag. Three steps you'll skip one of.`,
+      `Four kills and a heartbeat to ruin it, ${who}. Patience. Take the angle, not the bait.`,
+      `That's a quad, ${who}. Last clown's hiding. Clear it slow, don't W-key into his nade.`,
+      `Grit my teeth, ${who}, that's four clean. Now reload and earn the fifth without choking.`,
+      `${who} on a quad. One left. Wide swing, get the trade, don't ego it and blow the ace.`,
+      `Damn, four for ${who}. Last guy's alone. Swing it like you mean it, just not like a moron.`,
+      `${who} stacked four. Top off, hold tight, take the safe swing. Ace is yours unless you fumble it.`,
+      `Quad's done, ${who}. Now slow the hell down. Reload, wide angle, close it. Don't hand back the fifth.`,
     ]);
   }
   if (roundKills === 3) {
@@ -613,6 +829,18 @@ export function killLine(roundKills: number, name?: string): string | null {
       `Triple, ${who}. You've done your part. Now quit the hero shit and trade with the team.`,
       `${who} with three, color me shocked. Reset, hold your angle, let them walk in.`,
       `Three frags, ${who}. Cash that in, don't gamble it on a greedy peek.`,
+      `Three bodies, ${who}. Good. Now stop pushing your luck and just hold where you are.`,
+      `Don't let it go to your head, ${who} — three kills means you're a target now, so back off and trade.`,
+      `Damn, ${who}, you actually traded smart. Three down. Keep doing that, don't go solo hero now.`,
+      `Triple, ${who}. The round's yours to lose, so play it boring and bank it.`,
+      `Surprise, ${who} got three. Now play off the noise and call where they're coming from, don't wander.`,
+      `That's a triple, ${who}, and I hate that I'm impressed. Hold the angle, no greedy peek.`,
+      `Three kills in and ${who}'s feeling froggy. Don't. Anchor the bomb and let them walk into you.`,
+      `Okay ${who}, three down, you cooked. Now stop cooking and just hold the crossfire with your team.`,
+      `${who} with three and a death wish. Pull back, reload, let the last guy come to your angle.`,
+      `Triple from ${who}. Shocking. You've got the man advantage, so play it like it and don't even it back up.`,
+      `${who} on three. Good. Call the last spot and let your teammate trade if it goes wrong, don't solo it.`,
+      `Three kills, ${who} — you earned a save if it turns, so don't blow your gun chasing the fourth.`,
     ]);
   }
   // Singles and doubles stay silent: play-by-play of routine kills is noise —
@@ -642,6 +870,16 @@ export function knifeKillLine(name?: string): string {
       `Knife kill, ${who}. Tell that clown to Get Leetify before he uninstalls.`,
       `${who} just embarrassed him with the knife. Get Leetify and stay humble, victim.`,
       `Brutal knife from ${who}. Get Leetify, dude, your aim clearly took the round off.`,
+      `Knife kill, ${who}. That guy can Get Leetify and find a brand new hobby.`,
+      `${who} skipped the gun and stabbed him anyway. Get Leetify, the rifle was just decoration.`,
+      "He heard the knife switch and froze. Get Leetify, pal, that's a fear response.",
+      `${who} reached out and touched him. Get Leetify and feel that one for a week.`,
+      `Whole magazine on his hip and ${who} knifed him. Get Leetify, hell of a way to die.`,
+      `${who} closed the distance and gutted him. Get Leetify, you let a blade walk you down.`,
+      `Bro got knifed in his own spot by ${who}. Get Leetify and learn what a check is.`,
+      `${who} snuck up and shanked him. Get Leetify, your headphones clearly do nothing.`,
+      `${who} backstabbed him so hard the chat felt it. Get Leetify and turn around once in a while.`,
+      `He had time to shoot and chose to die. Get Leetify, ${who} thanks you for standing still.`,
     ]);
 }
 
@@ -656,6 +894,16 @@ const ZEUS_KILL = [
       "Zeus to the dome. That's a guy who's gonna alt-F4 out of shame.",
       "You zapped a guy holding a rifle. He is never recovering from that.",
       "Battery kill. Dude got deleted by a glorified flashlight.",
+      "Taser kill. He's gonna stare at the wall for a sec, trust me.",
+      "You tased him. That's the round he doesn't put in the highlight reel.",
+      "Zeus connects. Hope his rifle was comfy doing absolutely nothing.",
+      "That's a battery to the face. Man's deleting the demo as we speak.",
+      "Tased a full buy. You just made his whole loadout pointless.",
+      "Zeus kill, baby. He's muting his mic so nobody hears him sigh.",
+      "Taser tag. He brought a gun, you brought a hundred bucks of spite.",
+      "Damn, the Zeus landed. His rifle's still warm and useless on the floor.",
+      "Zeus to a guy with a rifle. The audacity worked, somehow.",
+      "You shocked him out of the round. His teammates are never letting that go.",
 ];
 
 export function zeusKillLine(): string {
@@ -696,6 +944,16 @@ export function nadeKillLine(nade: "he" | "fire", kills = 1): string {
       "A free frag off a thrown puddle. Take it, but don't brag about it.",
       "Guy burned down standing still and you call that a kill. Sure.",
       "The fire did your job. Send it a thank-you note, dipshit.",
+      "He had a whole second to walk out of that puddle and didn't. You did nothing, you got paid.",
+      "That's not a frag, that's a guy losing a fight with the floor.",
+      "Somebody cooked to death and your crosshair never even moved. Wild.",
+      "Whoever taught that guy to stand in fire owes you a frag.",
+      "He melted on his own and you just claimed the loot. Lazy as shit.",
+      "Crackling sound, dead body, zero shots fired. Inspiring stuff.",
+      "You lit a corner and waited for room service. It delivered.",
+      "Pro tip's wasted on you, but most players leave the fire. He stayed, you cashed in.",
+      "Threw it, looked away, came back to a corpse. Hell of a workflow.",
+      "Guy sat in flames like it was a hot tub and you took the credit. Sure, champ.",
     ]);
   }
   // "Nade"/"grenade", never a bare "HE" — TTS reads that as the pronoun.
@@ -726,6 +984,16 @@ export function nadeKillLine(nade: "he" | "fire", kills = 1): string {
       "One dead guy, zero bullets fired. Real gunfighter you are.",
       "The nade clipped him for the kill and you didn't even see him. Lucky shit.",
       "Frag kill. You blew a guy up and called it skill. Adorable.",
+      "Nade kill. Your crosshair sat this round out and you're still taking credit.",
+      "Killed him with a nade and your aim didn't even get out of bed.",
+      "That nade did the entry for you. You just heard the ding and smiled.",
+      "Damn, the nade carried that duel so you didn't have to. How relaxing.",
+      "Free frag off a nade. Your rifle's still sitting full, just like your stats.",
+      "Blew him up without a single click. Your trigger finger's getting paid to do nothing.",
+      "You got a kill and never had to aim. Living the dream, putting in shit effort.",
+      "Cooked a frag with a nade. Now go win a round where you actually shoot something.",
+      "Grenade got the kill. You got lucky he stood in the worst spot on the map.",
+      "One nade, one body, zero aim. Don't put that on the resume.",
     ]);
 }
 
@@ -741,6 +1009,16 @@ export function lowHpKillLine(hp: number): string {
       `Survived on ${hp} HP. That's not skill, that's the other guy whiffing harder.`,
       `Down to ${hp} HP and you still clicked first. Now go kit up before you push your luck.`,
       `${hp} HP and a prayer. The prayer hit. Stop relying on it.`,
+      `You were a fart away from dead at ${hp} HP. Go grab armor before the next one finds you.`,
+      `Took that fight at ${hp} HP like you had health to spare. You didn't. Reset and play it safe.`,
+      `${hp} HP is not a fighting number, it's a hiding number. You got away with it once.`,
+      `Lucky the enemy aimed like my grandma. ${hp} HP says don't push that next angle.`,
+      `Whole half of one tap away from the buy menu, ${hp} HP, and you peeked anyway. Stop it.`,
+      `You're running on ${hp} HP and pure hope. Fall back, get util, let the team trade for you.`,
+      `${hp} HP and you dry peeked a held angle. That worked once. It won't twice, so cut it out.`,
+      `He folded to a guy on ${hp} HP and now you think you're him. Play off your team, don't solo it.`,
+      `Picking duels like a full health hero on ${hp} HP. Damn. Hold the angle next time.`,
+      `That was less a clutch and more a robbery at ${hp} HP. Bank it and stop gambling rounds away.`,
     ]);
 }
 
@@ -758,6 +1036,16 @@ export function teamkillLine(): string {
       "Same team, dipshit. Drop a sorry in chat and pretend it was lag.",
       "That's a teammate down by your hand. Chat. Sorry. Make it quick.",
       "Lit up your own guy. Least you can do is type sorry in chat.",
+      "Blue team, you absolute weapon. Get in chat and type sorry.",
+      "You just handed the enemy a free kill we paid for. Chat. Sorry. Move.",
+      "That crosshair found the one guy on your side. Apologize in chat, real quick.",
+      "Beautiful flick. Dead teammate. Type sorry before he respawns furious.",
+      "Pal, friendly outlines exist for a reason. Drop a sorry in chat.",
+      "You domed your own guy clean. Mechanically perfect, brain off. Sorry in chat.",
+      "Hell of a one-tap on a teammate. Type sorry and hope he doesn't read it.",
+      "You fragged the green name. Apologize in chat and never speak of it.",
+      "Sweet entry frag, wrong door, wrong guy. Type sorry in chat, fast.",
+      "Exit-fragged a man who was still on your side. Chat. Sorry. Now.",
     ]);
 }
 
@@ -799,6 +1087,14 @@ export function teammateKillLine(name: string | undefined, kills: number, health
       `Three for ${who}. They're refragging the fights you fed. Cute.`,
       `${who}'s on three carrying the round you exited early. Enjoy the view, corpse.`,
       `Triple, ${who}. One of you committed to the round. It wasn't the dead one.`,
+      `${who} just hit three off the round you bailed on. Funny how that works.`,
+      `That's a triple, ${who}. Dying first wasn't the plan, but you sure committed to it.`,
+      `Three down for ${who}. They're mopping up the guys who shared a gun with you. Watch close.`,
+      `${who} found three while you found the floor. Stay there, you're finally useful.`,
+      `${who}'s at three and you're at room temperature. One of you read the round right.`,
+      `Damn, ${who} just cracked three. Your job, done by someone who lived long enough to do it.`,
+      `There it is, three for ${who}. Keep spectating, it's the one role you can't whiff.`,
+      `${who} just got three because they actually traded instead of dying solo like a hero.`,
     ]);
   }
   if (health !== undefined && health > 0 && health <= 20 && kills >= 1) {
@@ -865,6 +1161,14 @@ export function teammateMultiKillLine(name: string | undefined, kills: number): 
       `Triple, ${who}. They're carrying the round. Pitch in before it's gift-wrapped back.`,
       `${who} got three. Stop watching your own teammate and back them up.`,
       `Three down for ${who}. Don't make them clean the whole round while you spectate.`,
+      `${who} just bagged three on their own. Quit gawking and trade the next one.`,
+      `Whole lotta nothing from you while ${who} racks up three. Swing in and refrag.`,
+      `${who} did three of your kills for you. Go earn one back and close it.`,
+      `You planning to help ${who}, or just watch them go three deep solo? Trade.`,
+      `${who}'s on a triple and you're a passenger. Get in there and back the swing.`,
+      `Three already from ${who}. Don't let them clutch your round, get over and help.`,
+      `Damn, ${who} actually went three deep. Back them up before it slips, trade it.`,
+      `${who}'s up three and dragging you along. Refrag the next one or it's wasted.`,
     ]);
 }
 
@@ -918,6 +1222,14 @@ export function lastManStandingLine(name: string | undefined): string {
       "Last alive. Burn the clock, take them one at a time, no dumb hero swing.",
       "It's on you, the worst possible option. Play it slow, don't gift it away.",
       "You're the last one standing. Shocking. Hold an angle, use the time, don't throw it.",
+      "Everyone's in the dirt but you. So slow it down, eat the clock, one fight at a time.",
+      "Just you left, God help us. Don't sprint into all of them. Hold an angle, make them come.",
+      "Nobody's coming to save you. Play patient, take the trades you want, no hero swing.",
+      "You're solo now, so stop acting like it's a five-stack. Slow peeks, burn the clock, no panic.",
+      "Team's gone, it's the you show. Don't dry peek into a stack. One fight, win it, then breathe.",
+      "It's just you up there, try not to throw it in the first three seconds. Slow, patient, one at a time.",
+      "You're the last lifeline, so don't yank it. Hold your angle, make them peek you, pick the trades.",
+      "Solo for the round, hell. Play it like you've got all the time in the world, because you do. One at a time.",
     ]);
   }
   return pick("lastManMate", [
@@ -931,6 +1243,14 @@ export function lastManStandingLine(name: string | undefined): string {
       `Last man's ${name}. Give them the info and stop chattering, you're not helping by talking.`,
       `${name} clutching alone. The dead don't get a vote. One callout, then let them cook.`,
       `It's ${name} or nothing. Toss one callout, then sit there quietly like the corpse you are.`,
+      `${name}'s the only one breathing. Hand them one piece of info, then get off the mic.`,
+      `You whiffed yours, so now ${name} carries it. One callout, then choke on the silence.`,
+      `Squad's wiped except ${name}. Feed them the count, then sit dead and quiet like you earned it.`,
+      `Round's in ${name}'s hands now, not yours. Spit one useful thing, then let them lock in.`,
+      `${name}'s soloing it while you watch. One callout, then stop coaching from the afterlife.`,
+      `It comes down to ${name}. Tell them what's where, then don't say another damn word.`,
+      `${name}'s alive, you're not, that's the situation. One callout and you go quiet, hero.`,
+      `Last pulse on the team is ${name}. Tell them once where they are, then let them clutch it.`,
     ]);
 }
 
@@ -947,6 +1267,16 @@ const LATE_ROUND_CARRIER = [
       "You're the carrier, not a tourist. Half a minute. Plant the C four in the ground.",
       "Bomb's on you, clock's at thirty-five. Stop dancing, commit to a site and plant.",
       "Nobody plants it for you, hero. You've got the C four. Hit a site before the clock does.",
+      "You specifically have the bomb. Yeah, you. Thirty-five seconds. Walk it onto a site and plant.",
+      "That bomb isn't getting any warmer in your hands. Half a minute. Pick a site and stick it.",
+      "Whole round's riding on your back right now. Thirty-five. Quit stalling, get the bomb down.",
+      "You can keep wandering or you can win. The C four's on you. Hit a site and plant.",
+      "Thirty seconds and the bomb's still just luggage. Drop it on a site, not in spawn.",
+      "Stop window shopping for an angle. You've got the C four. Walk it in and plant, now.",
+      "Round ends in your hands if you don't move. Thirty-five seconds, bomb's yours. Pick a site.",
+      "Thirty-five on the clock and you're babysitting the bomb. Quit it. Site. Plant. Now.",
+      "Every second you hold that thing is a second you're not winning. Pick a site and plant it.",
+      "You wanted the C four, now use it. Thirty-five seconds. Commit to a site and plant it.",
 ];
 
 const LATE_ROUND_T = [
@@ -960,6 +1290,16 @@ const LATE_ROUND_T = [
       "Thirty-five left and nothing's planted. You don't win this round until that bomb's down.",
       "Bomb in the ground beats one more pick. Hit a site and stick it.",
       "Default's done, clock's loud. Pick a site as five and plant the thing.",
+      "Picks are nice. A planted bomb is nicer. Get to a site.",
+      "You're not gonna frag your way to a win here. Site, bomb, now.",
+      "Roaming around solo isn't a strat. Group up and take a site.",
+      "Five of you, zero plants. Funnel into a site and stick it.",
+      "Stop poking corners and go own a site. The clock's not waiting.",
+      "Thirty-five seconds of dicking around the map. Pick a bombsite. Go.",
+      "You've been hunting kills for thirty seconds. Hunt a damn site instead.",
+      "Nobody's coming to win this for you. Crash a site and plant.",
+      "The map's not the objective. The site is. Get there and stick the bomb.",
+      "Spread out doing nothing. Collapse on one site and bury the bomb.",
 ];
 
 const LATE_ROUND_CT = [
@@ -973,6 +1313,16 @@ const LATE_ROUND_CT = [
       "Clock's doing the work for us. Hold tight and make them force it.",
       "No bomb, no rush. Sit on your angle and let the timer squeeze them.",
       "We win if nothing happens. So make nothing happen. Hold.",
+      "Timer's a CT main weapon. Use it. Don't peek it away.",
+      "They blink first, not us. Hold your spot and wait it out.",
+      "Bomb's still in their bag. Every second it stays there, we win. Sit.",
+      "You move, you lose the round. Plant your ass and hold.",
+      "Quietest player wins this one. Be boring. Hold the angle.",
+      "Nothing's down, so do nothing. Crosswalk peeks lose this round.",
+      "We're up on the clock. Don't refund it with some hero swing.",
+      "Make them walk into you. Wandering off donates the round to them.",
+      "Hold the choke. Force them to commit late and trade ugly.",
+      "Stop hunting. The kill comes to your crosshair if you just wait.",
 ];
 
 const LATE_ROUND_NEUTRAL = [
@@ -1045,6 +1395,16 @@ const BOMB_TEN_CT = [
       "Ten seconds, you ain't defusing in time. Bail clean, don't gift them a free kill.",
       "Ten left, nothing you can do on that bomb. Get out, save the kit, reset.",
       "Ten on the clock, no defuse coming. Leave the site, keep your gun, don't eat the blast.",
+      "That bomb's cooked in ten and you're not defusing it, so stop loitering and walk your rifle out of here.",
+      "You've got maybe ten ticks and zero defuse. Turn around, the gun's the only thing worth keeping now.",
+      "Nobody's making you hug that bomb. Ten left, no kit, no defuse, so peel out and live.",
+      "Round's lost in ten, but the rifle doesn't have to be. Off the site, now.",
+      "Standing there for ten more seconds just hands them a free body. Bail and keep the gun, genius.",
+      "Ten left and that defuse was never happening. Quit hovering and save the damn rifle.",
+      "You're not in a fight and you're not on the bomb, so what's the plan, eat it? Ten left, leave, keep the gun.",
+      "Clock says ten, your hands say no defuse. Easy math. Walk away with the rifle.",
+      "No defuse in ten, so don't make it a funeral too. Slide off site and hold that rifle.",
+      "Ten and you're parked too far to do a thing. Unpark, take the rifle, reset for next.",
 ];
 
 const BOMB_TEN_T_FIGHTING = [
@@ -1073,6 +1433,16 @@ const BOMB_TEN_T = [
       "Ten seconds. If a CT's tapping it, peek and trade. If it's dry, hold and wait for the boom.",
       "Ten on the clock. Hear a defuse, end it. Hear quiet, hold tight, the timer's our friend.",
       "Ten left. Tap on the bomb means swing it. No tap means stay home and let it pop.",
+      "Ten seconds. Bomb starts whining, that's a defuse, go end it. Quiet means quiet, hold.",
+      "Ten on the clock. You hear scratching on the C four, peek and gun him. Nothing? Glue yourself to that angle.",
+      "Ten left. A defuse noise is your green light, swing it. No noise, no hero swing, just hold.",
+      "Ten seconds. Defuse kicks in, kill it before the wire drops. Dead air, plant your feet and wait.",
+      "Ten on the bomb. Hear him working it, lean out and drop him. Hear jack, hold and let it tick.",
+      "Ten left. That tapping's a CT signing his own death cert, go peek it. Silence, sit and ride the clock.",
+      "Ten seconds. Catch a defuse and you swing, simple. Catch nothing and you do nothing but hold.",
+      "Ten on the clock. Bomb talking back means a defuse, shut him up. Bomb's silent, so are you, hold.",
+      "Ten seconds. A tap on the C four, swing and trade it out. No tap, no swing, the timer carries you.",
+      "Ten left. Someone's prying it, peek and drop him fast. Nobody's prying, then nobody peeks, hold.",
 ];
 
 const BOMB_TEN_NEUTRAL = [
@@ -1389,6 +1759,16 @@ export function squadOpeningDeathsLine(name: string): string {
       `Whoever's entrying with ${name}, glue yourself to them — they keep dying alone and we get nothing back.`,
       `${name}'s the opening pick on repeat. Either trade them instantly or ${name}, quit being the first body out.`,
       `${name} eats the entry every round like clockwork. Babysit the swing or sit ${name} second man this round.`,
+      `${name}'s dead before I've even called the round. Trade behind ${name} or tell them to quit peeking blind.`,
+      `Enemy doesn't even aim anymore, they just wait for ${name} to walk out. Refrag off ${name} or hold that swing back.`,
+      `${name}, you're the first contact every single round and it's never on your terms. Wait for a flash or let the team go.`,
+      `Pop a flash for ${name} before they swing, 'cause raw-dogging that angle keeps getting ${name} folded instantly.`,
+      `Whoever's nearest ${name}, swing on their hip — ${name}'s gonna eat the first bullet again and someone better trade it.`,
+      `${name} dies on contact every round like the angle's personal. Refrag off ${name} or quit dry-swinging it.`,
+      `Trade ${name} the second they peek, 'cause ${name}'s going down on entry whether we're ready or not.`,
+      `We're playing a man short before the round even starts 'cause ${name} sprints in and dies. Babysit ${name} or sit them deep.`,
+      `${name}, the enemy's got your peek timed to the second. Change it up — wait on a flash or let the team open first.`,
+      `Every entry, ${name} swings into a full stack solo and we get jack back. Stack a trade on ${name} or pull them off point.`,
     ]);
 }
 
@@ -1413,6 +1793,16 @@ export function tiltLine(): string {
       "You keep face-planting on the first peek. Just don't peek. Sit tight, hold the angle, win a fight standing still.",
       "Quit throwing yourself at them off spawn. Hold your position, keep your crosshair up, let them walk into it.",
       "You can't stop dry-peeking and it keeps killing you. Plant your feet this round. The fight comes to you for once.",
+      "Four peeks, four trips back to spawn. Knock it off. Pick an angle, hold it, let them come to you this round.",
+      "First contact and you're already dead, every time. Take a damn beat. Stand still on a corner and make them find you.",
+      "You're allergic to standing still and it's getting you killed. Glue your feet down this round. Wait the peek out.",
+      "Dead before the bomb's even out the bag again. Slow it way down. Hold a spot, let them walk into your crosshair.",
+      "You sprint into the same gun every round like it'll change. It won't. Hold the angle and let him come to you.",
+      "Stop treating the round timer like a countdown to your own death. Take it slow. Sit on an angle, trade, breathe.",
+      "That W key is gonna get you benched. Ease off it this round. Hold tight, crosshair up, wait them out.",
+      "Off spawn and into a body bag, same story. Pump the brakes. Camp an angle and let them peek into you.",
+      "Your first fight keeps being your last one. Slow your ass down. Hold an angle, trade it out, stop the bleeding.",
+      "Stop swinging wide into nothing the second you spawn. Hold inside an angle. Make them come and trade when they do.",
     ]);
 }
 
@@ -1435,6 +1825,16 @@ export function deathLine(cause?: "fire" | "blind"): string | null {
       "Roasted in the open like you didn't see the floor glowing. Move out the fire, every time.",
       "Molly went down and you stayed put. That's not holding, that's self-immolation. Step the hell out.",
       "Died to a grill, not a gun. When the floor's on fire you leave it, simple as that.",
+      "Fire's on the floor and you treated it like a beanbag. Walk out, it's that easy.",
+      "You let a molly out-damage the whole enemy team. Just leave the flames, man.",
+      "Nobody shot you. You sat in a puddle of fire and waited to die. Step off it.",
+      "Cooked yourself for free 'cause moving was too much effort. One step sideways, done.",
+      "Tanked a molotov to the face standing still. Flames don't trade, they just delete you, so move.",
+      "You picked a fight with a molly and lost. It's fire, you don't hold it, you leave it.",
+      "Burned out in a corner like a forgotten candle. When it lights up, you walk off, every round.",
+      "Damn, you really stood and let it tick you to zero. Step out the second you hear that whoosh.",
+      "Molly lands, you freeze, you fry. Read the floor and move, it's not complicated.",
+      "You stood your ground on literal fire. Ground was the problem. Move off it next time.",
     ]);
   }
   if (cause === "blind") {
@@ -1449,6 +1849,16 @@ export function deathLine(cause?: "fire" | "blind"): string | null {
       "Flash pops and you go forward? Backwards, every time. You don't win blind.",
       "Died swinging while you couldn't see a thing. The flash did half their job for them.",
       "You got popped and stood still in the open. Flashed means you reposition, not gift them a kill.",
+      "White screen, full send, instant death. Look at a wall till it clears, then go.",
+      "You can't aim through a flashbang, genius. Turn away and wait the half second.",
+      "Blind as hell and still trigger-happy. Break off, let it fade, peek after.",
+      "That flash hit and you just stood there feeding. Step back into cover when you're lit.",
+      "Flashed and fighting is a coin flip you keep losing. Spin away and live.",
+      "Eyes gone and you charged the angle anyway. Reset, then re-peek with your sight back.",
+      "Popped that flash right in the face and held W. Pull off, hug a wall, breathe.",
+      "You fought a fight you were never gonna win. Blind means back up, not bull rush.",
+      "Flash lands and your instinct is to push? Kill that instinct. Spin off and wait.",
+      "You held the angle with zero vision. Slide back, wait the flash out, then take the fight.",
     ]);
   }
   // Generic death: speak rarely; nobody wants narration of every death.
@@ -1466,6 +1876,18 @@ export function deathLine(cause?: "fire" | "blind"): string | null {
       "You're down. Spend the death well: how many, what they're holding.",
       "Another one bites it. Talk before you respawn in your head — where, what weapon.",
       "Dead weight now, so be light weight: drop the callout, then shut it.",
+      "Dead and quiet helps nobody. What killed you, where from.",
+      "Toes up already. Fine. Tell the team the angle and the gun before you check out.",
+      "You're a corpse with a working mic. Use it. Spot and weapon, now.",
+      "Bit it again. Don't make it a wasted death. Where was he, what's he holding.",
+      "Faceplant. Cool. Now feed the squad the info before you start moping.",
+      "You died, shocker. The least you owe them is where and what killed you.",
+      "Just died and went silent. Backwards. Talk first, where he peeked from.",
+      "Tits up. Whatever. Drop the callout, how many you saw, then you can rage.",
+      "Your round's over. Theirs isn't. Tell them what's coming and from where.",
+      "Eat dirt, then earn it back with a callout. Position and weapon.",
+      "You're done in this one. Pay rent before you go: spot, gun, count.",
+      "Croaked. Don't go quiet on top of it. Give the angle and the gun.",
     ]);
 }
 
@@ -1484,6 +1906,24 @@ export function mvpLine(name?: string): string {
       `Look at ${who}, top of the round. Now do it without me begging.`,
       `${who} with the star. One round of competence, don't pull a muscle.`,
       `MVP goes to ${who}. Soak it up, the scoreboard forgets fast.`,
+      `MVP star's yours, ${who}. Don't get attached to it.`,
+      "There's the MVP. One. Write it down before it expires.",
+      `Star next to your name, ${who}. Felt like an accident, didn't it.`,
+      "MVP. You finally found the trigger. Took you long enough.",
+      `${who} carries a round. The other four can stand down, apparently.`,
+      "Round MVP. Slow clap. That's the whole celebration, by the way.",
+      "MVP this round. Try remembering how you did it for once.",
+      `Top frag, ${who}. I'd be impressed if I had lower standards.`,
+      "Star earned. Annoying. Now go ahead and waste it next round.",
+      `${who} as MVP. The universe owed somebody a favor, I guess.`,
+      "MVP, huh. Don't go quiet on me now that you can actually aim.",
+      `Round's yours, ${who}. Enjoy peaking before lunch.`,
+      `MVP, ${who}. Fine. You earned that one. Hated typing it.`,
+      `${who} got the MVP. Clip it, nobody'll believe you otherwise.`,
+      "Star's on the board for you. Reset to mediocre whenever you're ready.",
+      `MVP this once, ${who}. The scoreboard's just being polite.`,
+      "You earned the star. I'll allow it. Don't make it a habit.",
+      "MVP goes to you. Shocking. Genuinely. Now do it sober next time.",
     ]);
 }
 
@@ -1592,6 +2032,16 @@ const MATCH_POINT_US = [
       "Win this and it's over. So play scared. Trade everything, dry-peek nothing, let them throw it away.",
       "Closing time. Match point. Default it, hold, trade. The boring round is the winning round.",
       "We need one. Don't go chasing frags for the clip. Play slow, play tight, take the dub.",
+      "One round and we're showered. So don't free them a kill. Hold tight, trade, walk it in.",
+      "This round's already won if you don't get greedy. Default, hold angles, no dry peeks.",
+      "You want the win or the highlight? Pick the win. Crosshair up, trade, take no dumb fights.",
+      "Last round of the night if you behave. Play off your buddies, trade everything, zero solo swings.",
+      "Final stretch. Slow it down, let them come to you, and trade the second one of us drops.",
+      "Nobody peeks first this round. Make them come dry, trade clean, and it's over.",
+      "We do not need a play, we need a round. Park on your angle and let them lose it for you.",
+      "Don't overthink the close-out. Tight angle, good trade, no chasing. That's the whole round.",
+      "Last one. Crossfire it, trade the entry, and do not go fishing for some clutch you don't need.",
+      "Close it like a pro, not a streamer. Hold, trade, save the heroics for a round that doesn't matter.",
 ];
 
 const MATCH_POINT_THEM = [
@@ -1605,6 +2055,16 @@ const MATCH_POINT_THEM = [
       "They're a round from done. So don't give it to them. Full buy, full send, fight for every inch.",
       "Do or die. No eco, no save, no half-measures. Spend it all and take the round.",
       "One loss ends it, so there is no next round to save for. Buy everything and go win this one.",
+      "This is the last one if you blow it, so dump the whole bank and go win.",
+      "No save here. Save for what, the menu screen? Full buy and take it.",
+      "They need one round. Don't hand it over. Buy it all, throw it all, fight.",
+      "Stop fishing for a save. Nothing to save for. Full util, full send, win it.",
+      "They smell the win. Take it off them. Buy everything, use everything, no holding back.",
+      "Lose and we're done, so play like the money's worthless. Full buy, win the round.",
+      "Hold your nades for next round and there won't be one. Throw it all, take this.",
+      "Quit eyeing the exit. No saving, no eco, just full buy and win this round.",
+      "They're banking on you folding. Don't. Spend it all, throw every flash, take it.",
+      "Whole match comes down to now. Don't save a damn thing, full send and close it out.",
 ];
 
 export function matchPointLine(forUs: boolean): string {
