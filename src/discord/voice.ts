@@ -67,7 +67,9 @@ export class VoiceCoach {
    */
   constructor(
     private readonly tts: TtsChain,
-    private readonly volume = 1,
+    // Not readonly: the owner can change the default gain live via /coachadmin set.
+    // volumeFor reads it fresh per line, so a change applies to the next line.
+    private volume = 1,
   ) {
     this.player = createAudioPlayer({
       behaviors: { noSubscriber: NoSubscriberBehavior.Pause },
@@ -439,6 +441,16 @@ export class VoiceCoach {
       const volume = findVoiceById(result.voiceId)?.volume;
       if (volume !== undefined) return volume;
     }
+    return this.volume;
+  }
+
+  /** Live default-gain change (owner /coachadmin set). Read fresh by volumeFor, so it
+   *  applies to the next line. NOTE: any non-unity value routes lines through the ffmpeg
+   *  transcode path (see makeResource) — fine on the hosted droplet (ffmpeg bundled). */
+  setVolume(volume: number): void {
+    this.volume = volume;
+  }
+  get currentVolume(): number {
     return this.volume;
   }
 

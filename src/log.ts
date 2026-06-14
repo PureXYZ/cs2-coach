@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { config } from "./config.js";
+import { runtime } from "./runtime-overrides.js";
 
 function ts(): string {
   return new Date().toISOString().slice(11, 23);
@@ -42,12 +42,12 @@ export const log = {
   },
   /**
    * Verbose trace line, identical shape to info() but with a DEBUG tag. Emits
-   * ONLY when config.coach.debug is on (COACH_DEBUG=true) — every caller can fire
-   * freely and the gate keeps normal sessions quiet. Used for the engine's
-   * silent-drop reasons (why a moment never spoke) and similar diagnostics.
+   * ONLY when debug is on (COACH_DEBUG=true, or toggled live via /coachadmin set) —
+   * every caller can fire freely and the gate keeps normal sessions quiet. Used for the
+   * engine's silent-drop reasons (why a moment never spoke) and similar diagnostics.
    */
   debug(scope: string, msg: string): void {
-    if (!config.coach.debug) return;
+    if (!runtime.debug) return;
     const line = `${ts()} [${scope}] DEBUG ${msg}`;
     console.log(line);
     emit(line);

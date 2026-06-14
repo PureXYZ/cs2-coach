@@ -1,5 +1,6 @@
 import { log } from "../log.js";
 import { config } from "../config.js";
+import { runtime } from "../runtime-overrides.js";
 import type { CoachEvent, MatchContext } from "../gsi/tracker.js";
 import type { LlmCoach, LlmTier, LineOpts } from "./llm.js";
 import * as lines from "./lines.js";
@@ -252,7 +253,7 @@ export class CoachEngine {
         this.warmupSpeechGiven = false; // re-arm (committed from the speech's onPlayed, not here)
         this.matchStarted = false; // re-arm: a new pre-game; round 1 hasn't begun
         void this.deps.leetifyStartBrief?.(event.map);
-        if (config.coach.warmupSpeech && !this.deps.isQuiet?.() && this.passesCooldown("warmupSpeech")) {
+        if (runtime.warmupSpeech && !this.deps.isQuiet?.() && this.passesCooldown("warmupSpeech")) {
           this.tacticalMoment(
             event,
             ctx,

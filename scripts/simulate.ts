@@ -1940,5 +1940,48 @@ console.log("\n=== scenario: TTS line cache — whitelist gating, keys, capture/
 }
 
 // ---------------------------------------------------------------------------
+console.log("\n=== scenario: LinkStore — manual set/remove + reverse-map repair for alts ===");
+{
+  const { LinkStore } = await import("../src/links.js");
+  const fs = await import("node:fs");
+  const tmp = path.join(os.tmpdir(), `sim-links-${process.pid}-${seen.length}.json`);
+  const A = "76561198000000001";
+  const B = "76561198000000002"; // an alt: same Discord user (D) as A
+  const C = "76561198000000003";
+  const D = "111111111111111111";
+  const E = "222222222222222222";
+
+  const store = new LinkStore(tmp);
+  store.record(A, D, "Andy");
+  store.record(B, D, "Andy-alt"); // D now has two accounts; byDiscord points at the latest (B)
+  store.record(C, E, "Eve");
+  expect(store.size === 3, "three pairings recorded");
+  expect(store.steam64For(D) === B, "reverse map points at the latest-recorded account (B)");
+
+  // Remove the account the reverse map points at: it must REPAIR to the surviving alt (A),
+  // never drop the Discord user wholesale. This is the highest-risk net-new code.
+  expect(store.remove(B) === true, "remove(B) reports a deletion");
+  expect(store.discordIdFor(B) === undefined, "B is gone");
+  expect(store.steam64For(D) === A, "reverse map repaired to the surviving alt A");
+  expect(store.discordIdFor(A) === D, "A still linked to D");
+  expect(store.size === 2, "two pairings remain");
+
+  // Bulk remove clears every account for a user + the reverse entry.
+  expect(store.removeAllForDiscord(D) === 1, "removeAllForDiscord(D) removes the one remaining account");
+  expect(store.steam64For(D) === undefined, "reverse map entry dropped");
+  expect(store.discordIdFor(A) === undefined, "A unlinked");
+  expect(store.removeAllForDiscord(D) === 0, "a second bulk remove is a no-op");
+  expect(store.remove("76561198999999999") === false, "removing an unknown id is a no-op");
+  expect(store.size === 1 && store.discordIdFor(C) === E, "the unrelated pairing C→E is untouched");
+
+  // Persistence: the mutations survive a reload over the same file.
+  const reloaded = new LinkStore(tmp);
+  expect(reloaded.size === 1 && reloaded.discordIdFor(C) === E, "remaining pairing survives a reload");
+  expect(reloaded.steam64For(D) === undefined, "the removed Discord user is absent after reload");
+
+  try { fs.unlinkSync(tmp); } catch { /* best effort */ }
+}
+
+// ---------------------------------------------------------------------------
 console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`} — config timings: round=${config.timings.roundSeconds}s bomb=${config.timings.bombSeconds}s`);
 process.exit(failures === 0 ? 0 : 1);
