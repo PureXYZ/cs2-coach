@@ -295,6 +295,20 @@ export const config = {
     edge: {
       voice: optional("EDGE_TTS_VOICE", "en-US-GuyNeural"),
     },
+    // Audio cache for the static, latency-critical canned lines (bomb-timer, late-round,
+    // zeus, bomb plant/defuse/explode, match-point) — a cache HIT replays stored Opus
+    // with ~0ms synth. Persisted under the state volume so it survives restarts/deploys,
+    // and prewarmed in the background at startup so even the FIRST occurrence isn't delayed.
+    cache: {
+      enabled: optional("TTS_CACHE_ENABLED", "true") !== "false",
+      // Under the coach-state Docker volume (like state/sessions.json) so it persists.
+      dir: optional("TTS_CACHE_DIR", "state/tts-cache"),
+      // Background prewarm of every cacheable line × configured voice on startup.
+      prewarm: optional("TTS_PREWARM", "true") !== "false",
+      // Safety cap on stored entries (the cacheable set is small; this only guards
+      // against settings/line edits orphaning old entries over time). 0 = unbounded.
+      maxEntries: intEnv("TTS_CACHE_MAX_ENTRIES", 2000, 0),
+    },
   },
 
   voice: {

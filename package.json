@@ -17,6 +17,7 @@
     "sim": "tsx scripts/simulate.ts",
     "replay": "tsx scripts/replay-log.ts",
     "cfg": "tsx scripts/generate-gsi-cfg.ts",
+    "prewarm": "tsx scripts/prewarm-tts.ts",
     "deploy": "tsx scripts/deploy.ts"
   },
   "dependencies": {

@@ -23,6 +23,12 @@ export class DeepgramTts implements TtsProvider {
     return !!this.apiKey;
   }
 
+  /** Output-affecting params. Deepgram ignores opts.voiceId (no switchable voices),
+   *  so its audio is voice-independent — one cache entry per text serves every voice. */
+  cacheSignature(): string {
+    return `${this.model}|${this.bitrate}`;
+  }
+
   async synth(text: string): Promise<TtsResult> {
     const url = new URL("https://api.deepgram.com/v1/speak");
     url.searchParams.set("model", this.model);

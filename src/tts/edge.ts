@@ -21,6 +21,12 @@ export class EdgeTts implements TtsProvider {
     return true;
   }
 
+  /** Output-affecting params. Edge ignores opts.voiceId (its voice is fixed config),
+   *  so its audio is voice-independent — one cache entry per text serves every voice. */
+  cacheSignature(): string {
+    return this.voice;
+  }
+
   async synth(text: string): Promise<TtsResult> {
     // A fresh instance per synth avoids stale-WebSocket errors from the unofficial endpoint.
     const tts = new MsEdgeTTS();

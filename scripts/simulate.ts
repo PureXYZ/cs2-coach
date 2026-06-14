@@ -1856,5 +1856,89 @@ console.log("\n=== scenario: recentForm suppresses map/streak lines when Leetify
 }
 
 // ---------------------------------------------------------------------------
+console.log("\n=== scenario: TTS line cache — whitelist gating, keys, capture/replay, persistence ===");
+{
+  const { TtsCache } = await import("../src/tts/cache.js");
+  const { normalizeForSpeech } = await import("../src/tts/normalize.js");
+  const { cacheableLineTexts, roundWonLine, bombTenLine } = await import("../src/coach/lines.js");
+  const { ElevenLabsTts } = await import("../src/tts/elevenlabs.js");
+  const { DeepgramTts } = await import("../src/tts/deepgram.js");
+  const { StreamType } = await import("@discordjs/voice");
+  const fs = await import("node:fs");
+  const { Readable } = await import("node:stream");
+
+  const dir = path.join(os.tmpdir(), `sim-ttscache-${process.pid}-${seen.length}`);
+  const texts = cacheableLineTexts();
+  const cache = new TtsCache(dir, 2000, texts);
+
+  // Whitelist: every cacheable line is allowed (under its normalized form); a
+  // score-interpolated line is NOT — so dynamic/LLM lines can never be cached.
+  expect(texts.length > 100, `cacheableLineTexts is populated (${texts.length} lines)`);
+  expect(texts.every((t) => cache.has(normalizeForSpeech(t))), "every cacheable line passes the whitelist (normalize agrees)");
+  expect(!cache.has(normalizeForSpeech(roundWonLine(5, 3))), "a score-interpolated line is NOT whitelisted");
+  expect(texts.every((t) => !/\$\{|\d+-\d+/.test(t)), "no cacheable line carries an interpolation/score marker");
+
+  // Keys: deterministic, and provider name + signature each fork the key.
+  const k1 = cache.key("elevenlabs", "sig", "hello");
+  expect(k1 === cache.key("elevenlabs", "sig", "hello"), "key is deterministic");
+  expect(k1 !== cache.key("deepgram", "sig", "hello"), "provider name forks the key");
+  expect(k1 !== cache.key("elevenlabs", "sig2", "hello"), "signature forks the key");
+
+  // Provider cacheSignature captures every output-affecting param.
+  const elA = new ElevenLabsTts("k", "model", { stability: 0.5, similarityBoost: 1, style: 0.3, speed: 0.95 });
+  const elB = new ElevenLabsTts("k", "model", { stability: 0.5, similarityBoost: 1, style: 0.31, speed: 0.95 });
+  expect(elA.cacheSignature() === elA.cacheSignature(), "EL signature is deterministic");
+  expect(elA.cacheSignature() !== elB.cacheSignature(), "EL signature changes with style (0.30 vs 0.31)");
+  const dg = new DeepgramTts("k", "aura-2-odysseus-en", 64000);
+  expect(dg.cacheSignature() !== elA.cacheSignature(), "Deepgram and ElevenLabs signatures differ");
+
+  const readAll = (s: import("node:stream").Readable): Promise<Buffer> =>
+    new Promise((resolve, reject) => {
+      const cs: Buffer[] = [];
+      s.on("data", (c: Buffer) => cs.push(c));
+      s.on("end", () => resolve(Buffer.concat(cs)));
+      s.on("error", reject);
+    });
+
+  // Capture → clean end → persisted; get() replays bytes + inputType + voiceId.
+  const audio = Buffer.from("fake-opus-bytes-1234567890");
+  const cleanKey = cache.key("elevenlabs", elA.cacheSignature(), normalizeForSpeech(bombTenLine("CT")));
+  const src = new Readable({ read() {} });
+  src.push(audio);
+  src.push(null);
+  const tee = cache.capture(src, cleanKey, StreamType.OggOpus, "voiceX");
+  const played = await readAll(tee);
+  await sleep(50); // let the finished() write flush to disk
+  expect(played.equals(audio), "capture passes the audio through to the consumer unchanged");
+  expect(cache.peek(cleanKey), "a cleanly-ended line is persisted");
+  const hit = cache.get(cleanKey);
+  expect(hit?.inputType === StreamType.OggOpus, "HIT replays the stored inputType");
+  expect(hit?.voiceId === "voiceX", "HIT replays the stored voiceId (drives per-voice volume)");
+  expect(hit !== null && (await readAll(hit.stream)).equals(audio), "HIT replays the exact bytes");
+
+  // A destroyed (truncated) line is NEVER persisted.
+  const truncKey = cache.key("elevenlabs", elA.cacheSignature(), normalizeForSpeech(bombTenLine("T")));
+  const src2 = new Readable({ read() {} });
+  src2.push(Buffer.from("partial")); // never push(null) — simulate a cut-off mid-stream
+  const tee2 = cache.capture(src2, truncKey, StreamType.OggOpus, "voiceX");
+  tee2.on("data", () => {}); // start flowing so the chunk is seen
+  await sleep(10);
+  tee2.destroy(new Error("superseded"));
+  await sleep(50);
+  expect(!cache.peek(truncKey), "a truncated/destroyed line is NOT persisted");
+
+  // Persistence: a fresh cache over the same dir reloads the clean entry only.
+  const cache2 = new TtsCache(dir, 2000, texts);
+  expect(cache2.peek(cleanKey), "a persisted entry survives a reload (manifest round-trips)");
+  expect(!cache2.peek(truncKey), "the truncated line is absent after reload");
+
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    /* best effort */
+  }
+}
+
+// ---------------------------------------------------------------------------
 console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`} — config timings: round=${config.timings.roundSeconds}s bomb=${config.timings.bombSeconds}s`);
 process.exit(failures === 0 ? 0 : 1);

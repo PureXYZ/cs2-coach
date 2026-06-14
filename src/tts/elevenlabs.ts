@@ -29,6 +29,23 @@ export class ElevenLabsTts implements TtsProvider {
     return !!this.apiKey;
   }
 
+  /** Every param that changes the synthesized audio, resolving the voice id and
+   *  per-voice speed override EXACTLY as synth() does (so the cache key matches
+   *  the bytes). Fixed precision so 1 vs 1.0 can't fork the key. */
+  cacheSignature(opts?: SynthOptions): string {
+    const voiceId = opts?.voiceId ?? currentVoiceId();
+    const speed = findVoiceById(voiceId)?.speed ?? this.voiceSettings.speed;
+    const { stability, similarityBoost, style } = this.voiceSettings;
+    return [
+      this.modelId,
+      voiceId,
+      stability.toFixed(3),
+      similarityBoost.toFixed(3),
+      style.toFixed(3),
+      speed.toFixed(3),
+    ].join("|");
+  }
+
   async synth(text: string, opts?: SynthOptions): Promise<TtsResult> {
     // Per-line override (the `/coach say voice:` option) wins; otherwise the live
     // `/coach voice` selection, read fresh each synth so a switch takes effect

@@ -25,4 +25,9 @@ export interface TtsProvider {
   /** True when this provider has the credentials/config it needs. */
   available(): boolean;
   synth(text: string, opts?: SynthOptions): Promise<TtsResult>;
+  /** A stable string of every output-affecting setting for the given options, so
+   *  the TTS cache can key audio by (provider, signature, text). Two calls that
+   *  would produce byte-identical audio MUST return the same string; any change
+   *  that alters the audio (voice, model, speed, …) MUST change it. */
+  cacheSignature(opts?: SynthOptions): string;
 }
