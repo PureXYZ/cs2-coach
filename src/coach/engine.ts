@@ -87,6 +87,9 @@ const COOLDOWNS_MS: Record<string, number> = {
   timeout: 300_000,
   // The speech/jab when a tactical timeout actually starts (max two per match).
   timeoutTalk: 20_000,
+  // The warmup scouting speech — once per match by design (the tracker latches the
+  // mapLoading event), so a long gap is just belt-and-suspenders against a re-fire.
+  warmupSpeech: 300_000,
   // The opening-death-spiral tilt jab — a long gap so it scolds the spiral once,
   // not at every freezetime while the player is already rattled.
   tilt: 180_000,
@@ -125,11 +128,18 @@ export interface EngineDeps {
   ownRoundKills?: () => number | null;
   /** Unabridged round history, swapped in for the storytelling moments (halftime, match end). */
   fullHistory?: () => string[];
+  /** Fetch the qualitative Leetify pre-match brief for a map (primary account only;
+   *  resolves undefined when Leetify is off, the primary feed hasn't bound, or the
+   *  fetch fails). Cached per map by the supplier, so warmup + match start share one
+   *  network round-trip. Best-effort — the engine never blocks the greeting on it. */
+  leetifyStartBrief?: (map: string) => Promise<MatchContext["leetifyStart"]>;
   /** Own final K/A/D/MVPs — the matchEnd context loses them when the player
    *  died in the last round (the gameover player block is a spectated teammate). */
   finalStats?: () => { kills: number; assists: number; deaths: number; mvps: number } | undefined;
-  /** Cross-session trend lines from the session store — smart-tier prompts only. */
-  recentForm?: () => string[] | undefined;
+  /** Cross-session trend lines from the session store — smart-tier prompts only.
+   *  `leetifyCoversForm` suppresses the session store's map-W/L + streak lines when a
+   *  Leetify brief already speaks them, so the coach never states form from two sources. */
+  recentForm?: (opts?: { leetifyCoversForm?: boolean }) => string[] | undefined;
   /** True while /coach mute has the coach muted — skips both lines and LLM spend. */
   isQuiet?: () => boolean;
   /** Fired once per matchEnd, quiet or not: session recording + the Leetify recap. */
@@ -158,6 +168,17 @@ export class CoachEngine {
   /** B6: broke friends already named for a drop THIS match — latches the LLM-off
    *  drop coda to once per recipient so it can't re-name the same friend each freeze. */
   private droppedTo = new Set<string>();
+  /** Set when a warmup scouting speech ACTUALLY AIRED this match (committed from its
+   *  onPlayed, not at dispatch): the round-1 greeting then skips the Leetify form (the
+   *  speech already gave it) and suppresses the session store's overlapping lines. A
+   *  dispatched-but-dropped speech (too-short warmup) leaves this false, so the greeting
+   *  still carries the form. Re-armed at mapLoading, consumed/reset at matchStart. */
+  private warmupSpeechGiven = false;
+  /** True once this match's round 1 has begun (matchStart fired). The warmup scouting
+   *  speech keys its relevance off this: matchStart and the round-1 freezetime arrive
+   *  together, so the speech is dropped at synth/play the instant the buy window opens —
+   *  it can never be STARTED over the pistol call. Re-armed at mapLoading, reset at matchEnd. */
+  private matchStarted = false;
 
   constructor(
     private readonly speak: Speak,
@@ -220,19 +241,55 @@ export class CoachEngine {
 
   private handleOne(event: CoachEvent, ctx: MatchContext, batch: Set<CoachEvent["type"]>): void {
     switch (event.type) {
+      case "mapLoading": {
+        // The pre-round-1 warmup window: dead air, no buy to race. Warm the Leetify
+        // brief cache now (fire-and-forget) so the round-1 greeting has it ready even
+        // when the warmup speech is off, and — when enabled — deliver a longer scouting
+        // speech here. Its own cooldown bucket (never "match"), and a stillRelevant guard
+        // (!matchStarted) drops it the instant round 1 begins — matchStart and the r1
+        // freezetime arrive together, so the speech can never be STARTED over the buy call.
+        this.cancelTimers();
+        this.warmupSpeechGiven = false; // re-arm (committed from the speech's onPlayed, not here)
+        this.matchStarted = false; // re-arm: a new pre-game; round 1 hasn't begun
+        void this.deps.leetifyStartBrief?.(event.map);
+        if (config.coach.warmupSpeech && !this.deps.isQuiet?.() && this.passesCooldown("warmupSpeech")) {
+          this.tacticalMoment(
+            event,
+            ctx,
+            () => lines.warmupSpeechLine(event.map),
+            "warmupSpeech",
+            30_000,
+            "smart",
+            2,
+            () => !this.matchStarted,
+            { longForm: true, timeoutMs: 14_000 },
+            // Commit the suppression flag only when the speech ACTUALLY airs — a dropped
+            // speech (too-short warmup) must leave the greeting free to carry the form.
+            () => {
+              this.warmupSpeechGiven = true;
+            },
+          );
+        }
+        break;
+      }
+
       case "matchStart": {
         this.cancelTimers();
+        this.matchStarted = true; // round 1 has begun — drops any still-pending warmup speech
         this.droppedTo.clear(); // B6: re-arm the per-recipient drop latch each match
-        // Smart tier so the greeting can call back to past sessions (recentForm).
-        // When the round-1 freezetime rides in the same GSI frame (the usual
-        // case), that event is suppressed and THIS line carries the pistol
-        // call too — one moment, one line.
+        // Smart tier so the greeting can call back to past sessions (recentForm) and the
+        // Leetify form. When the round-1 freezetime rides in the same GSI frame (the
+        // usual case), that event is suppressed and THIS line carries the pistol call
+        // too — one moment, one line. If a warmup speech already gave the Leetify form,
+        // flag the snapshot so the greeting stays on the buy call and doesn't repeat it.
         const fallback = () => {
           const greet = lines.matchStartLine(event.map);
           const eco = ctx.roundPhase === "freezetime" ? lines.economyLine(ctx, this.droppedTo) : null;
           return eco ? `${greet} ${eco}` : greet;
         };
-        this.tacticalMoment(event, ctx, fallback, "match", 15_000, "smart", 2);
+        const mctx: MatchContext = this.warmupSpeechGiven ? { ...ctx, warmupSpeechGiven: true } : ctx;
+        this.tacticalMoment(event, mctx, fallback, "match", 15_000, "smart", 2);
+        this.warmupSpeechGiven = false; // consumed — the next match re-arms at mapLoading
         break;
       }
 
@@ -381,6 +438,8 @@ export class CoachEngine {
 
       case "matchEnd":
         this.cancelTimers();
+        this.warmupSpeechGiven = false; // safety re-arm in case matchStart was skipped this match
+        this.matchStarted = false;
         // The spoken wrap-up snapshots its context (and recentForm) FIRST —
         // the hook below records this match into the session store, and the
         // wrap-up must not see the match it's announcing as "past form".
@@ -668,79 +727,150 @@ export class CoachEngine {
     // Snapshot the context now; the game moves on while Claude thinks. Staleness
     // is anchored to eventAt, so a slow response gets dropped instead of spoken late.
     const snapshot = { ...ctx };
-    // The storytelling moments get the expensive extras: cross-session form
-    // for callbacks (NOT every freezetime — past-session roast material in
-    // every buy call invites callback chatter at routine moments), and the
-    // unabridged round history at halftime/match end.
-    if (event.type === "matchStart" || event.type === "halftime" || event.type === "matchEnd") {
-      snapshot.recentForm = this.deps.recentForm?.();
-      if (event.type !== "matchStart") {
-        const full = this.deps.fullHistory?.();
-        if (full && full.length > (snapshot.history?.length ?? 0)) snapshot.history = full;
+    // Resolve the line: attach the storytelling extras, call the LLM, then speak or
+    // fall back. Factored out so it runs SYNCHRONOUSLY for most moments (no added
+    // latency, and the fast-path sim that resolves the LLM mock inline still works),
+    // and only AFTER an async Leetify fetch for warmup / match start.
+    const resolveLine = (): void => {
+      // The storytelling moments get the expensive extras: cross-session form for
+      // callbacks (NOT every freezetime — past-session roast material in every buy
+      // call invites callback chatter), and the unabridged history at halftime/end.
+      if (
+        event.type === "matchStart" ||
+        event.type === "mapLoading" ||
+        event.type === "halftime" ||
+        event.type === "matchEnd"
+      ) {
+        // When a Leetify brief is present (or a warmup speech already gave the form),
+        // suppress the session store's overlapping map-W/L + streak lines so the coach
+        // never states recent/map form from two sources that could disagree.
+        const leetifyCoversForm = !!snapshot.leetifyStart || !!snapshot.warmupSpeechGiven;
+        snapshot.recentForm = this.deps.recentForm?.({ leetifyCoversForm });
+        if (event.type === "halftime" || event.type === "matchEnd") {
+          const full = this.deps.fullHistory?.();
+          if (full && full.length > (snapshot.history?.length ?? 0)) snapshot.history = full;
+        }
       }
-    }
-    if (event.type === "matchEnd") {
-      // The gameover player block is a spectated teammate whenever the player
-      // died in the final round — restore the K/D for the wrap-up speech.
-      const finalStats = this.deps.finalStats?.();
-      if (finalStats) {
-        snapshot.kills ??= finalStats.kills;
-        snapshot.assists ??= finalStats.assists;
-        snapshot.deaths ??= finalStats.deaths;
-        snapshot.mvps ??= finalStats.mvps;
+      if (event.type === "matchEnd") {
+        // The gameover player block is a spectated teammate whenever the player
+        // died in the final round — restore the K/D for the wrap-up speech.
+        const finalStats = this.deps.finalStats?.();
+        if (finalStats) {
+          snapshot.kills ??= finalStats.kills;
+          snapshot.assists ??= finalStats.assists;
+          snapshot.deaths ??= finalStats.deaths;
+          snapshot.mvps ??= finalStats.mvps;
+        }
       }
-    }
-    void this.llm.line(snapshot, event, tier, llmOpts).then((text) => {
-      if (stillRelevant && !stillRelevant()) {
-        log.debug("engine", `${category}: stillRelevant overtaken (moment resolved mid-flight)`);
-        // The moment died mid-flight — nothing audible, so release the launch
-        // reservation (ITEM 10) instead of burning the cooldown on a dropped line.
-        releaseReservation();
-        return;
-      }
-      const final = text ?? fallback();
-      if (!final) {
-        log.debug("engine", `${category}: null final (llm + fallback both empty)`);
-        // Nothing audible (llm + fallback both empty) — release the reservation (ITEM 10).
-        releaseReservation();
-        return;
-      }
-      // The decision hook fires here on the LLM path — source "llm" when Claude
-      // produced the text, "fallback" when its line was empty and the canned one stood in.
-      this.deps.onDecision?.({ snapshot, event, tier, text: final, source: text ? "llm" : "fallback" });
-      this.say(
-        () => final,
-        {
-          category,
-          priority,
-          maxAgeMs,
-          eventAt,
-          stillRelevant,
-          // The launch reservation owns the cooldown until the line actually airs.
-          manageCooldown: false,
-          onPlayed: () => {
-            // Durable cooldown commit at PLAY time, not enqueue (so a line dropped by
-            // the voice queue never burns the category or the paired timeout bucket).
-            this.lastSpokenAt.set(category, Date.now());
-            onSpoken?.();
-            // Commit to the anti-repeat memory only now that the line ACTUALLY aired
-            // (ITEM 11 + engine-3): a line dropped while queued (stillRelevant flipped at
-            // pump time, staleness, supersede) must not pollute recentLines/recentPlans.
-            this.llm?.commitSpoken(event, final);
+      void this.llm!.line(snapshot, event, tier, llmOpts).then((text) => {
+        if (stillRelevant && !stillRelevant()) {
+          log.debug("engine", `${category}: stillRelevant overtaken (moment resolved mid-flight)`);
+          // The moment died mid-flight — nothing audible, so release the launch
+          // reservation (ITEM 10) instead of burning the cooldown on a dropped line.
+          releaseReservation();
+          return;
+        }
+        const final = text ?? fallback();
+        if (!final) {
+          log.debug("engine", `${category}: null final (llm + fallback both empty)`);
+          // Nothing audible (llm + fallback both empty) — release the reservation (ITEM 10).
+          releaseReservation();
+          return;
+        }
+        // When the line was built from a Leetify brief, the resolved TEXT can carry
+        // Leetify-derived form ("Leetify says you've been losing on Mirage") — so redact
+        // it from BOTH on-disk sinks (decision log + voice/coach log), exactly as the
+        // post-match recap does (index.ts). The brief itself is qualitative and never hits
+        // the session store; this closes the spoken-text leak the snapshot-strip alone misses.
+        const hadLeetify = !!snapshot.leetifyStart;
+        // The decision hook fires here on the LLM path — source "llm" when Claude produced
+        // the text, "fallback" when its line was empty and the canned one stood in. Strip the
+        // Leetify brief from the logged snapshot (no-store discipline) and redact the text.
+        this.deps.onDecision?.({
+          snapshot: snapshot.leetifyStart ? { ...snapshot, leetifyStart: undefined } : snapshot,
+          event,
+          tier,
+          text: final,
+          source: text ? "llm" : "fallback",
+          redact: hadLeetify || undefined,
+        });
+        this.say(
+          () => final,
+          {
+            category,
+            priority,
+            maxAgeMs,
+            eventAt,
+            stillRelevant,
+            // Keep Leetify-derived text out of the voice logs (no-store discipline).
+            redactText: hadLeetify || undefined,
+            // The launch reservation owns the cooldown until the line actually airs.
+            manageCooldown: false,
+            onPlayed: () => {
+              // Durable cooldown commit at PLAY time, not enqueue (so a line dropped by
+              // the voice queue never burns the category or the paired timeout bucket).
+              this.lastSpokenAt.set(category, Date.now());
+              onSpoken?.();
+              // Commit to the anti-repeat memory only now that the line ACTUALLY aired
+              // (ITEM 11 + engine-3): a line dropped while queued (stillRelevant flipped at
+              // pump time, staleness, supersede) must not pollute recentLines/recentPlans.
+              this.llm?.commitSpoken(event, final);
+            },
+            // Dropped before play (queued-then-stale/superseded/overflow) → release the
+            // launch reservation so the next valid moment in this category can speak.
+            onDropped: releaseReservation,
           },
-          // Dropped before play (queued-then-stale/superseded/overflow) → release the
-          // launch reservation so the next valid moment in this category can speak.
-          onDropped: releaseReservation,
-        },
-        true,
-      );
-    }).catch((err) => {
-      // ITEM 13: a throw in the resolution body (fallback/stillRelevant/say) would
-      // otherwise escape the per-event try/catch as an unhandled rejection — and must
-      // release the launch reservation (engine-0), or the category locks for the session.
-      releaseReservation();
-      log.error("coach", `LLM line resolution failed for ${event.type}`, err);
-    });
+          true,
+        );
+      }).catch((err) => {
+        // ITEM 13: a throw in the resolution body (fallback/stillRelevant/say) would
+        // otherwise escape the per-event try/catch as an unhandled rejection — and must
+        // release the launch reservation (engine-0), or the category locks for the session.
+        releaseReservation();
+        log.error("coach", `LLM line resolution failed for ${event.type}`, err);
+      });
+    };
+
+    // Warmup / match start need the Leetify brief fetched (async) BEFORE the prompt is
+    // built; every other moment resolves synchronously, with no added latency (and the
+    // LLM call stays on the synchronous path the fast-moment behavior relies on).
+    if (event.type === "mapLoading" || event.type === "matchStart") {
+      void this.enrichLeetify(event, snapshot).then(resolveLine).catch((err) => {
+        // An enrichment throw must not strand the category cooldown.
+        releaseReservation();
+        log.error("coach", `Leetify enrichment failed for ${event.type}`, err);
+      });
+    } else {
+      resolveLine();
+    }
+  }
+
+  /**
+   * Attach the qualitative Leetify pre-match brief to a warmup / match-start snapshot,
+   * best-effort. At warmup (mapLoading) there's dead air, so it can wait a beat; at
+   * matchStart it's a tight race so the greeting — which carries the round-1 pistol buy
+   * call — isn't held up (the "two racing calls killed the buy call" lesson is about a
+   * second LLM CALL, not enrichment, but the await still must stay short). Skipped for
+   * matchStart when a warmup speech already spoke the form, for non-competitive modes,
+   * and whenever the supplier resolves undefined (Leetify off / primary not bound / fetch
+   * failed). Qualitative-only and never persisted: the brief reaches the LLM and TTS, not
+   * the session store or the logs.
+   */
+  private async enrichLeetify(event: CoachEvent, snapshot: MatchContext): Promise<void> {
+    if (!this.deps.leetifyStartBrief) return;
+    if (event.type !== "mapLoading" && event.type !== "matchStart") return;
+    if (snapshot.mode !== "competitive") return; // Premier/comp only — matches the recap's discipline
+    if (event.type === "matchStart" && snapshot.warmupSpeechGiven) return; // warmup already gave the form
+    const map = snapshot.map ?? event.map;
+    if (!map) return;
+    // Warmup has room to wait for a cold fetch; match start is best-effort so the buy
+    // call isn't delayed (when warmup fired, the cache is already warm and this is instant).
+    const budgetMs = event.type === "mapLoading" ? 2500 : 1000;
+    const brief = await Promise.race([
+      this.deps.leetifyStartBrief(map).catch(() => undefined),
+      new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), budgetMs)),
+    ]);
+    if (brief) snapshot.leetifyStart = brief;
   }
 
   // --- locally derived clock callouts (GSI sends players no timer) ----------
@@ -878,6 +1008,9 @@ export class CoachEngine {
       onDropped?: () => void;
       /** Set false when the caller manages the category cooldown itself (LLM path). */
       manageCooldown?: boolean;
+      /** Keep this line's text out of the voice logs (length only) — set for lines built
+       *  from Leetify-derived data the project must not persist. */
+      redactText?: boolean;
     },
     skipCooldownCheck = false,
   ): void {
@@ -919,6 +1052,7 @@ export class CoachEngine {
       eventAt: opts.eventAt ?? Date.now(),
       supersedes: opts.supersedes,
       stillRelevant: opts.stillRelevant,
+      redactText: opts.redactText,
       onPlayed: opts.onPlayed,
       onDropped: () => {
         release?.();

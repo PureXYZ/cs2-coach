@@ -1,4 +1,5 @@
 import type { GsiPayload, GsiPlayer, GsiWeapon, Team, TeamContext } from "./types.js";
+import type { LeetifyStartBrief } from "../leetify.js";
 import { MatchMemory, type RoundRecord } from "./memory.js";
 import { config, STEAMID64_RE } from "../config.js";
 
@@ -8,6 +9,11 @@ import { config, STEAMID64_RE } from "../config.js";
 // is dead, the player block describes the spectated TEAMMATE, which legitimately
 // lets us see (only) that teammate's kills and health.
 export type CoachEvent =
+  // Warmup detected — the pre-round-1 window, BEFORE the live frame. Fires at most
+  // once per match (latched), so the coach can fetch the player's Leetify form and,
+  // when there's room, deliver a longer scouting speech that never races the round-1
+  // pistol buy call. Mutually exclusive with matchStart (which keys on phase "live").
+  | { type: "mapLoading"; map: string; mode: string }
   | { type: "matchStart"; map: string; mode: string }
   | { type: "freezetime"; round: number }
   | { type: "roundLive"; round: number }
@@ -94,6 +100,15 @@ export interface MatchContext {
   /** Cross-session trend lines from past matches — attached by the engine at
    *  the storytelling moments only (match start, halftime, match end). */
   recentForm?: string[];
+  /** Qualitative Leetify pre-match brief (map form, recency, recent direction, aim
+   *  trend) — attached by the engine at warmup / match start when available. Spoken
+   *  once, never stored. Absent unless the Leetify match-start feature is on and a
+   *  brief was fetched in time. */
+  leetifyStart?: LeetifyStartBrief;
+  /** One-shot engine flag: a warmup scouting speech already delivered the Leetify
+   *  form this match, so the round-1 greeting must NOT repeat it (and the session
+   *  store's overlapping map/streak lines are suppressed). Set by the engine. */
+  warmupSpeechGiven?: true;
   /** One-shot engine flag: this freezetime's line should call the tactical
    *  timeout (set at most once per cooldown window, so the LLM can't nag). */
   suggestTimeout?: true;
@@ -185,6 +200,13 @@ const OWN_MOLLY_BLAME_MS = 8_000;
 /** Dying inside this window after the round goes live is an "opening seconds" death. */
 const EARLY_DEATH_WINDOW_MS = 20_000;
 
+/** How long the client must sit at a map-less main menu before a NEW warmup is treated
+ *  as a fresh pre-game (re-arming the once-per-match warmup speech). Above any transient
+ *  GSI packet blip that drops the map block mid-warmup (which must NOT re-fire the speech),
+ *  below a real dodge→requeue→reload. The dodge re-fire is time-based, so the sim asserts
+ *  only the blip-suppression half (like the multi-feed hysteresis windows). */
+const WARMUP_REARM_AFTER_MENU_MS = 45_000;
+
 /**
  * Rounds needed to win given the current scores: 13 in regulation (MR12), then
  * 16, 19, ... through MR3 overtime blocks (each tied block pushes the target +3).
@@ -226,6 +248,14 @@ export class GsiTracker {
   /** Spectated-teammate baseline while the user is dead. */
   private prevSpec: { steamid: string; roundKills: number } | null = null;
   private inMatch = false;
+  /** Warmup-event latch: a new match's warmup speech fires at most once. Set when
+   *  the mapLoading event is emitted; re-armed at matchStart, gameover, and after a
+   *  SUSTAINED menu return (a dodge/requeue that never reached 'live'). */
+  private warmupAnnounced = false;
+  /** Epoch ms the client first went to a map-less main menu while not in a match (null
+   *  while a map is present). Used to tell a transient warmup packet-blip from a real
+   *  menu return when deciding whether to re-arm warmupAnnounced. */
+  private menuSince: number | null = null;
   /** A spectated teammate carried a fake steamid — this is a bot match. */
   private botsSeen = false;
   private announcedMatchPointAt: string | null = null;
@@ -299,9 +329,28 @@ export class GsiTracker {
     const freshScore = ctScore === 0 && tScore === 0;
     const blipContinuation = this.inMatch && prevMapPhase === undefined && !freshScore;
     const midMatchPhase = hardContinuation || blipContinuation;
+    // Warmup window — fires once per match, BEFORE the live frame. The midMatchPhase
+    // guard (same one matchStart uses) keeps a mid-match reconnect/blip from re-firing
+    // it; the latch caps it within the pre-game even across a menu→warmup flicker.
+    if (map && mapPhase === "warmup" && prevMapPhase !== "warmup" && !midMatchPhase && !this.warmupAnnounced) {
+      this.warmupAnnounced = true;
+      events.push({ type: "mapLoading", map: map.name ?? "unknown", mode: map.mode ?? "unknown" });
+    }
+    // A map-less frame while not in a match is the main menu. Re-arm the warmup latch
+    // only after a SUSTAINED menu return (a real dodge/requeue that never reached 'live'),
+    // NOT a transient packet blip that drops the map block mid-warmup — otherwise the same
+    // pre-game would re-fire mapLoading a second time. Harmless mid-match: a live match
+    // never sends a map-less frame, so menuSince stays null there.
+    if (!map && !this.inMatch) {
+      if (this.menuSince === null) this.menuSince = now;
+      if (now - this.menuSince >= WARMUP_REARM_AFTER_MENU_MS) this.warmupAnnounced = false;
+    } else {
+      this.menuSince = null;
+    }
     if (map && mapPhase === "live" && !midMatchPhase) {
       this.inMatch = true;
       this.botsSeen = false;
+      this.warmupAnnounced = false; // re-arm the warmup latch for the NEXT match
       this.announcedMatchPointAt = null;
       this.liveRound = 0;
       this.lastOwnStats = null;
@@ -344,6 +393,7 @@ export class GsiTracker {
         theirScore: theirScore ?? 0,
       });
       this.inMatch = false;
+      this.warmupAnnounced = false; // re-arm so the NEXT match's warmup speech can fire
       this.lastKnownSide = undefined;
       this.liveRound = 0; // a stale round number must not leak into the next match's context
       // Cleared on gameover too: if the next match's "live" transition is missed

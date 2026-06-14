@@ -19,6 +19,10 @@ interface RecentMatch {
   id?: string;
   finished_at?: string;
   map_name?: string;
+  /** Per-match result string (e.g. "win"/"loss"/"tie") — present on every entry. */
+  outcome?: string | null;
+  /** Final score as [ours, theirs]-ish pair; unused by the qualitative brief. */
+  score?: [number, number] | null;
   leetify_rating?: number | null;
   preaim?: number | null;
   reaction_time_ms?: number | null;
@@ -62,6 +66,31 @@ export interface LeetifyMatchStats {
 export interface LeetifySquadStats {
   me: LeetifyMatchStats;
   squad: Array<{ name?: string; isPrimary: boolean; stats: LeetifyMatchStats }>;
+}
+
+/**
+ * A QUALITATIVE pre-match brief built from the player's Leetify profile
+ * (recent_matches), fetchable the moment the map is known — NO demo-parse wait,
+ * because it reads already-finished history, not the game still in Leetify's parse
+ * queue. Every field is a direction/recency PHRASE with no quoted figure (the same
+ * compliance basis the existing buildTrend() relies on: Leetify's verbatim/no-recompute
+ * rule polices numbers, and these introduce none). Like the recap, it is fetched,
+ * spoken once and never stored — it never reaches the session store or the logs.
+ */
+export interface LeetifyStartBrief {
+  /** Recent direction on THIS map — "you've been losing on Mirage lately". */
+  mapForm?: string;
+  /** The last game on this map: recency + result — "you last played Mirage earlier today, and lost". */
+  lastOnMap?: string;
+  /** Overall recent direction coming in — "you're walking in off a losing run". */
+  recentForm?: string;
+  /** Aim-trend direction (reuses buildTrend) — "your reaction time is trending faster lately". */
+  trend?: string;
+  /** Wired FRIENDS connected at match start, each with ONE name-free, third-person form
+   *  clause ("has been losing on Mirage lately") — the prompt adds the (sanitized) name and
+   *  aggregates them, never a roll-call. Present only when friends are wired + team tactics
+   *  are on. Qualitative like the rest; spoken once, never stored. */
+  squad?: Array<{ name: string; note: string }>;
 }
 
 /** Leetify's JSON uses null for unscored fields — normalize to undefined. */
@@ -166,6 +195,122 @@ function buildTrend(match: RecentMatch, recent: RecentMatch[]): string | undefin
   return clauses[0]!.charAt(0).toUpperCase() + clauses[0]!.slice(1) + ".";
 }
 
+/** Leetify's per-match outcome string → a coarse result. Tolerant of casing/wording
+ *  (win/won, loss/lost, tie/draw) since the exact tokens aren't contractual. */
+function matchResult(outcome: string | null | undefined): "win" | "loss" | "tie" | undefined {
+  if (!outcome) return undefined;
+  const s = outcome.toLowerCase();
+  if (s.startsWith("w")) return "win";
+  if (s.startsWith("l")) return "loss";
+  if (s.startsWith("t") || s.startsWith("d")) return "tie";
+  return undefined;
+}
+
+/** A number-light "how long ago" phrase for a past match — spoken words, not digits.
+ *  Time-since is derived arithmetic, not a Leetify metric, so loose wording here doesn't
+ *  touch the verbatim rule; it just keeps TTS natural. undefined when the time is unusable. */
+function agoPhrase(finishedAt: string | undefined, now: number): string | undefined {
+  if (!finishedAt) return undefined;
+  const at = Date.parse(finishedAt);
+  if (Number.isNaN(at)) return undefined;
+  const mins = (now - at) / 60_000;
+  if (mins < 0) return undefined;
+  if (mins < 75) return "in the last hour";
+  if (mins < 210) return "a couple hours ago";
+  if (mins < 7 * 60) return "earlier today";
+  if (mins < 24 * 60) return "today";
+  if (mins < 48 * 60) return "yesterday";
+  if (mins < 7 * 24 * 60) return "a few days back";
+  return "a while back";
+}
+
+/** Spoken map name from a GSI/Leetify token (de_mirage → "Mirage"). Local to leetify.ts
+ *  to avoid a cross-module import; the coach's mapDisplayName covers workshop/alias cases
+ *  the brief never needs (the brief always sees the canonical GSI token). */
+function prettyMap(raw: string): string {
+  const token = raw.split("/").pop() ?? raw;
+  return token
+    .replace(/^(de|cs|ar)_/i, "")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** Majority win/loss direction over the most recent games on a map (up to 6), or
+ *  undefined when there's no clear lean — the basis for the "winning/losing here lately"
+ *  read. Counts internally; never surfaces a tally. */
+function mapLean(onMap: RecentMatch[]): "win" | "loss" | undefined {
+  if (onMap.length < 2) return undefined;
+  let w = 0;
+  let l = 0;
+  for (const m of onMap.slice(0, 6)) {
+    const r = matchResult(m.outcome);
+    if (r === "win") w++;
+    else if (r === "loss") l++;
+  }
+  return l > w ? "loss" : w > l ? "win" : undefined;
+}
+
+/** Current win/loss streak (>=2 consecutive from the newest), or undefined. Direction only. */
+function streakDir(recent: RecentMatch[]): "win" | "loss" | undefined {
+  const top = matchResult(recent[0]?.outcome);
+  if (top !== "win" && top !== "loss") return undefined;
+  let n = 0;
+  for (const m of recent) {
+    if (matchResult(m.outcome) !== top) break;
+    n++;
+  }
+  return n >= 2 ? top : undefined;
+}
+
+/** The PRIMARY player's qualitative brief fields (second-person) from their recent_matches —
+ *  map form, last-on-map recency+result, recent streak, aim trend. Direction/recency only,
+ *  no spoken number. */
+function deriveStartBrief(recent: RecentMatch[], map: string, now: number): LeetifyStartBrief {
+  const where = prettyMap(map);
+  const onMap = recent.filter((m) => m.map_name && m.map_name.toLowerCase() === map.toLowerCase());
+  const brief: LeetifyStartBrief = {};
+  const last = onMap[0];
+  if (last) {
+    const res = matchResult(last.outcome);
+    const ago = agoPhrase(last.finished_at, now);
+    if (res && ago) {
+      const verb = res === "win" ? "and took it" : res === "loss" ? "and lost" : "and drew it";
+      brief.lastOnMap = `you last played ${where} ${ago}, ${verb}`;
+    }
+  }
+  const lean = mapLean(onMap);
+  if (lean === "loss") brief.mapForm = `you've been losing on ${where} lately`;
+  else if (lean === "win") brief.mapForm = `you've been winning on ${where} lately`;
+  const streak = streakDir(recent);
+  if (streak === "win") brief.recentForm = "you're walking in on a win streak";
+  else if (streak === "loss") brief.recentForm = "you're walking in off a losing run";
+  if (recent[0]) brief.trend = buildTrend(recent[0], recent);
+  return brief;
+}
+
+/** ONE name-free, third-person form clause for a WIRED FRIEND (the prompt adds the
+ *  sanitized name, so this reads naturally after it: "Sam <note>") — prefer their map
+ *  lean, then their overall streak, then their last result here. undefined when nothing
+ *  stands out. */
+function deriveFriendNote(recent: RecentMatch[], map: string, now: number): string | undefined {
+  const where = prettyMap(map);
+  const onMap = recent.filter((m) => m.map_name && m.map_name.toLowerCase() === map.toLowerCase());
+  const lean = mapLean(onMap);
+  if (lean === "loss") return `has been losing on ${where} lately`;
+  if (lean === "win") return `has been winning on ${where} lately`;
+  const streak = streakDir(recent);
+  if (streak === "win") return "is on a win streak coming in";
+  if (streak === "loss") return "is walking in off a losing run";
+  const last = onMap[0];
+  if (last) {
+    const res = matchResult(last.outcome);
+    const ago = agoPhrase(last.finished_at, now);
+    if (res === "win" && ago) return `took ${where} ${ago}`;
+    if (res === "loss" && ago) return `lost on ${where} ${ago}`;
+  }
+  return undefined;
+}
+
 export class LeetifyClient {
   constructor(private readonly apiKey?: string) {}
 
@@ -241,6 +386,74 @@ export class LeetifyClient {
       log.warn("leetify", `Squad match detail fetch failed (${err instanceof Error ? err.message : err}) — using the primary's profile summary only`);
     }
     return { me, squad: rows };
+  }
+
+  /**
+   * A QUALITATIVE pre-match brief from the player's profile, for the match-start /
+   * warmup speech. ONE keyless /v3/profile GET (the same call findMatchEntry makes)
+   * yields recent_matches — newest-first, each with outcome/map_name/finished_at and
+   * the aim fields — so map form, "last played this map / how long ago", recent
+   * direction and an aim trend all come from it with NO demo-parse latency. Every
+   * field is direction/recency only (no spoken number) to stay inside Leetify's
+   * verbatim/no-recompute rule, the same basis buildTrend already relies on. The
+   * caller speaks it once and never stores it.
+   *
+   * undefined = account not on Leetify (404); null = registered but nothing usable
+   * (no history / no clear signal) — both degrade cleanly to today's plain greeting.
+   */
+  async startBrief(steam64: string, map: string): Promise<LeetifyStartBrief | null | undefined> {
+    const recent = await this.fetchRecent(steam64);
+    if (recent === undefined) return undefined; // 404 — not a registered Leetify user
+    if (!recent || !recent.length) return null; // transient error / no history
+    const brief = deriveStartBrief(recent, map, Date.now());
+    // Nothing usable → null so the caller degrades to the plain greeting.
+    return brief.lastOnMap || brief.mapForm || brief.recentForm || brief.trend ? brief : null;
+  }
+
+  /**
+   * Like startBrief, but ALSO pulls a one-line form clause for each wired FRIEND connected
+   * at match start (the crew passed in, primary included). One keyless profile fetch per
+   * member, all in PARALLEL, so the warmup window's budget covers a full stack. The match
+   * is keyed on the PRIMARY (undefined when they aren't on Leetify); a friend who 404s or
+   * errors is simply omitted. Everything stays qualitative (no numbers) and is spoken once,
+   * never stored — exactly like the solo brief.
+   */
+  async squadStartBrief(
+    members: Array<{ steam64: string; name?: string; isPrimary: boolean }>,
+    map: string,
+  ): Promise<LeetifyStartBrief | null | undefined> {
+    if (!members.some((m) => m.isPrimary)) return null;
+    const now = Date.now();
+    const entries = await Promise.all(members.map(async (m) => ({ m, recent: await this.fetchRecent(m.steam64) })));
+    const primaryEntry = entries.find((e) => e.m.isPrimary)!;
+    if (primaryEntry.recent === undefined) return undefined; // primary not on Leetify — skip the whole brief
+
+    const brief: LeetifyStartBrief =
+      primaryEntry.recent && primaryEntry.recent.length ? deriveStartBrief(primaryEntry.recent, map, now) : {};
+
+    const squad: NonNullable<LeetifyStartBrief["squad"]> = [];
+    for (const e of entries) {
+      if (e.m.isPrimary || !e.m.name || !e.recent || !e.recent.length) continue;
+      const note = deriveFriendNote(e.recent, map, now);
+      if (note) squad.push({ name: e.m.name, note });
+    }
+    if (squad.length) brief.squad = squad;
+
+    const hasAnything = brief.lastOnMap || brief.mapForm || brief.recentForm || brief.trend || squad.length;
+    return hasAnything ? brief : null;
+  }
+
+  /** Fetch a profile's recent_matches: undefined = 404 (unregistered), null = a transient
+   *  error (caller degrades), else the array (possibly empty). */
+  private async fetchRecent(steam64: string): Promise<RecentMatch[] | null | undefined> {
+    try {
+      const profile = await this.get(`/v3/profile?steam64_id=${encodeURIComponent(steam64)}`);
+      if (profile === null) return undefined; // 404 — not a registered Leetify user
+      return (profile as { recent_matches?: RecentMatch[] }).recent_matches ?? [];
+    } catch (err) {
+      log.warn("leetify", `Profile fetch failed (${err instanceof Error ? err.message : err})`);
+      return null;
+    }
   }
 
   /**

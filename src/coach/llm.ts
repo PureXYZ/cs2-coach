@@ -440,6 +440,30 @@ function habitsNote(ctx: MatchContext): string {
     : "";
 }
 
+/**
+ * The qualitative Leetify pre-match brief as a prompt clause. Every field is a
+ * direction/recency phrase with NO number (built that way in leetify.ts), so it adds
+ * no value Leetify's verbatim/no-recompute rule would object to — the same basis the
+ * recap's buildTrend clause relies on. The model speaks it as the coach's OWN read on
+ * the player (no data-source name-drop — that breaks the persona) and uses at most one
+ * item, never inventing a result beyond the list. Empty string when there's no brief
+ * (Leetify off / unregistered / fetch missed the window).
+ */
+function leetifyStartClause(brief?: MatchContext["leetifyStart"]): string {
+  if (!brief) return "";
+  const facts = [brief.lastOnMap, brief.mapForm, brief.recentForm, brief.trend].filter(Boolean);
+  let clause = facts.length
+    ? ` What you already know about this player coming in (real — work in AT MOST ONE of these as your OWN read, never more, never invent a past result beyond what's listed, and do NOT name a stats site or any data source out loud — just know it): ${JSON.stringify(facts)}.`
+    : "";
+  // Wired crew connected this match — each friend's own recent form, name added here
+  // (sanitized). Aggregate or pick the standout; the persona's no-roll-call rule applies.
+  const crew = (brief.squad ?? []).map((s) => `${safeName(s.name)} ${s.note}`).filter((c) => c.trim());
+  if (crew.length) {
+    clause += ` How the WIRED CREW connected this match have been going (real, their own recent form — your read on the crew, no source name-drop): ${JSON.stringify(crew)}. Work the crew in, but do NOT roll-call every name — AGGREGATE ("you and ${safeName(brief.squad![0]!.name)} are both cold on this map") or call the ONE standout, and keep the player your anchor.`;
+  }
+  return clause;
+}
+
 /** True translation of GSI's win-condition token, relative to OUR side. */
 function methodStory(method: string, won: boolean): string {
   if (method.includes("bomb")) return won ? "your bomb detonated" : "their bomb detonated on you";
@@ -533,16 +557,28 @@ function describeMoment(
   ribTarget?: { name: string; note?: string },
 ): string {
   switch (event.type) {
+    case "mapLoading": {
+      // The warmup window: dead air, no buy to race, so the one moment with room for a
+      // proper pre-match scouting speech. The Leetify brief (map/recent form) is the
+      // centerpiece when it's present.
+      const brief = leetifyStartClause(ctx.leetifyStart);
+      const form = ctx.recentForm?.length
+        ? " The recentForm lines are this player's real past sessions — a dry callback fits a warmup speech."
+        : "";
+      return `The map is loading on ${ctx.map ?? event.map} and you've got the warmup to talk — there's no buy yet and nothing to talk over, so take the room: 40-70 words, three to five sentences (the one-line cap does NOT apply). A pre-match scouting brief in character: set the tone with suitably low expectations, ONE thing for this crew to actually focus on this match, and — when you've got a read on the map and recent form below — make that the spine of it, as your own knowledge (no source name-drop). Spoken register the whole way; it's you talking before the match, not a writer.${brief}${form}`;
+    }
     case "matchStart": {
       const form = ctx.recentForm?.length
         ? " The recentForm lines are this player's actual previous sessions — a dry callback to the last result is gold here."
         : "";
+      const brief = leetifyStartClause(ctx.leetifyStart);
       // The usual case: round-1 freezetime arrives in the same GSI frame and
       // its event is suppressed — this one line is greeting AND pistol call.
       if (ctx.roundPhase === "freezetime" && ctx.roundKind === "pistol") {
-        return `A new match is starting on ${ctx.map ?? event.map} and the ROUND 1 PISTOL freezetime is already running. This ONE line is both the greeting and the pistol call: one concrete plan (where to go, armor vs util vs upgraded pistol, together as five). Don't let the greeting eat the call.${form}`;
+        const briefNote = brief ? " If there's a read on the player below, ONE quick jab off it at most — the pistol call still owns this line." : "";
+        return `A new match is starting on ${ctx.map ?? event.map} and the ROUND 1 PISTOL freezetime is already running. This ONE line is both the greeting and the pistol call: one concrete plan (where to go, armor vs util vs upgraded pistol, together as five). Don't let the greeting eat the call.${briefNote}${brief}${form}`;
       }
-      return `A new match is starting on ${ctx.map ?? event.map}. One greeting line in character: expectations appropriately low, plus ONE concrete focus point for the match (pistols, trading, util — pick from history if it shows a habit).${form}`;
+      return `A new match is starting on ${ctx.map ?? event.map}. One greeting line in character: expectations appropriately low, plus ONE concrete focus point for the match (pistols, trading, util — pick from history or what you know about their recent form if it shows a habit).${brief}${form}`;
     }
     case "freezetime": {
       // One-shot engine flag (cooldown-gated) — without it this directive

@@ -49,6 +49,10 @@ import { log } from "../log.js";
 /** Match-global events — every feed sees them identically, so only the AUTHORITY
  *  feed's copy is forwarded; the rest are per-player. */
 const GLOBAL_EVENTS: ReadonlySet<CoachEvent["type"]> = new Set([
+  // Match-lifecycle warmup signal — every feed sees it, so only the authority's copy
+  // is forwarded (one scouting speech, not one per wired friend). No globalSignature
+  // case needed: it falls through to the default (bare type), like matchStart/halftime.
+  "mapLoading",
   "matchStart",
   "freezetime",
   "roundLive",
@@ -965,6 +969,31 @@ export class RosterManager {
     };
     push(primary); // primary first, even if not (re)added to confirmedEver yet
     for (const id of this.confirmedEver) push(id); // de-dup: the primary is in confirmedEver too
+    return out;
+  }
+
+  /** The wired crew CONNECTED right now (primary first), as {steam64, name, isPrimary},
+   *  for the match-start Leetify brief. Unlike confirmedSquad() this uses CONNECTION +
+   *  same-map, NOT the same-side vote — at warmup/match start no live rounds have happened
+   *  so nobody is vote-confirmed yet, and a co-queued stack is on the same map. (A friend who
+   *  somehow holds the token on the ENEMY team would slip in, but that needs your GSI token
+   *  and the same lobby — vanishingly rare, and the brief only states their own past form.)
+   *  Empty when the primary feed isn't present (the brief is then skipped, like steamId()). */
+  connectedSquad(): Array<{ steam64: string; name?: string; isPrimary: boolean }> {
+    const now = Date.now();
+    const primary = this.primaryId();
+    const primaryFeed = primary ? this.feeds.get(primary) : undefined;
+    if (!primary || !this.isFresh(primaryFeed, now)) return [];
+    const refMap = this.refMap(now);
+    const out: Array<{ steam64: string; name?: string; isPrimary: boolean }> = [
+      { steam64: primary, name: primaryFeed!.tracker.ownName() ?? primaryFeed!.tracker.providerName(), isPrimary: true },
+    ];
+    for (const [id, f] of this.feeds) {
+      if (id === primary) continue;
+      if (!this.isFresh(f, now)) continue;
+      if (!this.onRefMap(f, refMap)) continue; // a different-lobby feed isn't in this match
+      out.push({ steam64: id, name: f.tracker.ownName() ?? f.tracker.providerName(), isPrimary: false });
+    }
     return out;
   }
 

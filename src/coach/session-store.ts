@@ -125,8 +125,14 @@ export class SessionStore {
    * Terse, real, cross-session trend lines for the LLM prompt (smart moments
    * only). Past-match facts the coach can call back to — capped at 6 lines so
    * the prompt stays lean. Returns undefined until at least one match is on file.
+   *
+   * `leetifyCoversForm` drops the two lines a Leetify pre-match brief also speaks —
+   * the per-map W/L and the overall streak — so the coach never states recent/map
+   * form from two sources (the coach's own observed history AND Leetify's broader
+   * one) that could disagree. The session-only facts (pistols, K/D, habits,
+   * squad-tag) always stay; they have no Leetify equivalent.
    */
-  recentForm(currentMap?: string): string[] | undefined {
+  recentForm(currentMap?: string, opts?: { leetifyCoversForm?: boolean }): string[] | undefined {
     if (this.records.length === 0) return undefined;
     const now = new Date();
     const recent = this.records.slice(-FORM_WINDOW).reverse(); // newest first
@@ -145,15 +151,18 @@ export class SessionStore {
         ".",
     );
 
-    // Match-level streak coming into tonight (2+ of the same result).
-    let streak = 0;
-    const lastResult = recent[0]?.won;
-    if (lastResult !== undefined) {
-      for (const r of recent) {
-        if (r.won !== lastResult) break;
-        streak++;
+    // Match-level streak coming into tonight (2+ of the same result). Suppressed when
+    // a Leetify brief already speaks the overall direction (broader sample wins).
+    if (!opts?.leetifyCoversForm) {
+      let streak = 0;
+      const lastResult = recent[0]?.won;
+      if (lastResult !== undefined) {
+        for (const r of recent) {
+          if (r.won !== lastResult) break;
+          streak++;
+        }
+        if (streak >= 2) out.push(`That's ${streak} ${lastResult ? "wins" : "losses"} in a row coming into this one.`);
       }
-      if (streak >= 2) out.push(`That's ${streak} ${lastResult ? "wins" : "losses"} in a row coming into this one.`);
     }
 
     // Pistol-round record across the window.
@@ -171,7 +180,9 @@ export class SessionStore {
     }
 
     // Record on tonight's map, over a longer window — map form moves slowly.
-    if (currentMap) {
+    // Suppressed when a Leetify brief covers map form (its sample sees games the coach
+    // never observed, so it's the authority; this would otherwise double-speak it).
+    if (currentMap && !opts?.leetifyCoversForm) {
       const onMap = this.records.slice(-15).filter((r) => r.map === currentMap && r.won !== undefined);
       if (onMap.length >= 2) {
         const w = onMap.filter((r) => r.won).length;
