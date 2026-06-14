@@ -7,31 +7,45 @@ The app is one self-contained Node process configured entirely by env vars, so t
 The whole app runs on a cloud host. The gaming PC runs **nothing** — the only trace of the project is the cfg file, and the HTTP POSTs the game itself makes (the same thing tournament players' machines do; no measurable FPS cost).
 
 ```
-┌─ Gaming PC ────────────┐   HTTPS/HTTP   ┌─ Cloud (VPS / Railway / Fly) ─┐
-│ CS2 + cfg file only    ├───────────────▶│ coach app (this repo)         │──▶ Discord voice
-└────────────────────────┘    internet    │ → Deepgram TTS, Claude API    │
+┌─ Gaming PC ────────────┐    HTTPS       ┌─ DigitalOcean droplet ────────┐
+│ CS2 + cfg file only    ├───────────────▶│ caddy :443 (TLS) ─▶ coach     │──▶ Discord voice
+└────────────────────────┘    internet    │ :3000 → Deepgram / 11Labs     │
+                                          │ → Claude API                  │
                                           └───────────────────────────────┘
 ```
 
-Everything the app talks to (Discord gateway, Deepgram, Anthropic) is outbound from the host — the one *inbound* requirement is the GSI endpoint CS2 POSTs to.
+Everything the app talks to (Discord gateway, Deepgram/ElevenLabs, Anthropic) is outbound from the host — the one *inbound* requirement is the GSI endpoint CS2 POSTs to, which Caddy fronts with HTTPS.
 
-### Option A — small VPS (most certain to work, ~$5/mo)
+### The setup — droplet + Caddy reverse proxy
 
-Hetzner (~€4), DigitalOcean ($6), Lightsail ($5), etc.
+The coach runs as a Docker container on a small VPS (a DigitalOcean droplet, ~$6/mo; Hetzner/Lightsail/etc. work identically) behind [Caddy](https://caddyserver.com), which terminates TLS and reverse-proxies to it. Caddy auto-provisions and renews a Let's Encrypt certificate for the coach's domain, so GSI POSTs arrive over real HTTPS with nothing to manage. Valve's GSI does strict certificate validation; a Let's Encrypt cert is globally trusted, so it passes.
 
-1. Install Docker, clone the repo, create `.env` (same vars as local).
-2. `docker build -t cs2-coach . && docker run -d --restart unless-stopped --env-file .env -p 3000:3000 cs2-coach`
-3. Generate the cfg against the VPS: `npm run cfg -- --host <vps-public-ip>` and copy it to the gaming PC's CS2 cfg folder; restart CS2.
+Both containers share a user-defined Docker network (`web`) so Caddy can reach the coach by container name. The coach publishes **no** host ports — it's reachable only through Caddy.
 
-GSI then POSTs over plain HTTP to the VPS. That's acceptable because the payload is just your own game state and the `auth` token (already enforced by the server) rejects strangers — but it is the open internet, so prefer Option B's HTTPS or put the port behind a firewall rule allowing only your home IP.
+One-time setup on the host:
 
-### Option B — PaaS with HTTPS (cleanest, ~$5/mo)
+1. Point a DNS A record (e.g. `coach.example.com`) at the droplet's IP, and set `COACH_PUBLIC_HOST=https://coach.example.com` in `.env`.
+2. Create the shared network: `docker network create web`.
+3. Write `/root/Caddyfile` — one block routes the domain to the coach container:
+   ```
+   coach.example.com {
+       reverse_proxy coach:3000
+       log
+   }
+   ```
+4. Start Caddy (publishes 80/443, persists the issued certs in a volume so they survive a restart):
+   ```bash
+   docker run -d --name caddy --restart unless-stopped --network web \
+     -p 80:80 -p 443:443 \
+     -v /root/Caddyfile:/etc/caddy/Caddyfile \
+     -v caddy_data:/data -v caddy_config:/config \
+     caddy:2
+   ```
+5. Build and start the coach on the same network (the `deploy.sh` below does this), then generate the cfg against the domain and copy it to the gaming PC's CS2 cfg folder: `npm run cfg -- --host coach.example.com`; restart CS2.
 
-Railway / Render / Fly.io build straight from the repo (the `Dockerfile` is ready), give you a stable `https://...` domain with a real certificate, and manage restarts/env vars in a dashboard.
+Watch the host logs for incoming POSTs after a CS2 restart to confirm the round-trip.
 
-Point the cfg at the HTTPS URL (no port): `"uri" "https://your-app.up.railway.app"`.
-
-**One caveat:** Valve documents HTTPS support for GSI with strict certificate validation. A PaaS domain has a globally trusted cert so it *should* pass, but verify it on first deploy (watch the host logs for incoming POSTs after a CS2 restart). If HTTPS turns out flaky, fall back to Option A's plain HTTP + token.
+A PaaS that builds from the `Dockerfile` and hands you an HTTPS domain (Railway / Render / Fly.io) skips the Caddy step — but it **must** be a real VM; gVisor-sandboxed platforms like DigitalOcean App Platform block the UDP that Discord voice needs (see the caveat below).
 
 ### Hosted vs. local — what's different? Honestly, almost nothing
 
@@ -53,8 +67,8 @@ cd /root/cs2-coach
 git pull --ff-only
 docker build -t cs2-coach .
 docker rm -f coach >/dev/null 2>&1 || true
-docker run -d --name coach --restart unless-stopped --env-file .env \
-  -p 3000:3000 -v coach-state:/app/state cs2-coach
+docker run -d --name coach --restart unless-stopped --network web --env-file .env \
+  -v coach-state:/app/state cs2-coach
 sleep 5
 docker logs --tail 8 coach 2>&1
 ```
@@ -70,7 +84,7 @@ Two ways to trigger it:
 
 ### Operational tips
 
-- `GET http://<host>:3000/` is a health check returning the last-payload age — point an uptime monitor at it.
+- `GET https://<domain>/` is a health check returning the last-payload age (Caddy proxies it through to the coach) — point an uptime monitor at it.
 - Keep `GSI_TOKEN` long and random (it's the only auth on the GSI endpoint).
 - If the host or container restarts, the bot rejoins the last voice channel on its own (persisted in the `coach-state` volume).
 - The cross-session match history lives in the same volume (`state/sessions.json`, capped at 50 matches) — deleting it just resets the coach's memory of past sessions, nothing else breaks.
