@@ -73,7 +73,8 @@ export class VoiceCoach {
       behaviors: { noSubscriber: NoSubscriberBehavior.Pause },
     });
     // Any non-unity gain (the default OR a per-voice override) routes the affected
-    // lines through the re-encode path — note it once at startup so the latency is no surprise.
+    // lines through the ffmpeg-decode + opusscript-encode transcode path — note it once
+    // at startup so the latency (and the ffmpeg dependency) is no surprise.
     const overrides = voices().filter((v) => v.volume !== undefined && v.volume !== 1);
     if (this.volume !== 1 || overrides.length > 0) {
       const detail =
@@ -82,7 +83,7 @@ export class VoiceCoach {
           : `${this.volume}`;
       log.info(
         "voice",
-        `Coach playback gain (${detail}) — affected lines take the Opus re-encode path (opusscript), ~a few ms extra latency`,
+        `Coach playback gain (${detail}) — affected lines take the transcode path (ffmpeg decode + opusscript re-encode), small per-line latency`,
       );
     }
     this.player.on(AudioPlayerStatus.Idle, () => {
@@ -445,11 +446,12 @@ export class VoiceCoach {
    * Build the Discord audio resource for a coach line, applying the resolved gain.
    * At unity volume (the default) this is the zero-transcode fast path: the
    * provider's pre-encoded Opus is demuxed straight to Discord — no codec runs.
-   * A non-unity gain enables @discordjs/voice's inline volume, which can only act
-   * on PCM, so the line is routed Opus-decode → gain → Opus-re-encode (via the
-   * opusscript codec). That costs a native-free codec dependency and a few ms of
-   * latency (benchmarked ~5 ms) — hence it's opt-in and off by default. Songs don't go
-   * through here, so they always play at source level.
+   * A non-unity gain enables @discordjs/voice's inline volume, which works on PCM, so
+   * the line is transcoded OggOpus →(ffmpeg)→ PCM → gain →(opusscript)→ Opus: ffmpeg
+   * decodes, prism's VolumeTransformer applies the gain, opusscript re-encodes. ffmpeg is
+   * bundled in the image for exactly this (see the Dockerfile) and opusscript ships as a
+   * dependency; the per-line overhead is small — negligible next to the ~200-330 ms TTS
+   * time-to-first-audio. Songs don't go through here, so they always play at source level.
    */
   private makeResource(stream: Readable, inputType: StreamType, volume: number) {
     if (volume === 1) return createAudioResource(stream, { inputType });
