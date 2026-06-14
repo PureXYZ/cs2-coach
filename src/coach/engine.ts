@@ -757,7 +757,7 @@ export class CoachEngine {
           snapshot.mvps ??= finalStats.mvps;
         }
       }
-      void this.llm!.line(snapshot, event, tier, llmOpts).then((text) => {
+      void this.llm!.line(snapshot, event, tier, llmOpts).then(({ text, rib }) => {
         if (stillRelevant && !stillRelevant()) {
           log.debug("engine", `${category}: stillRelevant overtaken (moment resolved mid-flight)`);
           // The moment died mid-flight — nothing audible, so release the launch
@@ -809,7 +809,9 @@ export class CoachEngine {
               // Commit to the anti-repeat memory only now that the line ACTUALLY aired
               // (ITEM 11 + engine-3): a line dropped while queued (stillRelevant flipped at
               // pump time, staleness, supersede) must not pollute recentLines/recentPlans.
-              this.llm?.commitSpoken(event, final);
+              // Pass the rib ONLY when the LLM's own line aired (text !== null), so the canned
+              // fallback never advances the rib rotation (B2 #4).
+              this.llm?.commitSpoken(event, final, text !== null ? rib : undefined);
             },
             // Dropped before play (queued-then-stale/superseded/overflow) → release the
             // launch reservation so the next valid moment in this category can speak.

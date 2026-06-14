@@ -14,6 +14,14 @@ function optional(name: string, fallback = ""): string {
   return process.env[name] ?? fallback;
 }
 
+/** Phrase an out-of-range error for a one- or two-sided bound — avoids the
+ *  "between 1000 and undefined" message when only a min (or max) is set. */
+function rangeText(min?: number, max?: number): string {
+  if (min !== undefined && max !== undefined) return `between ${min} and ${max}`;
+  if (min !== undefined) return `at least ${min}`;
+  return `at most ${max}`;
+}
+
 function intEnv(name: string, fallback: number, min?: number, max?: number): number {
   const raw = process.env[name];
   if (!raw) return fallback;
@@ -22,7 +30,7 @@ function intEnv(name: string, fallback: number, min?: number, max?: number): num
   const n = Number.parseInt(raw, 10);
   // Fail at startup, not as a silent per-request 422 that demotes the provider.
   if ((min !== undefined && n < min) || (max !== undefined && n > max)) {
-    throw new Error(`${name} must be between ${min} and ${max}, got "${raw}"`);
+    throw new Error(`${name} must be ${rangeText(min, max)}, got "${raw}"`);
   }
   return n;
 }
@@ -36,7 +44,7 @@ function floatEnv(name: string, fallback: number, min?: number, max?: number): n
   if (Number.isNaN(n)) throw new Error(`${name} must be a number, got "${raw}"`);
   // Fail at startup, not as a silent per-request 422 that demotes the provider.
   if ((min !== undefined && n < min) || (max !== undefined && n > max)) {
-    throw new Error(`${name} must be between ${min} and ${max}, got "${raw}"`);
+    throw new Error(`${name} must be ${rangeText(min, max)}, got "${raw}"`);
   }
   return n;
 }
@@ -215,7 +223,9 @@ function effortEnv(name: string, fallback: string): string {
 // as effortEnv/steamId64Env.
 function enumEnv<T extends string>(name: string, allowed: readonly T[], fallback: T): T {
   const raw = process.env[name];
-  if (raw === undefined) return fallback;
+  // Unset OR set-but-empty (KEY= in .env) → the fallback. Without the "" case this throws
+  // at boot for a blank value, where the prior optional()/?? coerced it to the fallback.
+  if (raw === undefined || raw === "") return fallback;
   if (!(allowed as readonly string[]).includes(raw)) {
     throw new Error(`${name} must be one of ${allowed.join(", ")}, got "${raw}"`);
   }

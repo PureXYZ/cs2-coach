@@ -14,7 +14,7 @@ export class GsiPayloadLog {
   private readonly sink: ReturnType<typeof createNdjsonSink>;
 
   constructor(dir = "logs") {
-    this.sink = createNdjsonSink({ dir, prefix: "gsi-", tag: "gsi" });
+    this.sink = createNdjsonSink({ dir, prefix: "gsi-", tag: "gsi", what: "raw GSI payloads" });
   }
 
   write(payload: GsiPayload, events: CoachEvent[]): void {

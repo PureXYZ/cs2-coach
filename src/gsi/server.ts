@@ -67,6 +67,19 @@ export function startGsiServer(opts: GsiServerOptions): GsiServerHandle {
         return;
       }
 
+      // JSON `null`, a bare scalar, or an array all parse fine but are not a GsiPayload.
+      // Dereferencing one below (or in the auth check) throws, and this req."end" handler
+      // has no surrounding try/catch — the throw would reach uncaughtException and exit the
+      // process. On the default empty-token setup that makes a `null` body a remote kill
+      // switch, so drop anything that isn't a plain object before touching it.
+      if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+        if (!warnedBadShape) {
+          warnedBadShape = true;
+          log.warn("gsi", "Received POST whose body isn't a GSI object — dropping frame (warning shown once)");
+        }
+        return;
+      }
+
       // Cheap runtime shape guard on the hot fields the rules read. JSON.parse is
       // assigned straight to a typed GsiPayload, so a malformed POST (round:"5")
       // would type-confuse downstream logic ("5" + 1 → "51"). Drop the frame if a

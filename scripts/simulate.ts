@@ -416,7 +416,7 @@ console.log("\n=== scenario: LLM retake line in flight — dropped when a kill l
 function llmEngine(t: InstanceType<typeof GsiTracker>, out: SpeakRequest[]): { engine: InstanceType<typeof CoachEngine>; resolve: (s: string | null) => void } {
   let resolve: (s: string | null) => void = () => {};
   const fakeLlm = {
-    line: () => new Promise<string | null>((r) => { resolve = r; }),
+    line: () => new Promise<{ text: string | null }>((r) => { resolve = (s) => r({ text: s }); }),
     recordSpoken: () => {},
     commitSpoken: () => {},
   } as unknown as LlmCoach;
@@ -640,7 +640,7 @@ console.log("\n=== scenario: LLM timeout directive rides the snapshot as a one-s
 {
   const captured: MatchContext[] = [];
   const fakeLlm = {
-    line: (c: MatchContext) => { captured.push(c); return Promise.resolve(null); },
+    line: (c: MatchContext) => { captured.push(c); return Promise.resolve({ text: null }); },
     recordSpoken: () => {},
     commitSpoken: () => {},
   } as unknown as LlmCoach;
@@ -770,7 +770,7 @@ console.log("\n=== scenario: /coach mute gates lines and LLM spend ===");
   let muted = true;
   let llmCalls = 0;
   const fakeLlm = {
-    line: () => { llmCalls++; return Promise.resolve("should never be requested while muted"); },
+    line: () => { llmCalls++; return Promise.resolve({ text: "should never be requested while muted" }); },
     recordSpoken: () => {},
     commitSpoken: () => {},
   } as unknown as LlmCoach;
@@ -789,7 +789,7 @@ console.log("\n=== scenario: smart-tier prompts get full history + recentForm; f
 {
   const captured: MatchContext[] = [];
   const fakeLlm = {
-    line: (ctx: MatchContext) => { captured.push(ctx); return Promise.resolve(null); },
+    line: (ctx: MatchContext) => { captured.push(ctx); return Promise.resolve({ text: null }); },
     recordSpoken: () => {},
     commitSpoken: () => {},
   } as unknown as LlmCoach;
@@ -920,7 +920,7 @@ console.log("\n=== scenario: long form requested exactly at the dead-air moments
   const fakeLlm = {
     line: (c: MatchContext, ev: CoachEvent, _tier: string, opts?: { longForm?: boolean }) => {
       calls.push({ type: ev.type, longForm: opts?.longForm, kills: c.kills });
-      return Promise.resolve(null);
+      return Promise.resolve({ text: null });
     },
     recordSpoken: () => {},
     commitSpoken: () => {},

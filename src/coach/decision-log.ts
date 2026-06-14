@@ -27,7 +27,7 @@ export class DecisionLog {
   private readonly sink: ReturnType<typeof createNdjsonSink>;
 
   constructor(dir = "logs") {
-    this.sink = createNdjsonSink({ dir, prefix: "decisions-", tag: "coach" });
+    this.sink = createNdjsonSink({ dir, prefix: "decisions-", tag: "coach", what: "coach decisions" });
   }
 
   write(rec: DecisionRecord): void {

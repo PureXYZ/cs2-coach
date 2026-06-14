@@ -22,17 +22,24 @@ export function tsStamp(): string {
  * newline. Backs GsiPayloadLog and DecisionLog, which differ only in prefix,
  * tag, and the records they hand in.
  */
-export function createNdjsonSink({ dir, prefix, tag }: { dir: string; prefix: string; tag: string }) {
+export function createNdjsonSink({
+  dir,
+  prefix,
+  tag,
+  what,
+}: {
+  dir: string;
+  prefix: string;
+  tag: string;
+  /** Human noun phrase for the operator log lines, e.g. "raw GSI payloads" / "coach decisions". */
+  what: string;
+}) {
   const file = path.join(dir, `${prefix}${tsStamp()}.ndjson`);
   let stream: fs.WriteStream | null = null;
   let disabled = false;
 
   return {
-    /** The resolved file path, so callers can mention it (none currently do). */
-    get file(): string {
-      return file;
-    },
-    /** True once a write error or close() has shut the sink down for good. */
+    /** True once a write/open error has shut the sink down for good. */
     get disabled(): boolean {
       return disabled;
     },
@@ -46,23 +53,25 @@ export function createNdjsonSink({ dir, prefix, tag }: { dir: string; prefix: st
           // A dead stream (disk full, locked dir) must never crash or spam — warn once, stop.
           stream.on("error", (err) => {
             disabled = true;
-            log.warn(tag, `${prefix}log write failed (${err.message}) — logging off for this session`);
+            log.warn(tag, `${what} log write failed (${err.message}) — logging off for this session`);
           });
-          log.info(tag, `Recording to ${file}`);
+          log.info(tag, `Recording ${what} to ${file}`);
         } catch (err) {
           disabled = true;
-          log.warn(tag, `Could not open ${file} (${err instanceof Error ? err.message : String(err)}) — logging off`);
+          log.warn(tag, `Could not open the ${what} log ${file} (${err instanceof Error ? err.message : String(err)}) — logging off`);
           return;
         }
       }
       stream.write(JSON.stringify(record) + "\n");
     },
-    /** Flush and close the stream — called on shutdown so the final lines hit disk. */
+    /** Flush and close the stream — called on shutdown so the final lines hit disk. We do
+     *  NOT set `disabled` here: a write that lands after close() (e.g. a post-match recap
+     *  racing a SIGTERM) should lazily re-open and still record, not be silently dropped.
+     *  `disabled` is reserved for an actual write/open error. */
     async close(): Promise<void> {
       // Lazily opened, so the stream may never have been created — nothing to flush then.
       const s = stream;
       stream = null;
-      disabled = true;
       if (!s) return;
       await new Promise<void>((resolve) => {
         s.end(() => resolve());
