@@ -291,6 +291,15 @@ export const config = {
       // Speech rate multiplier, unlike the others — ElevenLabs accepts 0.7–1.2.
       // The DEFAULT rate; a voice can override it per-entry in ELEVENLABS_VOICES.
       speed: floatEnv("ELEVENLABS_SPEED", 1.0, 0.7, 1.2),
+      // optimize_streaming_latency (0–4): trades pre-first-byte prosody look-ahead
+      // for a faster time-to-first-audio on the /stream endpoint. 0 = off (omits the
+      // param). 3 = max latency optimization with the text normalizer still ON
+      // (measured ~290ms faster on the slow multilingual_v2 model, no number/date
+      // mispronunciation). 4 ADDITIONALLY disables the normalizer (fastest, but
+      // mangles "$3000"/"1:30") — avoid for a coach that talks economy. ElevenLabs
+      // deprecated this in favor of faster models, but it still works and earns its
+      // keep when pinned to a high-quality (slow) voice model. Default 3.
+      optimizeStreamingLatency: intEnv("ELEVENLABS_OPTIMIZE_LATENCY", 3, 0, 4),
     },
     edge: {
       voice: optional("EDGE_TTS_VOICE", "en-US-GuyNeural"),

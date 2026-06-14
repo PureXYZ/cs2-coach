@@ -26,6 +26,7 @@ function buildProvider(name: TtsProviderName): TtsProvider | null {
           style: config.tts.elevenlabs.style,
           speed: config.tts.elevenlabs.speed,
         },
+        config.tts.elevenlabs.optimizeStreamingLatency,
       );
     case "edge":
       return new EdgeTts(config.tts.edge.voice);
