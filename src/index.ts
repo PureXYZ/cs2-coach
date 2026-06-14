@@ -58,6 +58,22 @@ async function main(): Promise<void> {
   }
   const voice = new VoiceCoach(tts, config.voice.volume);
 
+  // Prewarm the static-line audio cache in the background so even the FIRST occurrence
+  // of a latency-critical line (the 10s bomb-timer, late-round, etc.) plays instantly.
+  // Fire-and-forget — it must never block startup, and it yields while the voice queue
+  // is busy so it can't starve a live coaching line.
+  if (config.tts.cache.enabled && config.tts.cache.prewarm) {
+    void tts
+      .prewarm(
+        voices().map((v) => v.voiceId),
+        { busy: () => voice.queueLength > 0 || voice.songActive },
+      )
+      .then((r) =>
+        log.info("main", `TTS cache prewarm done: ${r.cached} synthesized, ${r.skipped} already cached, ${r.failed} failed`),
+      )
+      .catch((err) => log.warn("main", `TTS cache prewarm error: ${err instanceof Error ? err.message : err}`));
+  }
+
   const llm = config.llm.enabled
     ? new LlmCoach({
         apiKey: config.llm.apiKey!,

@@ -346,9 +346,7 @@ export function economyLine(ctx: MatchContext, droppedTo?: Set<string>): string 
     ]);
 }
 
-export function bombPlantedLine(ourSide: string | undefined): string {
-  if (ourSide === "CT") {
-    return pick("plantedCT", [
+const PLANTED_CT = [
       "Plant's down. Forty seconds. Quit standing there like it's a moment of silence.",
       "They planted. Shocking. Regroup and hit it together, not one at a time like lemmings.",
       "Bomb's beeping, geniuses. Group up CT side and hit as five, nobody dies being a hero.",
@@ -363,10 +361,9 @@ export function bombPlantedLine(ourSide: string | undefined): string {
       "Forty on the clock means there's no rush. Group up and trade your damn teammates.",
       "Nobody peeks alone here. Five guns or we just hand them the round.",
       "Pop the util, breathe, push as one. The solo entry just feeds them a free kill.",
-    ]);
-  }
-  if (ourSide === "T") {
-    return pick("plantedT", [
+];
+
+const PLANTED_T = [
       "Bomb's down. Try not to undo that in the next ten seconds.",
       "Crossfires up, breathe through the timer, no hero peeks. A body on the bomb wins it.",
       "Hold your angles, let the clock cook them. You don't gotta find anybody.",
@@ -383,22 +380,29 @@ export function bombPlantedLine(ourSide: string | undefined): string {
       "You planted it, so stop playing like you're the one who needs a kill.",
       "No hunting, no re-peeking. Just hold and trade. Let the timer do the work.",
       "Crossfire's set, now don't blow it by wandering off looking for a frag.",
-    ]);
-  }
-  // Side unknown (e.g. just reconnected) — stay neutral.
-  return pick("plantedNeutral", [
+];
+
+const PLANTED_NEUTRAL = [
       "Bomb's down. Forty seconds. Someone's about to have a shit day.",
       "That's a plant. Clock's live. Look alive.",
       "Plant's in. Clock's the boss from here.",
       "Bomb's planted. Forty on the clock, and it's counting for somebody.",
       "Plant went in. Just gotta survive the beeping now.",
       "That's the plant. Whoever blinks first loses this one.",
-    ]);
+];
+
+export function bombPlantedLine(ourSide: string | undefined): string {
+  if (ourSide === "CT") {
+    return pick("plantedCT", PLANTED_CT);
+  }
+  if (ourSide === "T") {
+    return pick("plantedT", PLANTED_T);
+  }
+  // Side unknown (e.g. just reconnected) — stay neutral.
+  return pick("plantedNeutral", PLANTED_NEUTRAL);
 }
 
-export function bombDefusedLine(ourSide: string | undefined): string {
-  if (ourSide === "CT") {
-    return pick("defusedCT", [
+const DEFUSED_CT = [
       "Defused. We stole that shit. Act natural.",
       "Stuck it. Their plant, our paycheck. Love a refund.",
       "Wire's cut, round's ours. They can cry about it.",
@@ -409,10 +413,9 @@ export function bombDefusedLine(ourSide: string | undefined): string {
       "Cut the wire, took the round. They planted that thing for our benefit.",
       "Defused. Their plant, our W. I love a good robbery.",
       "That's a clean defuse. Whoever planted it just donated it to us.",
-    ]);
-  }
-  if (ourSide === "T") {
-    return pick("defusedT", [
+];
+
+const DEFUSED_T = [
       "They defused. Nobody watched the damn bomb. Incredible work, everyone.",
       "Our plant, their defuse. Watching it was the whole job.",
       "That bomb had zero babysitters. Now it's theirs. Cool cool.",
@@ -423,20 +426,27 @@ export function bombDefusedLine(ourSide: string | undefined): string {
       "Free defuse for them. Not one of you kept eyes on it.",
       "They cut the wire uncontested. The bomb was begging for one babysitter.",
       "Plant down, eyes off, round lost. Watching the bomb is not optional.",
-    ]);
-  }
-  return pick("defusedNeutral", [
+];
+
+const DEFUSED_NEUTRAL = [
       "Bomb's defused. Somewhere, a T player is screaming into a pillow.",
       "Defuse went through. Round's settled either way.",
       "Wire's cut. Somebody won, somebody whiffed.",
       "That's a defuse. The plant didn't pay out for one side.",
       "Defused. Round's decided on the wire.",
-    ]);
+];
+
+export function bombDefusedLine(ourSide: string | undefined): string {
+  if (ourSide === "CT") {
+    return pick("defusedCT", DEFUSED_CT);
+  }
+  if (ourSide === "T") {
+    return pick("defusedT", DEFUSED_T);
+  }
+  return pick("defusedNeutral", DEFUSED_NEUTRAL);
 }
 
-export function bombExplodedLine(ourSide: string | undefined): string {
-  if (ourSide === "T") {
-    return pick("explodedT", [
+const EXPLODED_T = [
       "Kaboom. That damn near looked rehearsed.",
       "There's the detonation. See what not re-peeking buys? A whole round.",
       "That's the sound of us getting paid.",
@@ -447,10 +457,9 @@ export function bombExplodedLine(ourSide: string | undefined): string {
       "Detonation. Turns out patience pays better than a hero peek.",
       "There's the payday. Held the post-plant and never blinked.",
       "Bomb went off. Nobody re-peeked it away for once. Miracle.",
-    ]);
-  }
-  if (ourSide === "CT") {
-    return pick("explodedCT", [
+];
+
+const EXPLODED_CT = [
       "Boom. That was ours. Retake was fucking late.",
       "It exploded. That retake never actually started. Round over.",
       "There goes the site. That retake was way too damn slow.",
@@ -461,15 +470,24 @@ export function bombExplodedLine(ourSide: string | undefined): string {
       "Boom. That's what dragging your feet on a retake gets you.",
       "It went off. The retake was a rumor, not a plan.",
       "There it goes. We had forty seconds and used zero of them. Round's done.",
-    ]);
-  }
-  return pick("explodedNeutral", [
+];
+
+const EXPLODED_NEUTRAL = [
       "That was the bomb. Somebody's payday, somebody's problem.",
       "Big boom. Round's decided one way or another.",
       "Detonation. The clock ran out on somebody.",
       "That's the bomb going off. Round's locked.",
       "Big one. Somebody won that exchange, somebody ate it.",
-    ]);
+];
+
+export function bombExplodedLine(ourSide: string | undefined): string {
+  if (ourSide === "T") {
+    return pick("explodedT", EXPLODED_T);
+  }
+  if (ourSide === "CT") {
+    return pick("explodedCT", EXPLODED_CT);
+  }
+  return pick("explodedNeutral", EXPLODED_NEUTRAL);
 }
 
 export function roundWonLine(ourScore: number, theirScore: number): string {
@@ -627,8 +645,7 @@ export function knifeKillLine(name?: string): string {
     ]);
 }
 
-export function zeusKillLine(): string {
-  return pick("zeusKill", [
+const ZEUS_KILL = [
       "Zeus kill. A hundred dollars of disrespect, paid in full.",
       "He had a rifle. You had a battery. Damn.",
       "Zapped. He's gonna hear that crackle in his sleep.",
@@ -639,7 +656,10 @@ export function zeusKillLine(): string {
       "Zeus to the dome. That's a guy who's gonna alt-F4 out of shame.",
       "You zapped a guy holding a rifle. He is never recovering from that.",
       "Battery kill. Dude got deleted by a glorified flashlight.",
-    ]);
+];
+
+export function zeusKillLine(): string {
+  return pick("zeusKill", ZEUS_KILL);
 }
 
 export function nadeKillLine(nade: "he" | "fire", kills = 1): string {
@@ -914,12 +934,7 @@ export function lastManStandingLine(name: string | undefined): string {
     ]);
 }
 
-/** Locally-derived clock callout: ~35 seconds left, no plant yet. */
-export function lateRoundLine(side: string | undefined, hasBomb = false): string {
-  // The player is personally carrying the C4 — the generic "someone plant"
-  // nudge lands very differently when the someone is them.
-  if (side === "T" && hasBomb) {
-    return pick("lateRoundCarrier", [
+const LATE_ROUND_CARRIER = [
       "That's a bomb on your back, not a camera. Thirty-five seconds. Go plant.",
       "Walking the bomb around like a dog on a leash. Thirty seconds. It needs a site, now.",
       "A or B, your pick, but pick one. You're carrying. Thirty-ish seconds.",
@@ -932,10 +947,9 @@ export function lateRoundLine(side: string | undefined, hasBomb = false): string
       "You're the carrier, not a tourist. Half a minute. Plant the C four in the ground.",
       "Bomb's on you, clock's at thirty-five. Stop dancing, commit to a site and plant.",
       "Nobody plants it for you, hero. You've got the C four. Hit a site before the clock does.",
-    ]);
-  }
-  if (side === "T") {
-    return pick("lateRoundT", [
+];
+
+const LATE_ROUND_T = [
       "Thirty-five seconds, no plant. Pick a site and hit it. Now.",
       "Clock's bleeding. Commit somewhere. The bomb isn't a souvenir.",
       "Tick tock. The default's over. Hit something.",
@@ -946,10 +960,9 @@ export function lateRoundLine(side: string | undefined, hasBomb = false): string
       "Thirty-five left and nothing's planted. You don't win this round until that bomb's down.",
       "Bomb in the ground beats one more pick. Hit a site and stick it.",
       "Default's done, clock's loud. Pick a site as five and plant the thing.",
-    ]);
-  }
-  if (side === "CT") {
-    return pick("lateRoundCT", [
+];
+
+const LATE_ROUND_CT = [
       "Thirty-five, no plant. The clock's on our payroll. Hold.",
       "No bomb down. Sit your ass tight and let them panic.",
       "Time pressure's all theirs. Camping's legal as hell right now.",
@@ -960,15 +973,30 @@ export function lateRoundLine(side: string | undefined, hasBomb = false): string
       "Clock's doing the work for us. Hold tight and make them force it.",
       "No bomb, no rush. Sit on your angle and let the timer squeeze them.",
       "We win if nothing happens. So make nothing happen. Hold.",
-    ]);
-  }
-  return pick("lateRoundNeutral", [
+];
+
+const LATE_ROUND_NEUTRAL = [
       "Thirty seconds, no plant. Somebody's about to panic. Don't be them.",
       "Clock's getting loud, no bomb down. Someone make a damn decision.",
       "Thirty left and the bomb's still in a pocket somewhere. Sort it out.",
       "No plant, clock's draining. Whatever the call is, make it now.",
       "Half a minute, nothing down. Stop drifting and lock in a play.",
-    ]);
+];
+
+/** Locally-derived clock callout: ~35 seconds left, no plant yet. */
+export function lateRoundLine(side: string | undefined, hasBomb = false): string {
+  // The player is personally carrying the C4 — the generic "someone plant"
+  // nudge lands very differently when the someone is them.
+  if (side === "T" && hasBomb) {
+    return pick("lateRoundCarrier", LATE_ROUND_CARRIER);
+  }
+  if (side === "T") {
+    return pick("lateRoundT", LATE_ROUND_T);
+  }
+  if (side === "CT") {
+    return pick("lateRoundCT", LATE_ROUND_CT);
+  }
+  return pick("lateRoundNeutral", LATE_ROUND_NEUTRAL);
 }
 
 /**
@@ -991,13 +1019,7 @@ export function lateRoundCarrierNamed(name: string): string {
     ]);
 }
 
-/** Locally-derived bomb-timer callout: roughly ten seconds left on the C4. */
-export function bombTenLine(side: string | undefined, fighting = false): string {
-  if (side === "CT") {
-    // Mid-fight: the player just got a kill — give them the clock, not a
-    // "back off" order aimed at someone who's clearly winning the exchange.
-    if (fighting) {
-      return pick("bombTenCTFighting", [
+const BOMB_TEN_CT_FIGHTING = [
       "Ten seconds, finish him fast. The bomb's not waiting for style points.",
       "Ten on the clock, drop him quick then kit or quit.",
       "Ten left, you're winning the duel, so win it now and bail.",
@@ -1006,9 +1028,9 @@ export function bombTenLine(side: string | undefined, fighting = false): string 
       "Ten left, you're swinging, so swing fast and don't eat the tick.",
       "Ten seconds, one more frag and reset. Make it quick.",
       "Ten on the bomb, win the fight now or the round wins for them.",
-    ]);
-    }
-    return pick("bombTenCT", [
+];
+
+const BOMB_TEN_CT = [
       "Ten seconds and you're nowhere near the bomb. Run, save the rifle.",
       "Ten on the clock, nobody's shooting you, so quit babysitting it and bail with the gun.",
       "Ten left, you can't defuse from there. Back out, keep the rifle.",
@@ -1023,13 +1045,9 @@ export function bombTenLine(side: string | undefined, fighting = false): string 
       "Ten seconds, you ain't defusing in time. Bail clean, don't gift them a free kill.",
       "Ten left, nothing you can do on that bomb. Get out, save the kit, reset.",
       "Ten on the clock, no defuse coming. Leave the site, keep your gun, don't eat the blast.",
-    ]);
-  }
-  if (side === "T") {
-    // Just got a kill near the planted bomb — almost certainly fighting a CT
-    // going for the defuse. Back the play; a "freeze" order would be wrong here.
-    if (fighting) {
-      return pick("bombTenTFighting", [
+];
+
+const BOMB_TEN_T_FIGHTING = [
       "Ten seconds, drop him then plant your ass back on the bomb.",
       "Ten left, that's probably the defuser. Kill him and sit on it.",
       "Ten on the clock, win that duel fast then freeze. The bomb does the rest.",
@@ -1038,12 +1056,9 @@ export function bombTenLine(side: string | undefined, fighting = false): string 
       "Ten on the clock, drop him quick and let the timer close it.",
       "Ten seconds, clap him then hold tight. Don't wander, the bomb wins it.",
       "Ten left, you're already swinging. Drop him and get back on the C four.",
-    ]);
-    }
-    // GSI never tells a T player whether a CT is defusing, so the only honest
-    // call is BOTH branches: peek to stop a defuse, hold if it's clear. (A live
-    // session flatly said "freeze, don't peek" while CTs were mid-defuse.)
-    return pick("bombTenT", [
+];
+
+const BOMB_TEN_T = [
       "Ten on the clock. Hear a tap, peek and kill it. Hear nothing, just hold.",
       "Ten left. Someone tapping the bomb? Swing and stop it. Quiet? Sit tight.",
       "Ten seconds. If you hear a defuse, go clap him. If it's silent, hold your angle.",
@@ -1058,9 +1073,9 @@ export function bombTenLine(side: string | undefined, fighting = false): string 
       "Ten seconds. If a CT's tapping it, peek and trade. If it's dry, hold and wait for the boom.",
       "Ten on the clock. Hear a defuse, end it. Hear quiet, hold tight, the timer's our friend.",
       "Ten left. Tap on the bomb means swing it. No tap means stay home and let it pop.",
-    ]);
-  }
-  return pick("bombTenNeutral", [
+];
+
+const BOMB_TEN_NEUTRAL = [
       "Ten on the bomb. This ends loud or it ends quiet.",
       "Ten seconds, no more waffling. Finish the damn round.",
       "Ten left. Whatever the play is, commit and close it out.",
@@ -1069,7 +1084,30 @@ export function bombTenLine(side: string | undefined, fighting = false): string 
       "Ten on the bomb, it's decided in the next breath. Commit.",
       "Ten left, no time to think twice. Pick a play and end it.",
       "Ten seconds, the round's basically over. Make it count.",
-    ]);
+];
+
+/** Locally-derived bomb-timer callout: roughly ten seconds left on the C4. */
+export function bombTenLine(side: string | undefined, fighting = false): string {
+  if (side === "CT") {
+    // Mid-fight: the player just got a kill — give them the clock, not a
+    // "back off" order aimed at someone who's clearly winning the exchange.
+    if (fighting) {
+      return pick("bombTenCTFighting", BOMB_TEN_CT_FIGHTING);
+    }
+    return pick("bombTenCT", BOMB_TEN_CT);
+  }
+  if (side === "T") {
+    // Just got a kill near the planted bomb — almost certainly fighting a CT
+    // going for the defuse. Back the play; a "freeze" order would be wrong here.
+    if (fighting) {
+      return pick("bombTenTFighting", BOMB_TEN_T_FIGHTING);
+    }
+    // GSI never tells a T player whether a CT is defusing, so the only honest
+    // call is BOTH branches: peek to stop a defuse, hold if it's clear. (A live
+    // session flatly said "freeze, don't peek" while CTs were mid-defuse.)
+    return pick("bombTenT", BOMB_TEN_T);
+  }
+  return pick("bombTenNeutral", BOMB_TEN_NEUTRAL);
 }
 
 /**
@@ -1543,9 +1581,7 @@ export function halftimeLine(ctx: MatchContext): string {
     ]);
 }
 
-export function matchPointLine(forUs: boolean): string {
-  return forUs
-    ? pick("matchPointUs", [
+const MATCH_POINT_US = [
       "Match point, us. Close it clean. No hero shit.",
       "One round from winning. Play it boring. Boring closes matches.",
       "We're on match point. Do not get cute. Cute is how teams lose match points.",
@@ -1556,8 +1592,9 @@ export function matchPointLine(forUs: boolean): string {
       "Win this and it's over. So play scared. Trade everything, dry-peek nothing, let them throw it away.",
       "Closing time. Match point. Default it, hold, trade. The boring round is the winning round.",
       "We need one. Don't go chasing frags for the clip. Play slow, play tight, take the dub.",
-    ])
-    : pick("matchPointThem", [
+];
+
+const MATCH_POINT_THEM = [
       "They have match point. Nobody saves a thing. Win or go down shooting.",
       "Must-win round. Use every nade you own. You can't take them with you.",
       "Lose this and we're queueing again. No saving guns for a round that won't fucking exist.",
@@ -1568,7 +1605,12 @@ export function matchPointLine(forUs: boolean): string {
       "They're a round from done. So don't give it to them. Full buy, full send, fight for every inch.",
       "Do or die. No eco, no save, no half-measures. Spend it all and take the round.",
       "One loss ends it, so there is no next round to save for. Buy everything and go win this one.",
-    ]);
+];
+
+export function matchPointLine(forUs: boolean): string {
+  return forUs
+    ? pick("matchPointUs", MATCH_POINT_US)
+    : pick("matchPointThem", MATCH_POINT_THEM);
 }
 
 export function matchEndLine(won: boolean | undefined, ourScore: number, theirScore: number): string {
@@ -1608,4 +1650,23 @@ export function matchEndLine(won: boolean | undefined, ourScore: number, theirSc
       `Final says ${ourScore}-${theirScore}. I caught none of it, so I'm withholding judgment. For once.`,
       `Match wrapped, ${ourScore}-${theirScore}. Couldn't tell you a thing about it. Shake it off, queue up.`,
     ]);
+}
+
+/**
+ * Every static, fully-resolved line the TTS layer is allowed to pre-synthesize and
+ * cache (no score/name/HP/money interpolation). Single source of truth for the TTS
+ * cache whitelist + the prewarm list — these are the same const arrays the pick()
+ * functions above draw from, so a line edited in one place can never drift from the
+ * cache. Raw (un-normalized) strings: the TTS layer normalizes once at synth time.
+ */
+export function cacheableLineTexts(): string[] {
+  return [
+    ...BOMB_TEN_CT_FIGHTING, ...BOMB_TEN_CT, ...BOMB_TEN_T_FIGHTING, ...BOMB_TEN_T, ...BOMB_TEN_NEUTRAL,
+    ...LATE_ROUND_CARRIER, ...LATE_ROUND_T, ...LATE_ROUND_CT, ...LATE_ROUND_NEUTRAL,
+    ...ZEUS_KILL,
+    ...PLANTED_CT, ...PLANTED_T, ...PLANTED_NEUTRAL,
+    ...DEFUSED_CT, ...DEFUSED_T, ...DEFUSED_NEUTRAL,
+    ...EXPLODED_T, ...EXPLODED_CT, ...EXPLODED_NEUTRAL,
+    ...MATCH_POINT_US, ...MATCH_POINT_THEM,
+  ];
 }
