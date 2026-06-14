@@ -66,6 +66,11 @@ type ActionInteraction = ChatInputCommandInteraction | ButtonInteraction | Strin
  *  auto-join fallbacks so the recovery instruction never drifts between sites. */
 const NOT_IN_VC = "Hop into a voice channel first, then try again (or tap the button below once you're in).";
 
+/** How long the coach waits, alone in a voice channel, before auto-leaving. A grace
+ *  window so a momentary disconnect or a quick channel-hop by the last human doesn't
+ *  tear down the connection (and pay the full join handshake again on the way back). */
+const AUTO_LEAVE_GRACE_MS = 60_000;
+
 /** The coach's playlist — Ogg/Opus files living in the repo, copied into the Docker
  *  image. Paths resolve from the working directory, which is the project root both
  *  locally and in the container (WORKDIR /app). */
@@ -268,6 +273,50 @@ export async function startBot(deps: BotDeps): Promise<Client> {
     }
   });
 
+  // Auto-leave an emptied channel: when the last human leaves the coach's voice
+  // channel, leave after a grace window so a forgotten `/coach leave` doesn't strand
+  // it talking to nobody (and a redeploy doesn't keep rejoining an empty room). The
+  // GuildVoiceStates intent — already on for @discordjs/voice — delivers these even
+  // though the coach joins selfDeaf: voice STATE (who's where) is separate from audio.
+  let autoLeaveTimer: ReturnType<typeof setTimeout> | null = null;
+  client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+    // The channel the coach is sitting in. connectedChannelId is null mid-handshake,
+    // so for the bot's OWN join event fall back to the channel it just entered — that's
+    // what lets a restart-rejoin into an already-empty channel get cleaned up too.
+    const botId = client.user?.id;
+    const coachChannelId =
+      deps.voice.connectedChannelId ?? (newState.id === botId ? newState.channelId : null);
+    if (!coachChannelId) return;
+    // Ignore the rest of a busy server's voice churn — only an update into or out of
+    // the coach's own channel can change whether it's alone in there.
+    if (oldState.channelId !== coachChannelId && newState.channelId !== coachChannelId) return;
+
+    const humans = humanCount(client, coachChannelId);
+    if (humans === null) return; // can't confirm membership — don't act on a cache miss
+
+    if (humans > 0) {
+      if (autoLeaveTimer) {
+        clearTimeout(autoLeaveTimer);
+        autoLeaveTimer = null;
+        log.info("bot", "Someone rejoined — auto-leave cancelled");
+      }
+      return;
+    }
+    if (autoLeaveTimer) return; // already counting down
+    log.info("bot", `Voice channel empty — leaving in ${AUTO_LEAVE_GRACE_MS / 1000}s unless someone rejoins`);
+    autoLeaveTimer = setTimeout(() => {
+      autoLeaveTimer = null;
+      // Re-verify at fire time: the coach may have moved, left, or had the channel
+      // refill during the grace. `?? 1` keeps an unresolvable channel from leaving.
+      if (!deps.voice.connected) return;
+      if ((humanCount(client, deps.voice.connectedChannelId) ?? 1) > 0) return;
+      deps.voice.leave();
+      clearVoiceChannel(); // treat like a deliberate leave — don't rejoin after a restart
+      resetMuteOnVoiceChange(client, deps); // don't carry a forgotten mute into the next session
+      log.info("bot", "Auto-left voice channel — everyone left");
+    }, AUTO_LEAVE_GRACE_MS);
+  });
+
   await client.login(deps.token);
   return client;
 }
@@ -416,6 +465,18 @@ function renderStatus(deps: BotDeps): string {
 }
 
 // ── voice (auto-)join ──────────────────────────────────────────────────────
+
+/** Count the non-bot members currently in a voice channel, or null when the channel
+ *  can't be resolved (gone from the cache, or not a voice channel). Callers treat null
+ *  as "can't confirm — don't act", so a transient cache miss never triggers a spurious
+ *  auto-leave. Members in voice are cached from the voice-state payload itself, so this
+ *  works without the privileged GuildMembers intent. */
+function humanCount(client: Client, channelId: string | null): number | null {
+  if (!channelId) return null;
+  const channel = client.channels.cache.get(channelId);
+  if (!channel?.isVoiceBased()) return null;
+  return channel.members.filter((m) => !m.user.bot).size;
+}
 
 type EnsureResult = { ok: true; joinedName: string | null } | { ok: false };
 

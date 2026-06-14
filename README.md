@@ -176,7 +176,7 @@ Set `COACH_TEAM_TACTICS=false` to switch the team-economy/drop calls off and kee
 |---|---|
 | `/coach setup` | DMs you the GSI config file plus where-to-drop-it steps — the no-software way for a friend to get connected (needs `COACH_PUBLIC_HOST` set) |
 | `/coach join` | Joins the voice channel you're in (a no-op if already there; reconnects if the connection went stale) |
-| `/coach leave` | Leaves voice |
+| `/coach leave` | Leaves voice. (The coach also leaves on its own ~60s after the last person leaves the channel, so a forgotten `/coach leave` never strands it talking to an empty room.) |
 | `/coach mute [state]` | Mutes/unmutes the coach mid-match (game tracking continues); `state:on`/`off` sets it explicitly, no arg toggles. Scoped to the session — joining or leaving a channel resets it to speaking, so a forgotten mute never carries over |
 | `/coach say <text> [voice]` | Speak arbitrary text (test); auto-joins your channel if needed; optional `voice` overrides the coach's voice for that one line |
 | `/coach voice [name]` | Switch the coach's voice (persists across restarts); leave `name` empty for a clickable picker |
