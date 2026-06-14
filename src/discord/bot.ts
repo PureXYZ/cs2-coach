@@ -73,6 +73,28 @@ export interface BotDeps {
     list: () => Array<{ key: string; label: string; value: string; envDefault: string }>;
     set: (key: string, raw: string | null) => { ok: boolean; message: string };
   };
+  /** Owner-only recorded-match-history ops (`/coachadmin sessions`). */
+  sessions: {
+    count: () => number;
+    recent: (n: number) => Array<{
+      endedAt: string;
+      map?: string;
+      won?: boolean;
+      ourScore: number;
+      theirScore: number;
+      kills?: number;
+      deaths?: number;
+    }>;
+    clear: () => number;
+    deleteLast: () => { map?: string; ourScore: number; theirScore: number } | null;
+  };
+  /** Owner-only TTS audio-cache ops (`/coachadmin tts`). cacheStats is null when the
+   *  cache is disabled; prewarm is fire-and-forget. */
+  tts: {
+    cacheStats: () => { entries: number; bytes: number } | null;
+    clearCache: () => { entries: number; bytes: number };
+    prewarm: () => void;
+  };
   status: () => {
     gsiAgeMs: number | null;
     ttsProviders: string[];
@@ -296,6 +318,22 @@ const adminCommand = new SlashCommandBuilder()
           .addStringOption((o) => o.setName("steamid64").setDescription("The SteamID64 to unlink"))
           .addUserOption((o) => o.setName("user").setDescription("Remove ALL links for this Discord user")),
       ),
+  )
+  .addSubcommandGroup((g) =>
+    g
+      .setName("sessions")
+      .setDescription("Inspect or prune recorded match history")
+      .addSubcommand((s) => s.setName("list").setDescription("Show the most recent recorded matches"))
+      .addSubcommand((s) => s.setName("delete-last").setDescription("Delete the most recent recorded match"))
+      .addSubcommand((s) => s.setName("clear").setDescription("Wipe ALL recorded match history")),
+  )
+  .addSubcommandGroup((g) =>
+    g
+      .setName("tts")
+      .setDescription("Inspect or manage the TTS audio cache")
+      .addSubcommand((s) => s.setName("stats").setDescription("Show cache size (entries + bytes)"))
+      .addSubcommand((s) => s.setName("prewarm").setDescription("Re-synthesize all cacheable lines in the background"))
+      .addSubcommand((s) => s.setName("clear").setDescription("Empty the TTS audio cache")),
   )
   .toJSON();
 
@@ -626,6 +664,72 @@ async function handleAdminCommand(interaction: ChatInputCommandInteraction, deps
     }
     return;
   }
+  if (group === "sessions") {
+    switch (sub) {
+      case "list":
+        await interaction.reply({ content: renderSessions(deps), flags: MessageFlags.Ephemeral });
+        return;
+      case "delete-last": {
+        const last = deps.sessions.recent(1)[0];
+        if (!last) {
+          await interaction.reply({ content: "No recorded matches on file.", flags: MessageFlags.Ephemeral });
+          return;
+        }
+        await interaction.reply({
+          content: `⚠️ Delete the most recent match — **${last.ourScore}-${last.theirScore}** ${last.map ?? "?"}?`,
+          components: [adminConfirmRow("admin:sessdel", "Delete")],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      case "clear": {
+        const n = deps.sessions.count();
+        if (n === 0) {
+          await interaction.reply({ content: "No recorded matches on file.", flags: MessageFlags.Ephemeral });
+          return;
+        }
+        await interaction.reply({
+          content: `⚠️ Wipe **all ${n}** recorded match${n === 1 ? "" : "es"}? This can't be undone.`,
+          components: [adminConfirmRow("admin:sessclear", "Wipe all")],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+    }
+    return;
+  }
+  if (group === "tts") {
+    switch (sub) {
+      case "stats":
+        await interaction.reply({ content: renderTts(deps), flags: MessageFlags.Ephemeral });
+        return;
+      case "prewarm":
+        deps.tts.prewarm();
+        await interaction.reply({
+          content: "🔥 Re-prewarm started in the background — already-cached lines are skipped. Check `/coachadmin tts stats` in a bit.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      case "clear": {
+        const stats = deps.tts.cacheStats();
+        if (!stats) {
+          await interaction.reply({ content: "TTS audio cache is disabled (`TTS_CACHE_ENABLED=false`).", flags: MessageFlags.Ephemeral });
+          return;
+        }
+        if (stats.entries === 0) {
+          await interaction.reply({ content: "TTS cache is already empty.", flags: MessageFlags.Ephemeral });
+          return;
+        }
+        await interaction.reply({
+          content: `⚠️ Clear **${stats.entries}** cached line${stats.entries === 1 ? "" : "s"} (${formatBytes(stats.bytes)})? They'll re-synthesize on next use (or run \`tts prewarm\`).`,
+          components: [adminConfirmRow("admin:ttsclear", "Clear cache")],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+    }
+    return;
+  }
   switch (sub) {
     case "status":
       await interaction.reply({ content: renderAdminStatus(deps), flags: MessageFlags.Ephemeral });
@@ -656,6 +760,36 @@ function renderSettings(deps: BotDeps): string {
   return ["**Live settings** — change with `/coachadmin set <key> <value>`. All reset to env on restart.", ...rows]
     .join("\n")
     .slice(0, 1990);
+}
+
+/** Owner `/coachadmin sessions list`: the most recent recorded matches (result, score,
+ *  map, own K/D, how long ago) — the history the cross-session form lines are built from. */
+function renderSessions(deps: BotDeps): string {
+  const recent = deps.sessions.recent(10);
+  if (recent.length === 0) return "No recorded matches on file yet.";
+  const now = Date.now();
+  const rows = recent.map((r) => {
+    const res = r.won === undefined ? "❔" : r.won ? "✅ W" : "❌ L";
+    const kd = r.kills !== undefined && r.deaths !== undefined ? ` — ${r.kills}/${r.deaths}` : "";
+    const ms = now - Date.parse(r.endedAt);
+    const when = Number.isFinite(ms) ? ` _(${humanAge(ms)} ago)_` : "";
+    return `• ${res} **${r.ourScore}-${r.theirScore}** ${r.map ?? "?"}${kd}${when}`;
+  });
+  return [`**Recent matches — ${deps.sessions.count()} on file (showing ${recent.length})**`, ...rows].join("\n").slice(0, 1990);
+}
+
+/** Owner `/coachadmin tts stats`: the audio cache size, or that it's disabled. */
+function renderTts(deps: BotDeps): string {
+  const stats = deps.tts.cacheStats();
+  if (!stats) return "TTS audio cache is **disabled** (`TTS_CACHE_ENABLED=false`).";
+  return `**TTS cache:** ${stats.entries} line${stats.entries === 1 ? "" : "s"}, ${formatBytes(stats.bytes)}.`;
+}
+
+/** Compact byte size (B/KB/MB) for the owner readouts. */
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /** Shared footnote: a manual link change is a stopgap — the per-payload auto-capture
@@ -779,6 +913,27 @@ async function handleAdminButton(interaction: ButtonInteraction, deps: BotDeps):
     const n = deps.links.removeAllForDiscord(b);
     await interaction.update({
       content: n > 0 ? `🗑️ Removed ${n} link${n === 1 ? "" : "s"} for <@${b}>.${LINK_STOPGAP_NOTE}` : `No links on file for <@${b}>.`,
+      components: [],
+    });
+    return;
+  }
+  if (action === "sessclear") {
+    const n = deps.sessions.clear();
+    await interaction.update({ content: `🗑️ Wiped ${n} recorded match${n === 1 ? "" : "es"}.`, components: [] });
+    return;
+  }
+  if (action === "sessdel") {
+    const r = deps.sessions.deleteLast();
+    await interaction.update({
+      content: r ? `🗑️ Deleted the last match (**${r.ourScore}-${r.theirScore}** ${r.map ?? "?"}).` : "Nothing to delete.",
+      components: [],
+    });
+    return;
+  }
+  if (action === "ttsclear") {
+    const removed = deps.tts.clearCache();
+    await interaction.update({
+      content: `🗑️ Cleared ${removed.entries} cached line${removed.entries === 1 ? "" : "s"} (${formatBytes(removed.bytes)}). Run \`/coachadmin tts prewarm\` to refill.`,
       components: [],
     });
     return;

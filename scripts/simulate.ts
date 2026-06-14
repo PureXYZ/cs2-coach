@@ -1983,5 +1983,33 @@ console.log("\n=== scenario: LinkStore — manual set/remove + reverse-map repai
 }
 
 // ---------------------------------------------------------------------------
+console.log("\n=== scenario: SessionStore — recent / delete-last / clear (owner ops) ===");
+{
+  const { SessionStore } = await import("../src/coach/session-store.js");
+  const fs = await import("node:fs");
+  const tmp = path.join(os.tmpdir(), `sim-sessions-ops-${process.pid}-${seen.length}.json`);
+  const store = new SessionStore(tmp);
+  const base = Date.now();
+  for (let i = 0; i < 3; i++) {
+    // Insertion order is chronological in real use (one record per matchEnd); recent()
+    // is newest-INSERTED-first, so the last pushed (de_map2) is the most recent.
+    store.record({ endedAt: new Date(base + i * 3_600_000).toISOString(), map: `de_map${i}`, won: i === 2, ourScore: 13, theirScore: i });
+  }
+  expect(store.count === 3, "three matches recorded");
+  const recent = store.recent(2);
+  expect(recent.length === 2 && recent[0].map === "de_map2", "recent(n) returns the most-recent first");
+
+  const removed = store.deleteLast();
+  expect(removed?.map === "de_map2" && store.count === 2, "deleteLast drops the most recent record");
+  expect(new SessionStore(tmp).count === 2, "deleteLast persisted across reload");
+
+  expect(store.clear() === 2 && store.count === 0, "clear wipes all and reports the count");
+  expect(new SessionStore(tmp).count === 0, "clear persisted across reload");
+  expect(store.clear() === 0, "clearing an empty store is a no-op");
+
+  try { fs.unlinkSync(tmp); } catch { /* best effort */ }
+}
+
+// ---------------------------------------------------------------------------
 console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`} — config timings: round=${config.timings.roundSeconds}s bomb=${config.timings.bombSeconds}s`);
 process.exit(failures === 0 ? 0 : 1);

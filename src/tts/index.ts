@@ -82,6 +82,17 @@ export class TtsChain {
     return this.providers.map((p) => p.name);
   }
 
+  /** Audio-cache size for the owner readout, or null when the cache is disabled. */
+  cacheStats(): { entries: number; bytes: number } | null {
+    return this.cache?.stats() ?? null;
+  }
+
+  /** Drop every cached line (owner-only, after confirm). Returns what was removed
+   *  ({0,0} when the cache is disabled). A prewarm() refills it. */
+  clearCache(): { entries: number; bytes: number } {
+    return this.cache?.clear() ?? { entries: 0, bytes: 0 };
+  }
+
   async synth(text: string, opts?: SynthOptions): Promise<TtsResult> {
     // Spell out bombsite/callout letters ("A site" → "Ay site") so providers
     // don't read a lone "A" as the article. Done once here, the single point

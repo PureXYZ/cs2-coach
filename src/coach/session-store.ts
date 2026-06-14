@@ -104,14 +104,18 @@ export class SessionStore {
   record(rec: SessionMatchRecord): void {
     this.records.push(rec);
     if (this.records.length > MAX_RECORDS) this.records = this.records.slice(-MAX_RECORDS);
+    this.persist();
+    log.info("sessions", `Recorded match ${rec.map ?? "?"} ${rec.ourScore}-${rec.theirScore} (${this.records.length} on file)`);
+  }
+
+  /** Atomic write of the current records. A crash mid-write leaves either the old or
+   *  the new complete file, never truncated JSON the constructor would discard. */
+  private persist(): void {
     try {
       mkdirSync(dirname(this.file), { recursive: true });
-      // Atomic write: a crash mid-write leaves either the old or the new
-      // complete file, never truncated JSON the constructor would discard.
       const tmp = this.file + ".tmp";
       writeFileSync(tmp, JSON.stringify(this.records, null, 2), "utf8");
       renameSync(tmp, this.file);
-      log.info("sessions", `Recorded match ${rec.map ?? "?"} ${rec.ourScore}-${rec.theirScore} (${this.records.length} on file)`);
     } catch (err) {
       log.warn("sessions", `Could not persist session history: ${err instanceof Error ? err.message : err}`);
     }
@@ -119,6 +123,34 @@ export class SessionStore {
 
   lastMatch(): SessionMatchRecord | undefined {
     return this.records[this.records.length - 1];
+  }
+
+  /** The most recent N matches, newest first — owner-only `/coachadmin sessions list`. */
+  recent(n: number): SessionMatchRecord[] {
+    return this.records.slice(-n).reverse();
+  }
+
+  /** Wipe ALL recorded matches (owner-only, after confirm). Returns how many were
+   *  removed — for clearing a polluted history (a practice/bot match that slipped the
+   *  recording guards, or a duplicate). */
+  clear(): number {
+    const n = this.records.length;
+    if (n === 0) return 0;
+    this.records = [];
+    this.persist();
+    log.info("sessions", `Cleared ${n} match record(s) on owner request`);
+    return n;
+  }
+
+  /** Drop just the most recent match (owner-only, after confirm) — the targeted fix for
+   *  one bad row without nuking the whole history. Returns the removed record, if any. */
+  deleteLast(): SessionMatchRecord | undefined {
+    const removed = this.records.pop();
+    if (removed) {
+      this.persist();
+      log.info("sessions", `Deleted last match (${removed.map ?? "?"} ${removed.ourScore}-${removed.theirScore}) on owner request`);
+    }
+    return removed;
   }
 
   /**

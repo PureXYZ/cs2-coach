@@ -416,6 +416,27 @@ async function main(): Promise<void> {
     // Owner-only live settings (/coachadmin set / settings). Session-scoped: the runtime
     // overrides reset to the env defaults on restart.
     settings: buildSettingsControl({ llm, voice }),
+    sessions: {
+      count: () => sessions.count,
+      recent: (n) => sessions.recent(n),
+      clear: () => sessions.clear(),
+      deleteLast: () => sessions.deleteLast() ?? null,
+    },
+    tts: {
+      cacheStats: () => tts.cacheStats(),
+      clearCache: () => tts.clearCache(),
+      // Fire-and-forget, mirroring the startup prewarm: skips already-cached lines and
+      // yields while a live coach line is speaking so it never competes for the provider.
+      prewarm: () => {
+        void tts
+          .prewarm(
+            voices().map((v) => v.voiceId),
+            { busy: () => voice.queueLength > 0 || voice.songActive },
+          )
+          .then((r) => log.info("main", `TTS cache re-prewarm done: ${r.cached} synthesized, ${r.skipped} already cached, ${r.failed} failed`))
+          .catch((err) => log.warn("main", `TTS cache re-prewarm error: ${err instanceof Error ? err.message : err}`));
+      },
+    },
     status: () => ({
       gsiAgeMs: gsi.lastPayloadAgeMs(),
       ttsProviders: tts.activeNames,
