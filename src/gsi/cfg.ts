@@ -19,6 +19,14 @@ export interface BuildCfgOptions {
   port?: string | number;
   /** Shared GSI auth token; the auth block is omitted entirely when empty. */
   token?: string;
+  /**
+   * Optional Discord user id to embed in the auth block. CS2 echoes EVERY auth
+   * key back in every payload, so this arrives as `auth.discordId` alongside the
+   * client's `provider.steamid` — letting the coach pair a feed's SteamID64 to the
+   * Discord user who installed this cfg (see src/links.ts). Set by `/coach setup`
+   * (which knows the invoking user); omitted by `npm run cfg` (no Discord context).
+   */
+  discordId?: string;
 }
 
 /** Resolve the `uri` line value from a host (+port) the same way for the CLI and
@@ -27,13 +35,23 @@ export function resolveUri(host: string, port: string | number = 3000): string {
   return /^https?:\/\//i.test(host) ? host.replace(/\/+$/, "") : `http://${host}:${port}`;
 }
 
-export function buildCfg({ host, port = 3000, token = "" }: BuildCfgOptions): string {
-  // Belt-and-suspenders: the token is already format-validated in config.ts, but
-  // buildCfg interpolates it raw into a quoted KeyValues string, so a token with a
-  // quote or newline would silently corrupt the cfg. Refuse rather than emit garbage.
-  if (token && /["\r\n]/.test(token)) {
-    throw new Error("GSI token contains characters that would corrupt the cfg (quotes or newlines)");
+export function buildCfg({ host, port = 3000, token = "", discordId }: BuildCfgOptions): string {
+  // The auth block carries every key verbatim, so any value with a quote or newline
+  // would silently corrupt the quoted KeyValues string. The token is already
+  // format-validated in config.ts and the Discord id is a numeric snowflake, but
+  // both are interpolated raw below — refuse anything cfg-breaking rather than emit
+  // garbage. (The block is omitted entirely when there's nothing to put in it.)
+  const authEntries: Array<[string, string]> = [];
+  if (token) authEntries.push(["token", token]);
+  if (discordId) authEntries.push(["discordId", discordId]);
+  for (const [key, value] of authEntries) {
+    if (/["\r\n]/.test(value)) {
+      throw new Error(`GSI auth value for "${key}" contains characters that would corrupt the cfg (quotes or newlines)`);
+    }
   }
+  const authBlock = authEntries.length
+    ? `  "auth"\n  {\n${authEntries.map(([k, v]) => `    "${k}"    "${v}"`).join("\n")}\n  }\n`
+    : "";
 
   const uri = resolveUri(host, port);
 
@@ -50,7 +68,7 @@ export function buildCfg({ host, port = 3000, token = "" }: BuildCfgOptions): st
   "buffer"     "0.1"
   "throttle"   "0.1"
   "heartbeat"  "10.0"
-${token ? `  "auth"\n  {\n    "token"    "${token}"\n  }\n` : ""}  "data"
+${authBlock}  "data"
   {
     "provider"               "1"
     "map"                    "1"
