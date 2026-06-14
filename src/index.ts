@@ -253,10 +253,12 @@ async function main(): Promise<void> {
   };
 
   // Leetify pre-match brief (map form / recency / aim trend) for the warmup + match-start
-  // lines. PRIMARY account only (roster.steamId()), one keyless /v3/profile fetch cached
-  // per map with a short TTL so warmup + round 1 share the round-trip while a later requeue
-  // refetches fresh. Best-effort: any failure resolves undefined so the greeting stays
-  // plain. Like the recap, the brief is qualitative, spoken once, and never stored.
+  // lines. Keyed on the PRIMARY account (roster.steamId()); when friends are wired and team
+  // tactics are on, it ALSO pulls a one-line form clause for each connected crew member
+  // (squadStartBrief), so the coach can fold the whole crew into the scouting read. One
+  // /v3/profile fetch per member (parallel), cached per map with a short TTL so warmup +
+  // round 1 share the round-trip while a later requeue refetches fresh. Best-effort: any
+  // failure resolves undefined so the greeting stays plain. Qualitative, spoken once, never stored.
   const startBriefTtlMs = 2 * 60_000;
   const startBriefCache = new Map<string, { at: number; p: Promise<LeetifyStartBrief | null | undefined> }>();
   const leetifyStartBrief =
@@ -268,12 +270,15 @@ async function main(): Promise<void> {
           const now = Date.now();
           let entry = startBriefCache.get(key);
           if (!entry || now - entry.at > startBriefTtlMs) {
-            const p = new LeetifyClient(config.leetify.apiKey)
-              .startBrief(steam64, map)
-              .catch((err) => {
-                log.warn("leetify", `Match-start brief failed (${err instanceof Error ? err.message : err}) — plain greeting`);
-                return undefined;
-              });
+            const client = new LeetifyClient(config.leetify.apiKey);
+            // Snapshot the connected crew now; with 2+ wired (and team tactics on) pull the
+            // whole crew's form, else just the primary's.
+            const crew = config.coach.teamTactics ? roster.connectedSquad() : [];
+            const hasFriends = crew.some((m) => !m.isPrimary && m.name);
+            const p = (hasFriends ? client.squadStartBrief(crew, map) : client.startBrief(steam64, map)).catch((err) => {
+              log.warn("leetify", `Match-start brief failed (${err instanceof Error ? err.message : err}) — plain greeting`);
+              return undefined;
+            });
             entry = { at: now, p };
             startBriefCache.set(key, entry);
           }

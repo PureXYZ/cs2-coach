@@ -452,8 +452,16 @@ function habitsNote(ctx: MatchContext): string {
 function leetifyStartClause(brief?: MatchContext["leetifyStart"]): string {
   if (!brief) return "";
   const facts = [brief.lastOnMap, brief.mapForm, brief.recentForm, brief.trend].filter(Boolean);
-  if (!facts.length) return "";
-  return ` What you already know about this player coming in (real — work in AT MOST ONE of these as your OWN read, never more, never invent a past result beyond what's listed, and do NOT name a stats site or any data source out loud — just know it): ${JSON.stringify(facts)}.`;
+  let clause = facts.length
+    ? ` What you already know about this player coming in (real — work in AT MOST ONE of these as your OWN read, never more, never invent a past result beyond what's listed, and do NOT name a stats site or any data source out loud — just know it): ${JSON.stringify(facts)}.`
+    : "";
+  // Wired crew connected this match — each friend's own recent form, name added here
+  // (sanitized). Aggregate or pick the standout; the persona's no-roll-call rule applies.
+  const crew = (brief.squad ?? []).map((s) => `${safeName(s.name)} ${s.note}`).filter((c) => c.trim());
+  if (crew.length) {
+    clause += ` How the WIRED CREW connected this match have been going (real, their own recent form — your read on the crew, no source name-drop): ${JSON.stringify(crew)}. Work the crew in, but do NOT roll-call every name — AGGREGATE ("you and ${safeName(brief.squad![0]!.name)} are both cold on this map") or call the ONE standout, and keep the player your anchor.`;
+  }
+  return clause;
 }
 
 /** True translation of GSI's win-condition token, relative to OUR side. */

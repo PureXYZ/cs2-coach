@@ -1806,6 +1806,35 @@ console.log("\n=== scenario: warmup mapLoading dispatches a (canned) scouting sp
 }
 
 // ---------------------------------------------------------------------------
+console.log("\n=== scenario: match-start brief folds in connected friends' form ===");
+{
+  const { describeMomentForTest } = await import("../src/coach/llm.js");
+  const ctxWithSquad: MatchContext = {
+    playerIsSelf: true,
+    map: "de_mirage",
+    mode: "competitive",
+    leetifyStart: {
+      mapForm: "you've been losing on Mirage lately",
+      squad: [
+        { name: "Sam", note: "has been losing on Mirage lately" },
+        { name: "Andy", note: "is on a win streak coming in" },
+      ],
+    },
+  };
+  const warmupPrompt = describeMomentForTest({ type: "mapLoading", map: "de_mirage", mode: "competitive" }, ctxWithSquad, true);
+  expect(warmupPrompt.includes("Sam") && warmupPrompt.includes("Andy"), "warmup prompt names the connected friends' form");
+  expect(/AGGREGATE|roll-call/i.test(warmupPrompt), "the squad clause warns against a name-by-name roll-call");
+  expect(warmupPrompt.includes("you've been losing on Mirage lately"), "the player's own form is still the anchor");
+  // Solo (no squad) must not invent a crew clause.
+  const soloPrompt = describeMomentForTest(
+    { type: "mapLoading", map: "de_mirage", mode: "competitive" },
+    { playerIsSelf: true, map: "de_mirage", mode: "competitive", leetifyStart: { mapForm: "you've been winning on Mirage lately" } },
+    true,
+  );
+  expect(!/WIRED CREW/i.test(soloPrompt), "no crew clause when the brief has no squad");
+}
+
+// ---------------------------------------------------------------------------
 console.log("\n=== scenario: recentForm suppresses map/streak lines when Leetify covers them ===");
 {
   const { SessionStore } = await import("../src/coach/session-store.js");
