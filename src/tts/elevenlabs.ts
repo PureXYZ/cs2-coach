@@ -23,8 +23,6 @@ export class ElevenLabsTts implements TtsProvider {
       style: number;
       speed: number;
     },
-    /** optimize_streaming_latency (0–4); 0 omits the param. See config.ts for the tradeoff. */
-    private readonly optimizeStreamingLatency: number = 0,
   ) {}
 
   available(): boolean {
@@ -41,11 +39,6 @@ export class ElevenLabsTts implements TtsProvider {
     const speed = findVoiceById(voiceId)?.speed ?? this.voiceSettings.speed;
     const url = new URL(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`);
     url.searchParams.set("output_format", "opus_48000_64");
-    // Faster time-to-first-audio by trading pre-first-byte prosody look-ahead. 0 is
-    // the API default no-op (and the param is deprecated), so omit it entirely there.
-    if (this.optimizeStreamingLatency > 0) {
-      url.searchParams.set("optimize_streaming_latency", String(this.optimizeStreamingLatency));
-    }
 
     // The timeout must guard only time-to-first-byte. The response body is an
     // audio stream consumed lazily DURING playback, so a fixed AbortSignal on the
