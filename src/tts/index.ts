@@ -3,6 +3,7 @@ import { log } from "../log.js";
 import { DeepgramTts } from "./deepgram.js";
 import { EdgeTts } from "./edge.js";
 import { ElevenLabsTts } from "./elevenlabs.js";
+import { normalizeForSpeech } from "./normalize.js";
 import type { SynthOptions, TtsProvider, TtsResult } from "./types.js";
 
 export type { SynthOptions, TtsProvider, TtsResult } from "./types.js";
@@ -55,11 +56,15 @@ export class TtsChain {
   }
 
   async synth(text: string, opts?: SynthOptions): Promise<TtsResult> {
+    // Spell out bombsite/callout letters ("A site" → "Ay site") so providers
+    // don't read a lone "A" as the article. Done once here, the single point
+    // every provider flows through, so logs upstream keep the readable text.
+    const spoken = normalizeForSpeech(text);
     let lastErr: unknown;
     for (const provider of this.providers) {
       const startedAt = Date.now();
       try {
-        const result = await provider.synth(text, opts);
+        const result = await provider.synth(spoken, opts);
         // Providers resolve once audio starts streaming, so this is time-to-first-audio.
         log.info("tts", `${provider.name} started streaming in ${Date.now() - startedAt}ms`);
         return result;
