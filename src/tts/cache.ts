@@ -11,13 +11,12 @@ import { join } from "node:path";
 import { Readable, Transform, finished } from "node:stream";
 import type { StreamType } from "@discordjs/voice";
 import { log } from "../log.js";
+import { NO_BACKPRESSURE_HWM } from "./constants.js";
 import { normalizeForSpeech } from "./normalize.js";
 import type { TtsResult } from "./types.js";
 
 /** Bump when the manifest shape or key scheme changes — an older index loads empty. */
 const MANIFEST_VERSION = 1;
-/** Oversized so a slow/prefetched reader never backpressures the source (mirrors idle.ts). */
-const NO_BACKPRESSURE_HWM = 8 * 1024 * 1024;
 /** Stop accumulating (but keep playing) if a whitelisted line is unexpectedly huge. */
 const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 

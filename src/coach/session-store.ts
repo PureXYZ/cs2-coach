@@ -149,17 +149,6 @@ export class SessionStore {
     return n;
   }
 
-  /** Drop just the most recent match (owner-only, after confirm) — the targeted fix for
-   *  one bad row without nuking the whole history. Returns the removed record, if any. */
-  deleteLast(): SessionMatchRecord | undefined {
-    const removed = this.records.pop();
-    if (removed) {
-      this.persist();
-      log.info("sessions", `Deleted last match (${removed.map ?? "?"} ${removed.ourScore}-${removed.theirScore}) on owner request`);
-    }
-    return removed;
-  }
-
   /** Remove the record with this exact endedAt (epoch ms). The delete-last confirm binds
    *  to a specific record's timestamp, so the click deletes the row that was PREVIEWED —
    *  never whatever is newest at click time (a match could have recorded mid-confirm).

@@ -13,7 +13,6 @@
 process.env.DISCORD_TOKEN ||= "simulator";
 process.env.ROUND_SECONDS = "2"; // shrink the clocks so timer callouts fire in ms
 process.env.BOMB_SECONDS = "13";
-process.env.FREEZETIME_SECONDS = "1";
 // Multi-feed: a squad of 3 lets the roster tests exercise BOTH the honest-partial
 // path (2 of 3 wired → rosterComplete false, always hedge) and the whole-team
 // certainty path (all 3 wired → rosterComplete true, last-man calls unlock).
@@ -1570,11 +1569,33 @@ console.log("\n=== scenario: B2 — chooseRibTarget rotates the rib spotlight ac
     mk("Mouse", "kept dying early on the entry"),
     mk("Cadian", "dropped an ace this match"),
   ];
+  // chooseRibTarget is now PURE — it only READS recentRibbed. The rotation advances
+  // at AIRING time (LlmCoach.commitSpoken): the aired pick is pushed and the list is
+  // trimmed to the pool-relative cap max(candidates-1, 1). Replicate that here so the
+  // loop exercises the same rotation a run of real break-moment lines would.
+  const candidateCount = crew.filter((m) => !m.isPrimary && m.tier === "fresh" && m.name).length;
+  const ribCap = Math.max(candidateCount - 1, 1);
   const recent: string[] = [];
-  const picks = Array.from({ length: 6 }, () => chooseRibTarget(crew, recent)?.name);
+  const picks = Array.from({ length: 6 }, () => {
+    const name = chooseRibTarget(crew, recent)?.name;
+    if (name) {
+      recent.push(name); // commit-time advancement (LlmCoach.commitSpoken)
+      while (recent.length > ribCap) recent.shift();
+    }
+    return name;
+  });
   expect(picks.every((p) => p !== undefined), "always picks a fresh named non-primary teammate");
   expect(picks.every((p, i) => i === 0 || p !== picks[i - 1]), `no back-to-back repeats across breaks (got ${JSON.stringify(picks)})`);
   expect(picks.filter((p) => p === "Mouse").length === 3, `even rotation, not skewed to one friend (${JSON.stringify(picks)})`);
+
+  // PURE contract: repeated calls with the SAME recentRibbed return the SAME pick —
+  // the rotation only moves when the caller commits the aired pick (above), never as
+  // a side effect of chooseRibTarget itself.
+  const fixed: string[] = [];
+  expect(
+    chooseRibTarget(crew, fixed)?.name === chooseRibTarget(crew, fixed)?.name && fixed.length === 0,
+    "chooseRibTarget is pure — no mutation of recentRibbed, identical pick for identical input",
+  );
 
   // Prefers a teammate we have a note on (an honest hook) over a note-less one.
   const mixed: TeamMember[] = [
@@ -1995,7 +2016,7 @@ console.log("\n=== scenario: LinkStore — manual set/remove + reverse-map repai
 }
 
 // ---------------------------------------------------------------------------
-console.log("\n=== scenario: SessionStore — recent / delete-last / clear (owner ops) ===");
+console.log("\n=== scenario: SessionStore — recent / delete-by-ended-at / clear (owner ops) ===");
 {
   const { SessionStore } = await import("../src/coach/session-store.js");
   const fs = await import("node:fs");
@@ -2011,17 +2032,14 @@ console.log("\n=== scenario: SessionStore — recent / delete-last / clear (owne
   const recent = store.recent(2);
   expect(recent.length === 2 && recent[0].map === "de_map2", "recent(n) returns the most-recent first");
 
-  const removed = store.deleteLast();
-  expect(removed?.map === "de_map2" && store.count === 2, "deleteLast drops the most recent record");
-  expect(new SessionStore(tmp).count === 2, "deleteLast persisted across reload");
-
-  // deleteByEndedAt targets a SPECIFIC record (the delete-last confirm binds to its
+  // deleteByEndedAt targets a SPECIFIC record (the delete confirm binds to its
   // timestamp), so a match recorded during the confirm window can't get deleted instead.
   expect(store.deleteByEndedAt(base)?.map === "de_map0", "deleteByEndedAt removes the targeted record");
-  expect(store.count === 1, "only the targeted record was removed");
+  expect(store.count === 2, "only the targeted record was removed");
+  expect(new SessionStore(tmp).count === 2, "deleteByEndedAt persisted across reload");
   expect(store.deleteByEndedAt(999) === undefined, "deleteByEndedAt is a no-op for an unknown timestamp");
 
-  expect(store.clear() === 1 && store.count === 0, "clear wipes all and reports the count");
+  expect(store.clear() === 2 && store.count === 0, "clear wipes all and reports the count");
   expect(new SessionStore(tmp).count === 0, "clear persisted across reload");
   expect(store.clear() === 0, "clearing an empty store is a no-op");
 

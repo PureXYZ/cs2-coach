@@ -179,6 +179,10 @@ function parseVoices(raw: string, fallbackVoiceId: string): CoachVoice[] {
 // Shared so config validation and the multi-feed roster agree on what binds.
 export const STEAMID64_RE = /^7656\d{13}$/;
 
+// A Discord snowflake is a 17–20 digit numeric id. Single source of truth shared
+// by config validation (owner/guild ids) and the Steam<->Discord link store.
+export const DISCORD_ID_RE = /^\d{17,20}$/;
+
 // COACH_PRIMARY_STEAM64 must be a real SteamID64 or it silently never matches a
 // feed's provider.steamid — the primary then never binds and memory/Leetify
 // quietly attach to whoever connects first. Fail loudly at startup instead.
@@ -205,6 +209,19 @@ function effortEnv(name: string, fallback: string): string {
   return raw;
 }
 
+// A closed-set string env (e.g. LEETIFY_SQUAD_RECAP). Reads ONCE and THROWS on an
+// unrecognized value rather than silently coercing it to the fallback — a typo'd
+// mode would otherwise quietly pick the wrong recap behaviour. Same fail-loud style
+// as effortEnv/steamId64Env.
+function enumEnv<T extends string>(name: string, allowed: readonly T[], fallback: T): T {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  if (!(allowed as readonly string[]).includes(raw)) {
+    throw new Error(`${name} must be one of ${allowed.join(", ")}, got "${raw}"`);
+  }
+  return raw as T;
+}
+
 // GSI_TOKEN is interpolated verbatim into the generated KeyValues cfg; a quote,
 // space or newline would break that file's syntax. Restrict it to cfg-safe chars
 // and fail at startup rather than emit a malformed cfg.
@@ -224,7 +241,7 @@ function tokenEnv(name: string): string {
 function discordIdEnv(name: string): string | undefined {
   const raw = process.env[name];
   if (!raw) return undefined;
-  if (!/^\d{17,20}$/.test(raw)) {
+  if (!DISCORD_ID_RE.test(raw)) {
     throw new Error(`${name} must be a Discord id (17–20 digits), got "${raw}"`);
   }
   return raw;
@@ -296,7 +313,7 @@ export const config = {
       model: optional("DEEPGRAM_TTS_MODEL", "aura-2-apollo-en"),
       // Deepgram's Opus default is a muffled 12 kbps; 64 kbps matches Discord's
       // own voice bitrate. Billing is per character, so this costs nothing extra.
-      bitrate: intEnv("DEEPGRAM_TTS_BITRATE", 64000),
+      bitrate: intEnv("DEEPGRAM_TTS_BITRATE", 64000, 8000, 510000),
     },
     elevenlabs: {
       apiKey: optional("ELEVENLABS_API_KEY") || undefined,
@@ -368,11 +385,12 @@ export const config = {
     // defaults to "high"; "low" is ~20% faster for these one-liner replies.
     // Only sent on smart-tier calls (Haiku errors on it); empty string = omit.
     effort: effortEnv("COACH_LLM_EFFORT", "low"),
-    maxTokens: intEnv("COACH_LLM_MAX_TOKENS", 150),
+    maxTokens: intEnv("COACH_LLM_MAX_TOKENS", 150, 16, 4096),
     // Freezetime is ~15s; if Claude hasn't answered by then the line is useless.
-    timeoutMs: intEnv("COACH_LLM_TIMEOUT_MS", 9000),
+    // Min 1000ms so a 0/negative can't make the abort fire before the request starts.
+    timeoutMs: intEnv("COACH_LLM_TIMEOUT_MS", 9000, 1000),
     // Mid-round calls go stale even faster (a retake call is worthless at 12s post-plant).
-    fastTimeoutMs: intEnv("COACH_LLM_FAST_TIMEOUT_MS", 6000),
+    fastTimeoutMs: intEnv("COACH_LLM_FAST_TIMEOUT_MS", 6000, 1000),
   },
 
   coach: {
@@ -439,17 +457,13 @@ export const config = {
     // "full" (default) reads a short line for every wired friend so the coach can
     // roast the whole board; "leaders" only names whoever topped each stat (gentler
     // — won't air a friend's worst number); "off" keeps the recap to the player alone.
-    squadRecap: (["leaders", "full", "off"].includes(optional("LEETIFY_SQUAD_RECAP", "full"))
-      ? optional("LEETIFY_SQUAD_RECAP", "full")
-      : "full") as "leaders" | "full" | "off",
+    squadRecap: enumEnv("LEETIFY_SQUAD_RECAP", ["off", "leaders", "full"], "full"),
   },
 
   // CS2 Premier/Competitive timing constants (MR12 era). GSI sends no clock to players,
   // so these drive locally derived timers. Not officially documented by Valve — adjust
-  // here if Valve changes them. Note: Premier freezetime is 20s (competitive MM is 15);
-  // only ROUND_SECONDS/BOMB_SECONDS feed the clock callouts, so the default is safe either way.
+  // here if Valve changes them. Only ROUND_SECONDS/BOMB_SECONDS feed the clock callouts.
   timings: {
-    freezetimeSeconds: intEnv("FREEZETIME_SECONDS", 15),
     roundSeconds: intEnv("ROUND_SECONDS", 115),
     bombSeconds: intEnv("BOMB_SECONDS", 40),
   },

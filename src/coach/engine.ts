@@ -253,7 +253,10 @@ export class CoachEngine {
         this.warmupSpeechGiven = false; // re-arm (committed from the speech's onPlayed, not here)
         this.matchStarted = false; // re-arm: a new pre-game; round 1 hasn't begun
         void this.deps.leetifyStartBrief?.(event.map);
-        if (runtime.warmupSpeech && !this.deps.isQuiet?.() && this.passesCooldown("warmupSpeech")) {
+        // No outer passesCooldown("warmupSpeech") here: tacticalMoment re-checks the
+        // SAME bucket and nothing reserves it in between (passesCooldown is pure), so
+        // an outer check would be redundant.
+        if (runtime.warmupSpeech && !this.deps.isQuiet?.()) {
           this.tacticalMoment(
             event,
             ctx,
@@ -664,19 +667,10 @@ export class CoachEngine {
     const eventAt = Date.now();
     // Reserve the category at launch, not at resolution: while the LLM call is
     // in flight the cooldown would otherwise read as cold and a duplicate event
-    // could start a second line for the same moment. Capture the prior value
-    // first (ITEM 10): if nothing is ultimately spoken, this in-flight reservation
-    // must be RELEASED (restored, or deleted if there was none) so a dropped line
-    // doesn't burn the whole cooldown window for the category.
-    const priorReservation = this.lastSpokenAt.get(category);
-    this.lastSpokenAt.set(category, eventAt);
-    const releaseReservation = (): void => {
-      // Only release OUR reservation: a success path (say()) or a later event may
-      // have overwritten it with a newer stamp, which must stand.
-      if (this.lastSpokenAt.get(category) !== eventAt) return;
-      if (priorReservation === undefined) this.lastSpokenAt.delete(category);
-      else this.lastSpokenAt.set(category, priorReservation);
-    };
+    // could start a second line for the same moment. The release (ITEM 10) restores
+    // the prior stamp (or deletes it) so a line that's never spoken doesn't burn the
+    // whole cooldown window — but only while the reservation is still ours.
+    const releaseReservation = this.reserveCooldown(category, eventAt);
 
     // stillRelevant rides along into the voice queue: the LLM-resolution check
     // below catches a moment that died while Claude thought, but the line can
@@ -886,39 +880,46 @@ export class CoachEngine {
     const delayMs = startedAt !== null ? baseDelay - (Date.now() - startedAt) : baseDelay;
     if (delayMs <= 0) return;
     this.lateRoundTimer = setTimeout(() => {
-      this.lateRoundTimer = null;
-      if (!this.payloadFresh()) {
-        log.debug("engine", "clock: payload-stale (GSI went quiet, lateRound bail)");
-        return; // GSI went quiet — don't talk into a dead game
-      }
-      const ctx = this.getCtx();
-      // Dead/spectating: a "hold your angles" clock nudge is advice a corpse
-      // can't take (a live session heard one ~minute after dying). Also covers
-      // the death-cam window where GSI still reports the dead self (playerIsSelf
-      // true, health 0) before the auto-spectate switch. Stay quiet.
-      // Primary dead/spectating: the second-person clock nudge below is advice a corpse
-      // can't take. BUT if a WIRED teammate is carrying the C4 with no plant this late,
-      // that's the single highest-value late call — name them for the squad (no random skip).
-      if (!ctx.playerIsSelf || (ctx.health ?? 0) <= 0) {
-        if (ctx.roundPhase === "live" && !ctx.bomb && ctx.ourSide === "T" && ctx.team?.bombCarrierName) {
-          const carrier = ctx.team.bombCarrierName;
-          this.say(() => lines.lateRoundCarrierNamed(carrier), { category: "clock", priority: 2, maxAgeMs: 8_000 });
-        } else {
-          log.debug("engine", "clock: dead-spectating (lateRound bail)");
+      // A malformed frame can make getCtx()/the context read throw — an unguarded
+      // throw inside setTimeout escapes to uncaughtException and exits the process.
+      // Log and swallow so a single bad frame can't kill the coach.
+      try {
+        this.lateRoundTimer = null;
+        if (!this.payloadFresh()) {
+          log.debug("engine", "clock: payload-stale (GSI went quiet, lateRound bail)");
+          return; // GSI went quiet — don't talk into a dead game
         }
-        return;
+        const ctx = this.getCtx();
+        // Dead/spectating: a "hold your angles" clock nudge is advice a corpse
+        // can't take (a live session heard one ~minute after dying). Also covers
+        // the death-cam window where GSI still reports the dead self (playerIsSelf
+        // true, health 0) before the auto-spectate switch. Stay quiet.
+        // Primary dead/spectating: the second-person clock nudge below is advice a corpse
+        // can't take. BUT if a WIRED teammate is carrying the C4 with no plant this late,
+        // that's the single highest-value late call — name them for the squad (no random skip).
+        if (!ctx.playerIsSelf || (ctx.health ?? 0) <= 0) {
+          if (ctx.roundPhase === "live" && !ctx.bomb && ctx.ourSide === "T" && ctx.team?.bombCarrierName) {
+            const carrier = ctx.team.bombCarrierName;
+            this.say(() => lines.lateRoundCarrierNamed(carrier), { category: "clock", priority: 2, maxAgeMs: 8_000 });
+          } else {
+            log.debug("engine", "clock: dead-spectating (lateRound bail)");
+          }
+          return;
+        }
+        if (ctx.roundPhase !== "live" || ctx.bomb) {
+          log.debug("engine", "clock: round-resolved (lateRound bail — phase/bomb moved on)");
+          return; // round resolved or bomb already down
+        }
+        // Carrying the C4 with no plant this late is always worth the words;
+        // the generic nudge keeps its random skip so it isn't every-round nagging.
+        if (!ctx.hasBomb && Math.random() < 0.5) {
+          log.debug("engine", "clock: random-skip (lateRound nudge, not carrying bomb)");
+          return;
+        }
+        this.say(() => lines.lateRoundLine(ctx.ourSide, ctx.hasBomb ?? false), { category: "clock", priority: 2, maxAgeMs: 8_000 });
+      } catch (err) {
+        log.error("coach", "lateRound clock callout failed", err);
       }
-      if (ctx.roundPhase !== "live" || ctx.bomb) {
-        log.debug("engine", "clock: round-resolved (lateRound bail — phase/bomb moved on)");
-        return; // round resolved or bomb already down
-      }
-      // Carrying the C4 with no plant this late is always worth the words;
-      // the generic nudge keeps its random skip so it isn't every-round nagging.
-      if (!ctx.hasBomb && Math.random() < 0.5) {
-        log.debug("engine", "clock: random-skip (lateRound nudge, not carrying bomb)");
-        return;
-      }
-      this.say(() => lines.lateRoundLine(ctx.ourSide, ctx.hasBomb ?? false), { category: "clock", priority: 2, maxAgeMs: 8_000 });
     }, delayMs);
   }
 
@@ -933,26 +934,33 @@ export class CoachEngine {
     const delayMs = startedAt !== null ? baseDelay - (Date.now() - startedAt) : baseDelay;
     if (delayMs <= 0) return;
     this.bombTimer = setTimeout(() => {
-      this.bombTimer = null;
-      if (!this.payloadFresh()) {
-        log.debug("engine", "clock: payload-stale (GSI went quiet, bomb bail)");
-        return; // GSI went quiet — the frozen ctx would lie
+      // A malformed frame can make getCtx()/the context read throw — an unguarded
+      // throw inside setTimeout escapes to uncaughtException and exits the process.
+      // Log and swallow so a single bad frame can't kill the coach.
+      try {
+        this.bombTimer = null;
+        if (!this.payloadFresh()) {
+          log.debug("engine", "clock: payload-stale (GSI went quiet, bomb bail)");
+          return; // GSI went quiet — the frozen ctx would lie
+        }
+        const ctx = this.getCtx();
+        // Dead/spectating (incl. the death-cam window: self, health 0) — "bail" or
+        // "hold the bomb" is meaningless to a corpse.
+        if (!ctx.playerIsSelf || (ctx.health ?? 0) <= 0) {
+          log.debug("engine", "clock: dead-spectating (bomb bail)");
+          return;
+        }
+        if (ctx.bomb !== "planted" || ctx.roundPhase !== "live") {
+          log.debug("engine", "clock: round-resolved (bomb bail — defused/exploded/over)");
+          return; // defused/exploded/over already
+        }
+        // A recent kill means the player is mid-fight: give them the clock, not a
+        // "back off and live" order they're actively (and rightly) disobeying.
+        const fighting = ctx.lastKillSecondsAgo !== undefined && ctx.lastKillSecondsAgo <= 12;
+        this.say(() => lines.bombTenLine(ctx.ourSide, fighting), { category: "clock", priority: 3, maxAgeMs: 5_000 });
+      } catch (err) {
+        log.error("coach", "bomb clock callout failed", err);
       }
-      const ctx = this.getCtx();
-      // Dead/spectating (incl. the death-cam window: self, health 0) — "bail" or
-      // "hold the bomb" is meaningless to a corpse.
-      if (!ctx.playerIsSelf || (ctx.health ?? 0) <= 0) {
-        log.debug("engine", "clock: dead-spectating (bomb bail)");
-        return;
-      }
-      if (ctx.bomb !== "planted" || ctx.roundPhase !== "live") {
-        log.debug("engine", "clock: round-resolved (bomb bail — defused/exploded/over)");
-        return; // defused/exploded/over already
-      }
-      // A recent kill means the player is mid-fight: give them the clock, not a
-      // "back off and live" order they're actively (and rightly) disobeying.
-      const fighting = ctx.lastKillSecondsAgo !== undefined && ctx.lastKillSecondsAgo <= 12;
-      this.say(() => lines.bombTenLine(ctx.ourSide, fighting), { category: "clock", priority: 3, maxAgeMs: 5_000 });
     }, delayMs);
   }
 
@@ -1036,14 +1044,7 @@ export class CoachEngine {
     // OURS, so a newer line that overwrote it (or a superseding line) keeps the cooldown.
     let release: (() => void) | undefined;
     if (opts.manageCooldown !== false) {
-      const stamp = Date.now();
-      const prior = this.lastSpokenAt.get(opts.category);
-      this.lastSpokenAt.set(opts.category, stamp);
-      release = () => {
-        if (this.lastSpokenAt.get(opts.category) !== stamp) return;
-        if (prior === undefined) this.lastSpokenAt.delete(opts.category);
-        else this.lastSpokenAt.set(opts.category, prior);
-      };
+      release = this.reserveCooldown(opts.category);
     }
     this.speak({
       text,
@@ -1060,6 +1061,23 @@ export class CoachEngine {
         opts.onDropped?.();
       },
     });
+  }
+
+  /**
+   * Reserve a category's cooldown at `stamp` (defaults to now), capturing the prior
+   * stamp, and return a release closure. The release restores the prior stamp ONLY if
+   * the reservation is still ours (a success path or a later event may have overwritten
+   * it with a newer stamp, which must stand). Used both at LLM-launch (tacticalMoment)
+   * and at enqueue (say) so a dropped line doesn't starve the next valid moment.
+   */
+  private reserveCooldown(category: string, stamp: number = Date.now()): () => void {
+    const prior = this.lastSpokenAt.get(category);
+    this.lastSpokenAt.set(category, stamp);
+    return () => {
+      if (this.lastSpokenAt.get(category) !== stamp) return;
+      if (prior === undefined) this.lastSpokenAt.delete(category);
+      else this.lastSpokenAt.set(category, prior);
+    };
   }
 
   private passesCooldown(category: string): boolean {

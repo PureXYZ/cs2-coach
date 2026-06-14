@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { tsStamp } from "./ndjson-sink.js";
 import { runtime } from "./runtime-overrides.js";
 
 function ts(): string {
@@ -25,7 +26,7 @@ export const log = {
     if (sink) return;
     try {
       fs.mkdirSync(dir, { recursive: true });
-      const stamp = new Date().toISOString().replace(/:/g, "-").slice(0, 19);
+      const stamp = tsStamp();
       const stream = fs.createWriteStream(path.join(dir, `coach-${stamp}.log`), { flags: "a" });
       stream.on("error", () => {
         sink = null;

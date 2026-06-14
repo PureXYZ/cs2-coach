@@ -22,6 +22,10 @@ const remote = "bash /root/deploy.sh";
 
 console.log(`Deploying GitHub main to ${host} ...`);
 const result = spawnSync("ssh", [host, remote], { stdio: "inherit" });
+if (result.error) {
+  console.error("Could not run ssh:", result.error.message);
+  process.exit(1);
+}
 if (result.status === 0) {
   console.log("\nDeployed. If the coach was in voice, run /coach join again.");
 }

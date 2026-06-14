@@ -469,7 +469,6 @@ export class GsiTracker {
       if (bomb === "planted") {
         events.push({ type: "bombPlanted", ourSide });
         this.bombPlantedAt = now;
-        this.memory.recordBombPlanted(this.liveRound);
       }
       if (bomb === "defused") {
         events.push({ type: "bombDefused", ourSide });
@@ -856,10 +855,6 @@ export class GsiTracker {
     return this.lastKnownSide;
   }
 
-  isInMatch(): boolean {
-    return this.inMatch;
-  }
-
   /** True when a delayed line (the Leetify recap) can speak without talking
    *  over play: no live match, GSI silent for 2+ minutes (game closed), or
    *  the latest payload is a menu frame (no map block — the player left or
@@ -1025,12 +1020,12 @@ export class GsiTracker {
     for (const w of Object.values(player.weapons)) {
       if (w.type !== "Grenade") continue;
       const units = Math.max(1, (w.ammo_clip ?? 0) + (w.ammo_reserve ?? 0));
-      const name = w.name.replace(/^weapon_/, "");
+      const name = String(w.name ?? "").replace(/^weapon_/, "");
       for (let i = 0; i < units; i++) nades.push(name);
     }
 
     return {
-      primary: primary.name.replace(/^weapon_/, ""),
+      primary: String(primary.name ?? "").replace(/^weapon_/, ""),
       primaryType: primary.type,
       clip: primary.ammo_clip,
       reserve: primary.ammo_reserve,
@@ -1091,13 +1086,13 @@ export class GsiTracker {
     if (!wins) return undefined;
     const keys = Object.keys(wins).map(Number).filter(Number.isFinite);
     if (keys.length === 0) return undefined;
-    return wins[String(Math.max(...keys))];
+    return wins[String(keys.reduce((m, n) => (n > m ? n : m), -Infinity))];
   }
 
   private weaponNames(player: GsiPlayer | undefined): string[] | undefined {
     if (!player?.weapons) return undefined;
     return Object.values(player.weapons)
-      .filter((w) => w.type !== "Knife" && w.name !== "weapon_knife")
+      .filter((w) => typeof w?.name === "string" && w.type !== "Knife" && w.name !== "weapon_knife")
       .map((w) => w.name.replace(/^weapon_/, ""));
   }
 }

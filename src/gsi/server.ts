@@ -24,6 +24,7 @@ const MAX_BODY_BYTES = 1_000_000;
 export function startGsiServer(opts: GsiServerOptions): GsiServerHandle {
   let lastPayloadAt: number | null = null;
   let warnedBadToken = false;
+  let warnedBadShape = false;
 
   const server = http.createServer((req, res) => {
     if (req.method === "GET") {
@@ -66,6 +67,27 @@ export function startGsiServer(opts: GsiServerOptions): GsiServerHandle {
         return;
       }
 
+      // Cheap runtime shape guard on the hot fields the rules read. JSON.parse is
+      // assigned straight to a typed GsiPayload, so a malformed POST (round:"5")
+      // would type-confuse downstream logic ("5" + 1 → "51"). Drop the frame if a
+      // present field is the wrong type. We don't deep-walk weapons — weapon-name
+      // safety lives in the tracker.
+      if (
+        (payload.map?.round !== undefined && typeof payload.map.round !== "number") ||
+        (payload.player?.state?.health !== undefined && typeof payload.player.state.health !== "number") ||
+        (payload.map?.team_ct?.score !== undefined && typeof payload.map.team_ct.score !== "number") ||
+        (payload.map?.team_t?.score !== undefined && typeof payload.map.team_t.score !== "number")
+      ) {
+        if (!warnedBadShape) {
+          warnedBadShape = true;
+          log.warn(
+            "gsi",
+            "Received payload with malformed hot fields (wrong type for round/health/score) — dropping frame (warning shown once)",
+          );
+        }
+        return;
+      }
+
       if (opts.token && payload.auth?.token !== opts.token) {
         if (!warnedBadToken) {
           warnedBadToken = true;
@@ -97,7 +119,15 @@ export function startGsiServer(opts: GsiServerOptions): GsiServerHandle {
     process.exit(1);
   });
 
-  // Bind to all interfaces — the POSTs come from another machine on the LAN.
+  if (opts.token === "") {
+    log.warn(
+      "gsi",
+      "GSI_TOKEN is empty — accepting UNAUTHENTICATED game state from any host on 0.0.0.0. Set GSI_TOKEN for a public/VPS deployment so only your CS2 client can post.",
+    );
+  }
+
+  // Bind to all interfaces — the gaming PC POSTs to this coach over the network,
+  // and the preferred deployment is a public/VPS host (not just the LAN).
   server.listen(opts.port, "0.0.0.0", () => {
     log.info("gsi", `Listening for CS2 game state on http://0.0.0.0:${opts.port}`);
   });
