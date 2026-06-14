@@ -56,7 +56,7 @@ async function main(): Promise<void> {
   if (tts.activeNames.includes("elevenlabs")) {
     log.info("main", `ElevenLabs voice: ${currentVoice().label} (${voices().length} selectable via /coach voice)`);
   }
-  const voice = new VoiceCoach(tts);
+  const voice = new VoiceCoach(tts, config.voice.volume);
 
   const llm = config.llm.enabled
     ? new LlmCoach({

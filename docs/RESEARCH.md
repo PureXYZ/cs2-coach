@@ -50,12 +50,12 @@ Critical implementation gotchas (all encoded in `src/gsi/tracker.ts`):
 - ✅ **discord.js 14.26.4 + @discordjs/voice 0.19.2** (Node ≥ 22.12) — DAVE ships as a hard dependency via `@snazzah/davey`, with prebuilt binaries for the major platforms (no compiler needed). **This is the stack used.**
 - ✅ discord.py 2.7.1 `[voice]` — viable second choice (DAVE wheels for mac/win).
 - ❌ Pycord — voice broken since DAVE enforcement (issue #3135 open).
-- ❌ Any pre-2025 tutorial/library (@discordjs/voice < 0.19, opusscript, sodium deps).
+- ❌ Any pre-2025 tutorial/library (@discordjs/voice < 0.19, sodium deps). (`opusscript` itself is fine — it's used for the inline-volume re-encode path; see below.)
 
 Other verified facts driving the implementation:
 - On Node ≥ 22.12 no sodium library is needed (built-in aes-256-gcm).
 - **ffmpeg is skippable**: feeding pre-encoded Ogg/Opus or WebM/Opus into `createAudioResource` uses a demux-only path; raw 48 kHz s16le PCM uses an Opus-encode-only path. The TTS providers were chosen to emit these formats natively.
-- `@discordjs/opus` is stale; if Opus decode is ever needed, use **mediaplex**.
+- Opus decode/encode is only needed off the demux-only path — currently just `COACH_VOLUME` ≠ 1, which routes coach lines through decode→gain→re-encode. The pinned `@discordjs/voice` 0.19.2 → `prism-media` 1.3.5 loads only `@discordjs/opus`, `node-opus`, or `opusscript` (NOT mediaplex, despite its popularity — that needs a newer prism-media). We use **`opusscript`**: pure-JS, no native build, ideal for the droplet; one voice stream's decode+encode is trivial CPU.
 - Queue pattern: one persistent VoiceConnection + one AudioPlayer; play next on `AudioPlayerStatus.Idle`. Never rejoin per clip (each join = handshake + DAVE/MLS group join).
 - `GuildVoiceStates` is not a privileged intent. Home NAT works without port forwarding (outbound WSS 443 + UDP hole-punching to ports 50000–65535).
 

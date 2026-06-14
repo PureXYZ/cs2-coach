@@ -1,4 +1,5 @@
 import { createReadStream } from "node:fs";
+import type { Readable } from "node:stream";
 import {
   AudioPlayerStatus,
   NoSubscriberBehavior,
@@ -57,10 +58,24 @@ export class VoiceCoach {
    *  (pump only plays on Idle) and whatever aged out by the end gets dropped. */
   private songPlaying = false;
 
-  constructor(private readonly tts: TtsChain) {
+  /**
+   * @param volume Playback gain for coach lines (COACH_VOLUME). 1 = source level,
+   *   the zero-transcode fast path. Any other value enables inline volume — see
+   *   makeResource for the tradeoff.
+   */
+  constructor(
+    private readonly tts: TtsChain,
+    private readonly volume = 1,
+  ) {
     this.player = createAudioPlayer({
       behaviors: { noSubscriber: NoSubscriberBehavior.Pause },
     });
+    if (this.volume !== 1) {
+      log.info(
+        "voice",
+        `Coach playback gain ${this.volume} — lines take the Opus re-encode path (opusscript), ~tens of ms extra latency`,
+      );
+    }
     this.player.on(AudioPlayerStatus.Idle, () => {
       this.songPlaying = false;
       this.pump();
@@ -402,10 +417,27 @@ export class VoiceCoach {
       });
   }
 
+  /**
+   * Build the Discord audio resource for a coach line, applying COACH_VOLUME.
+   * At unity volume (the default) this is the zero-transcode fast path: the
+   * provider's pre-encoded Opus is demuxed straight to Discord — no codec runs.
+   * A non-unity gain enables @discordjs/voice's inline volume, which can only act
+   * on PCM, so the line is routed Opus-decode → gain → Opus-re-encode (via the
+   * opusscript codec). That costs a native-free codec dependency and ~one Opus
+   * frame of latency — hence it's opt-in and off by default. Songs don't go
+   * through here, so they always play at source level.
+   */
+  private makeResource(stream: Readable, inputType: StreamType) {
+    if (this.volume === 1) return createAudioResource(stream, { inputType });
+    const resource = createAudioResource(stream, { inputType, inlineVolume: true });
+    resource.volume?.setVolume(this.volume);
+    return resource;
+  }
+
   private playLine(line: QueuedLine, result: TtsResult): void {
     log.info("voice", `Speaking [${line.category}] ${Date.now() - line.eventAt}ms after event: ${preview(line, 1_000)}`);
     this.finalize(line, true); // it is airing now → commit the engine's durable cooldown / anti-repeat
-    this.player.play(createAudioResource(result.stream, { inputType: result.inputType }));
+    this.player.play(this.makeResource(result.stream, result.inputType));
     // Start synthesizing the next queued line while this one talks.
     queueMicrotask(() => this.pump());
   }
