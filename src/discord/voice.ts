@@ -82,7 +82,7 @@ export class VoiceCoach {
           : `${this.volume}`;
       log.info(
         "voice",
-        `Coach playback gain (${detail}) — affected lines take the Opus re-encode path (opusscript), ~a few ms extra latency`,
+        `Coach playback gain (${detail}) — affected lines take the FFmpeg transcode path, ~a few ms extra latency`,
       );
     }
     this.player.on(AudioPlayerStatus.Idle, () => {
@@ -445,11 +445,11 @@ export class VoiceCoach {
    * Build the Discord audio resource for a coach line, applying the resolved gain.
    * At unity volume (the default) this is the zero-transcode fast path: the
    * provider's pre-encoded Opus is demuxed straight to Discord — no codec runs.
-   * A non-unity gain enables @discordjs/voice's inline volume, which can only act
-   * on PCM, so the line is routed Opus-decode → gain → Opus-re-encode (via the
-   * opusscript codec). That costs a native-free codec dependency and a few ms of
-   * latency (benchmarked ~5 ms) — hence it's opt-in and off by default. Songs don't go
-   * through here, so they always play at source level.
+   * A non-unity gain enables @discordjs/voice's inline volume, which works on PCM, so
+   * the line is transcoded through FFmpeg (OggOpus → PCM → gain → Opus). FFmpeg is
+   * bundled in the image for exactly this (see the Dockerfile); the per-line overhead
+   * is a few ms — negligible next to the ~700 ms TTS time-to-first-audio. Songs don't
+   * go through here, so they always play at source level.
    */
   private makeResource(stream: Readable, inputType: StreamType, volume: number) {
     if (volume === 1) return createAudioResource(stream, { inputType });
