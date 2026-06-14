@@ -311,9 +311,9 @@ export function economyLine(ctx: MatchContext, droppedTo?: Set<string>): string 
       "Weird buy round. Half a buy each is a full waste. Everyone makes the same call.",
       "Don't solo buy. Don't solo save. The team picks one, you copy it. Wild concept.",
       "Mixed buys are why my hair's gray. One plan, five people. Decide fast.",
-      "Tweener money. Lone-wolfing the buy menu helps exactly fucking nobody. Force or save as a team.",
+      "Lone-wolfing the buy menu helps exactly fucking nobody. Force or save, just do it as five.",
       "In-between money. Match the team or sit it out. A half-buy alone just feeds them.",
-      "Tweener cash. Force together or save together, but pick one and all five commit.",
+      "Not broke, not loaded. Force together or save together, but pick one and all five commit.",
       "No-man's-land money. Whatever the team does, you do too. Solo buys lose rounds.",
       "Awkward stack. Don't be the one guy with a rifle on a save. Match the boys, period.",
     ]);
