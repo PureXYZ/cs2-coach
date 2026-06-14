@@ -51,6 +51,40 @@ export interface CoachVoice {
   label: string;
   /** The ElevenLabs voice id this speaks with. */
   voiceId: string;
+  /** Per-voice speech-rate multiplier (ElevenLabs, 0.7–1.2). Undefined = inherit
+   *  the global ELEVENLABS_SPEED. */
+  speed?: number;
+  /** Per-voice playback gain (0.1–2, like COACH_VOLUME). Undefined = inherit the
+   *  global COACH_VOLUME. Applied at playback only when ElevenLabs synthesized the line. */
+  volume?: number;
+}
+
+// ElevenLabs accepts a 0.7–1.2 speech-rate multiplier; playback gain matches
+// COACH_VOLUME's 0.1–2 range. Shared so the env validation and the dashboards agree.
+const VOICE_SPEED_RANGE = [0.7, 1.2] as const;
+const VOICE_VOLUME_RANGE = [0.1, 2] as const;
+
+/**
+ * Validate an optional per-voice numeric setting peeled off an ELEVENLABS_VOICES
+ * entry. The value is already known-numeric (the peel only takes numeric tails),
+ * so this just range-checks it — a typo'd speed would otherwise reach ElevenLabs
+ * as a per-line 422 and silently demote the provider; a typo'd volume would just
+ * play at a wrong gain. Fail loudly at startup instead, like floatEnv.
+ */
+function voiceSetting(
+  raw: string | undefined,
+  field: "speed" | "volume",
+  entry: string,
+  [min, max]: readonly [number, number],
+): number | undefined {
+  if (raw === undefined) return undefined;
+  const n = Number.parseFloat(raw);
+  if (n < min || n > max) {
+    throw new Error(
+      `ELEVENLABS_VOICES entry "${entry}" ${field} must be between ${min} and ${max}, got "${raw}"`,
+    );
+  }
+  return n;
 }
 
 /** label → stable slug for the Discord choice value / persisted selection. */
@@ -63,9 +97,12 @@ function voiceKey(label: string): string {
 }
 
 /**
- * Parse ELEVENLABS_VOICES — a comma-separated list of `Label:voiceId` pairs, the
- * first of which is the default switchable voice. When it's unset there's a
- * single unnamed voice using `fallbackVoiceId` (ELEVENLABS_VOICE_ID), so the app
+ * Parse ELEVENLABS_VOICES — a comma-separated list of `Label:voiceId[:speed[:volume]]`
+ * entries, the first of which is the default switchable voice. `speed` (0.7–1.2)
+ * and `volume` (0.1–2) are optional per-voice overrides of the global
+ * ELEVENLABS_SPEED / COACH_VOLUME; omit them to inherit the globals (to set only
+ * volume, give speed too, since they're positional). When the list is unset there's
+ * a single unnamed voice using `fallbackVoiceId` (ELEVENLABS_VOICE_ID), so the app
  * works with no voice list configured. Throws on a malformed list rather than
  * silently shipping a broken voice id. (Voice ids/names are deployment config —
  * they live in the env, never hard-coded here.)
@@ -74,13 +111,32 @@ function parseVoices(raw: string, fallbackVoiceId: string): CoachVoice[] {
   if (!raw.trim()) return [{ key: "default", label: "Default", voiceId: fallbackVoiceId }];
   const voices: CoachVoice[] = [];
   const seen = new Set<string>();
+  const seenVoiceIds = new Set<string>();
+  const numeric = /^\d+(?:\.\d+)?$/;
   for (const entry of raw.split(",").map((s) => s.trim()).filter(Boolean)) {
-    // Split on the LAST colon: a voiceId never contains one, but a label might.
-    const sep = entry.lastIndexOf(":");
-    const label = sep > 0 ? entry.slice(0, sep).trim() : "";
-    const voiceId = sep > 0 ? entry.slice(sep + 1).trim() : "";
+    // A label may contain colons but a voiceId never does, so parse from the
+    // RIGHT: peel up to two trailing NUMERIC fields (speed then volume) off the
+    // end — but never the colon that separates Label from voiceId (keep one).
+    // What's left is the original `Label:voiceId`, split on its last colon as before.
+    let work = entry;
+    const settings: string[] = [];
+    while (settings.length < 2) {
+      const dot = work.lastIndexOf(":");
+      if (dot < 0) break;
+      const tail = work.slice(dot + 1).trim();
+      const head = work.slice(0, dot);
+      // Stop if the tail isn't a number, or peeling it would consume the
+      // Label:voiceId colon (so a digit-only voiceId is never mistaken for a setting).
+      if (!numeric.test(tail) || !head.includes(":")) break;
+      settings.unshift(tail);
+      work = head;
+    }
+    const [speedRaw, volumeRaw] = settings;
+    const sep = work.lastIndexOf(":");
+    const label = sep > 0 ? work.slice(0, sep).trim() : "";
+    const voiceId = sep > 0 ? work.slice(sep + 1).trim() : "";
     if (!label || !voiceId) {
-      throw new Error(`ELEVENLABS_VOICES entry "${entry}" must be "Label:voiceId"`);
+      throw new Error(`ELEVENLABS_VOICES entry "${entry}" must be "Label:voiceId" (optionally ":speed:volume")`);
     }
     // Discord caps a slash-command choice name at 100 chars — fail loudly here
     // rather than letting addChoices() throw opaquely and break registration of
@@ -91,15 +147,29 @@ function parseVoices(raw: string, fallbackVoiceId: string): CoachVoice[] {
     // ElevenLabs voice ids are alphanumeric. Reject a typo at startup instead of
     // shipping it into the request URL and getting a per-line 4xx that silently
     // demotes the provider mid-match (same reasoning as intEnv/floatEnv above).
+    // The format reminder also catches a mis-typed setting that landed in the
+    // voiceId slot (e.g. a stray "1.5" or "0.9x" — those fail this same check).
     if (!/^[A-Za-z0-9]+$/.test(voiceId)) {
-      throw new Error(`ELEVENLABS_VOICES entry "${entry}" has an invalid voiceId "${voiceId}"`);
+      throw new Error(
+        `ELEVENLABS_VOICES entry "${entry}" has an invalid voiceId "${voiceId}" — expected "Label:voiceId[:speed[:volume]]" (speed 0.7-1.2, volume 0.1-2)`,
+      );
     }
+    // Per-voice speed/volume are resolved by voiceId (findVoiceById), so the same
+    // id across two entries would make every lookup return the FIRST entry's
+    // tuning — a silently wrong rate/gain for the rest. Give each switchable voice
+    // a distinct id; fail loudly here like the other malformed-list cases.
+    if (seenVoiceIds.has(voiceId)) {
+      throw new Error(`ELEVENLABS_VOICES lists voiceId "${voiceId}" more than once — each switchable voice needs a distinct voice id`);
+    }
+    seenVoiceIds.add(voiceId);
+    const speed = voiceSetting(speedRaw, "speed", entry, VOICE_SPEED_RANGE);
+    const volume = voiceSetting(volumeRaw, "volume", entry, VOICE_VOLUME_RANGE);
     // Disambiguate colliding/empty slugs so every choice value stays unique.
     const base = voiceKey(label) || `voice-${voices.length + 1}`;
     let key = base;
     for (let n = 2; seen.has(key); n++) key = `${base}-${n}`;
     seen.add(key);
-    voices.push({ key, label, voiceId });
+    voices.push({ key, label, voiceId, speed, volume });
   }
   if (voices.length === 0) throw new Error("ELEVENLABS_VOICES is set but contains no valid voices");
   return voices;
@@ -219,6 +289,7 @@ export const config = {
       similarityBoost: floatEnv("ELEVENLABS_SIMILARITY", 1.0, 0, 1),
       style: floatEnv("ELEVENLABS_STYLE", 0.5, 0, 1),
       // Speech rate multiplier, unlike the others — ElevenLabs accepts 0.7–1.2.
+      // The DEFAULT rate; a voice can override it per-entry in ELEVENLABS_VOICES.
       speed: floatEnv("ELEVENLABS_SPEED", 1.0, 0.7, 1.2),
     },
     edge: {
@@ -239,6 +310,7 @@ export const config = {
     // (may clip). Range 0.1–2 — silencing the coach is /coach mute's job, not a 0 here.
     // This affects coach lines only — playlist songs always play at source level.
     // For a per-listener change, Discord's right-click → User Volume slider is better.
+    // The DEFAULT gain; an ElevenLabs voice can override it per-entry in ELEVENLABS_VOICES.
     volume: floatEnv("COACH_VOLUME", 1.0, 0.1, 2),
   },
 

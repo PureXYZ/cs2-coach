@@ -23,6 +23,13 @@ export function findVoice(key: string): CoachVoice | undefined {
   return voices().find((v) => v.key === key);
 }
 
+/** Look a voice up by its ElevenLabs voice id, so the synth/playback layers can
+ *  read its per-voice speed/volume from the id they already have. Returns the
+ *  first match (a voice id is normally unique in the registry). */
+export function findVoiceById(voiceId: string): CoachVoice | undefined {
+  return voices().find((v) => v.voiceId === voiceId);
+}
+
 // Lazily resolved on first use (so the startup deprecation log fires once, in
 // order), then cached and updated in place by setVoice().
 let current: CoachVoice | null = null;

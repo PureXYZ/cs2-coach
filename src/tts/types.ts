@@ -5,6 +5,12 @@ export interface TtsResult {
   stream: Readable;
   /** Tells @discordjs/voice how to ingest it without ffmpeg. */
   inputType: StreamType;
+  /** The ElevenLabs voice id this audio was actually synthesized with, when the
+   *  ElevenLabs provider produced it. Lets the player apply that voice's per-voice
+   *  volume to the right audio (even a prefetched line, synthesized before a later
+   *  voice switch). Unset for providers without switchable voices (Deepgram/Edge)
+   *  → playback falls back to the global COACH_VOLUME. */
+  voiceId?: string;
 }
 
 export interface SynthOptions {

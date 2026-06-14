@@ -16,6 +16,7 @@ import type { VoiceBasedChannel } from "discord.js";
 import { log } from "../log.js";
 import type { SpeakRequest } from "../coach/engine.js";
 import type { TtsChain, TtsResult } from "../tts/index.js";
+import { findVoiceById, voices } from "../tts/voices.js";
 
 interface QueuedLine extends SpeakRequest {
   enqueuedAt: number;
@@ -59,9 +60,10 @@ export class VoiceCoach {
   private songPlaying = false;
 
   /**
-   * @param volume Playback gain for coach lines (COACH_VOLUME). 1 = source level,
-   *   the zero-transcode fast path. Any other value enables inline volume — see
-   *   makeResource for the tradeoff.
+   * @param volume Default playback gain for coach lines (COACH_VOLUME). 1 = source
+   *   level, the zero-transcode fast path. Any other value — or any ElevenLabs voice
+   *   with its own per-voice volume — enables inline volume per line; see makeResource
+   *   for the tradeoff.
    */
   constructor(
     private readonly tts: TtsChain,
@@ -70,10 +72,17 @@ export class VoiceCoach {
     this.player = createAudioPlayer({
       behaviors: { noSubscriber: NoSubscriberBehavior.Pause },
     });
-    if (this.volume !== 1) {
+    // Any non-unity gain (the default OR a per-voice override) routes the affected
+    // lines through the re-encode path — note it once at startup so the latency is no surprise.
+    const overrides = voices().filter((v) => v.volume !== undefined && v.volume !== 1);
+    if (this.volume !== 1 || overrides.length > 0) {
+      const detail =
+        overrides.length > 0
+          ? `default ${this.volume}; per-voice ${overrides.map((v) => `${v.label}=${v.volume}`).join(", ")}`
+          : `${this.volume}`;
       log.info(
         "voice",
-        `Coach playback gain ${this.volume} — lines take the Opus re-encode path (opusscript), ~a few ms extra latency`,
+        `Coach playback gain (${detail}) — affected lines take the Opus re-encode path (opusscript), ~a few ms extra latency`,
       );
     }
     this.player.on(AudioPlayerStatus.Idle, () => {
@@ -418,7 +427,22 @@ export class VoiceCoach {
   }
 
   /**
-   * Build the Discord audio resource for a coach line, applying COACH_VOLUME.
+   * The playback gain for a line: the per-voice volume of the ElevenLabs voice that
+   * actually synthesized it (when set), else the global COACH_VOLUME default. Keyed
+   * off the synthesized voice id carried back in the TtsResult, so it's correct even
+   * for a prefetched line and never applies an ElevenLabs voice's gain to a
+   * Deepgram/Edge line (those leave voiceId unset).
+   */
+  private volumeFor(result: TtsResult): number {
+    if (result.voiceId) {
+      const volume = findVoiceById(result.voiceId)?.volume;
+      if (volume !== undefined) return volume;
+    }
+    return this.volume;
+  }
+
+  /**
+   * Build the Discord audio resource for a coach line, applying the resolved gain.
    * At unity volume (the default) this is the zero-transcode fast path: the
    * provider's pre-encoded Opus is demuxed straight to Discord — no codec runs.
    * A non-unity gain enables @discordjs/voice's inline volume, which can only act
@@ -427,17 +451,17 @@ export class VoiceCoach {
    * latency (benchmarked ~5 ms) — hence it's opt-in and off by default. Songs don't go
    * through here, so they always play at source level.
    */
-  private makeResource(stream: Readable, inputType: StreamType) {
-    if (this.volume === 1) return createAudioResource(stream, { inputType });
+  private makeResource(stream: Readable, inputType: StreamType, volume: number) {
+    if (volume === 1) return createAudioResource(stream, { inputType });
     const resource = createAudioResource(stream, { inputType, inlineVolume: true });
-    resource.volume?.setVolume(this.volume);
+    resource.volume?.setVolume(volume);
     return resource;
   }
 
   private playLine(line: QueuedLine, result: TtsResult): void {
     log.info("voice", `Speaking [${line.category}] ${Date.now() - line.eventAt}ms after event: ${preview(line, 1_000)}`);
     this.finalize(line, true); // it is airing now → commit the engine's durable cooldown / anti-repeat
-    this.player.play(this.makeResource(result.stream, result.inputType));
+    this.player.play(this.makeResource(result.stream, result.inputType, this.volumeFor(result)));
     // Start synthesizing the next queued line while this one talks.
     queueMicrotask(() => this.pump());
   }
