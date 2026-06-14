@@ -73,7 +73,7 @@ sleep 5
 docker logs --tail 8 coach 2>&1
 ```
 
-(The `coach-state` volume persists the last-joined voice channel — so a restarted coach rejoins automatically; `/coach leave` clears it — the `/coach voice` selection, and `sessions.json`, the cross-session match history the coach's "remember last night" callbacks come from.)
+(The `coach-state` volume persists the last-joined voice channel — so a restarted coach rejoins automatically; `/coach leave`, or the coach auto-leaving an emptied channel, clears it — the `/coach voice` selection, and `sessions.json`, the cross-session match history the coach's "remember last night" callbacks come from.)
 
 Two ways to trigger it:
 
