@@ -90,9 +90,9 @@ cp .env.example .env
 ### 3. Pick your TTS voice
 
 - **Deepgram (recommended):** sign up at https://console.deepgram.com (no card needed, **$200 free credit** — at this project's usage that's 2+ years free). Put the API key in `DEEPGRAM_API_KEY`.
-- **ElevenLabs (optional upgrade):** put a key in `ELEVENLABS_API_KEY` and add `elevenlabs` to `TTS_PROVIDER`. Set `ELEVENLABS_VOICE_ID` to the voice you want (copy the ID from your ElevenLabs dashboard). To make several voices switchable, list them in `ELEVENLABS_VOICES` as `Label:voiceId` pairs (first = default) — then switch live with **`/coach voice <name>`** (the pick persists across restarts), or use a one-off voice for a single line with **`/coach say <text> <voice>`**.
+- **ElevenLabs (optional upgrade):** put a key in `ELEVENLABS_API_KEY` and add `elevenlabs` to `TTS_PROVIDER`. Set `ELEVENLABS_VOICE_ID` to the voice you want (copy the ID from your ElevenLabs dashboard). To make several voices switchable, list them in `ELEVENLABS_VOICES` as `Label:voiceId` entries (first = default) — then switch live with **`/coach voice <name>`** (the pick persists across restarts), or use a one-off voice for a single line with **`/coach say <text> <voice>`**. Each entry can carry a per-voice speech rate and volume — `Label:voiceId:speed:volume` (e.g. `Kevin:voiceId1:0.9:0.9`) — overriding the global `ELEVENLABS_SPEED` / `COACH_VOLUME` for that voice alone (speed `0.7`–`1.2`, volume `0.1`–`2`; both optional and positional, so to set just a volume give a speed too).
 - **Free fallback:** nothing to do — `edge` (Microsoft Edge voices) works with no key and is already in the fallback chain.
-- **Too loud or quiet?** Each listener can right-click the bot in the voice channel → **User Volume** to adjust it just for themselves (no restart). To change it for everyone, set `COACH_VOLUME` in `.env` (`1.0` = default, `0.9` = 10% quieter).
+- **Too loud or quiet?** Each listener can right-click the bot in the voice channel → **User Volume** to adjust it just for themselves (no restart). To change it for everyone, set `COACH_VOLUME` in `.env` (`1.0` = default, `0.9` = 10% quieter) — or set a per-voice volume in `ELEVENLABS_VOICES` (above) when one voice is louder than the rest.
 
 ### 4. Claude (optional — the "smart" half of the coach)
 

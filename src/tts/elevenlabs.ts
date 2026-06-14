@@ -2,7 +2,7 @@ import { Readable } from "node:stream";
 import { StreamType } from "@discordjs/voice";
 import { STREAM_IDLE_MS, TTS_TTFB_MS } from "./constants.js";
 import { idleGuarded } from "./idle.js";
-import { currentVoiceId } from "./voices.js";
+import { currentVoiceId, findVoiceById } from "./voices.js";
 import type { SynthOptions, TtsProvider, TtsResult } from "./types.js";
 
 /**
@@ -34,6 +34,9 @@ export class ElevenLabsTts implements TtsProvider {
     // `/coach voice` selection, read fresh each synth so a switch takes effect
     // on the very next line.
     const voiceId = opts?.voiceId ?? currentVoiceId();
+    // Per-voice speed override (ELEVENLABS_VOICES entry) wins; otherwise the global
+    // ELEVENLABS_SPEED this provider was built with.
+    const speed = findVoiceById(voiceId)?.speed ?? this.voiceSettings.speed;
     const url = new URL(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`);
     url.searchParams.set("output_format", "opus_48000_64");
 
@@ -64,7 +67,7 @@ export class ElevenLabsTts implements TtsProvider {
             stability: this.voiceSettings.stability,
             similarity_boost: this.voiceSettings.similarityBoost,
             style: this.voiceSettings.style,
-            speed: this.voiceSettings.speed,
+            speed,
           },
         }),
         signal: controller.signal,
@@ -84,6 +87,8 @@ export class ElevenLabsTts implements TtsProvider {
         STREAM_IDLE_MS,
       ),
       inputType: StreamType.OggOpus,
+      // Surface the actual synthesizing voice so the player can apply its per-voice volume.
+      voiceId,
     };
   }
 }
