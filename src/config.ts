@@ -302,10 +302,11 @@ export const config = {
     // 1.0 (default) = source level, and keeps the zero-transcode fast path: the
     // provider's Opus is demuxed straight to Discord — no codec, no re-encode. Any
     // OTHER value routes the audio through @discordjs/voice's inline volume, which
-    // transcodes it via FFmpeg (OggOpus → PCM → gain → Opus) — so FFmpeg must be on
-    // PATH (it's bundled in the Docker image; install it locally to run with a
-    // non-unity gain). The per-line overhead is a few ms, imperceptible next to the
-    // ~200-330 ms TTS time-to-first-audio.
+    // transcodes it OggOpus →(ffmpeg)→ PCM → gain →(opusscript)→ Opus — so FFmpeg must
+    // be on PATH (it's bundled in the Docker image; install it locally to run with a
+    // non-unity gain; opusscript, which does the re-encode, ships as a dependency). The
+    // per-line overhead is small, imperceptible next to the ~200-330 ms TTS
+    // time-to-first-audio.
     // 0.9 = 10% quieter; 2 = +6 dB
     // (may clip). Range 0.1–2 — silencing the coach is /coach mute's job, not a 0 here.
     // This affects coach lines only — playlist songs always play at source level.

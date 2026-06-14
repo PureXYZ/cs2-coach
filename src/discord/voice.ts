@@ -73,7 +73,8 @@ export class VoiceCoach {
       behaviors: { noSubscriber: NoSubscriberBehavior.Pause },
     });
     // Any non-unity gain (the default OR a per-voice override) routes the affected
-    // lines through the re-encode path — note it once at startup so the latency is no surprise.
+    // lines through the ffmpeg-decode + opusscript-encode transcode path — note it once
+    // at startup so the latency (and the ffmpeg dependency) is no surprise.
     const overrides = voices().filter((v) => v.volume !== undefined && v.volume !== 1);
     if (this.volume !== 1 || overrides.length > 0) {
       const detail =
@@ -82,7 +83,7 @@ export class VoiceCoach {
           : `${this.volume}`;
       log.info(
         "voice",
-        `Coach playback gain (${detail}) — affected lines take the FFmpeg transcode path, ~a few ms extra latency`,
+        `Coach playback gain (${detail}) — affected lines take the transcode path (ffmpeg decode + opusscript re-encode), small per-line latency`,
       );
     }
     this.player.on(AudioPlayerStatus.Idle, () => {
@@ -446,10 +447,11 @@ export class VoiceCoach {
    * At unity volume (the default) this is the zero-transcode fast path: the
    * provider's pre-encoded Opus is demuxed straight to Discord — no codec runs.
    * A non-unity gain enables @discordjs/voice's inline volume, which works on PCM, so
-   * the line is transcoded through FFmpeg (OggOpus → PCM → gain → Opus). FFmpeg is
-   * bundled in the image for exactly this (see the Dockerfile); the per-line overhead
-   * is a few ms — negligible next to the ~700 ms TTS time-to-first-audio. Songs don't
-   * go through here, so they always play at source level.
+   * the line is transcoded OggOpus →(ffmpeg)→ PCM → gain →(opusscript)→ Opus: ffmpeg
+   * decodes, prism's VolumeTransformer applies the gain, opusscript re-encodes. ffmpeg is
+   * bundled in the image for exactly this (see the Dockerfile) and opusscript ships as a
+   * dependency; the per-line overhead is small — negligible next to the ~200-330 ms TTS
+   * time-to-first-audio. Songs don't go through here, so they always play at source level.
    */
   private makeResource(stream: Readable, inputType: StreamType, volume: number) {
     if (volume === 1) return createAudioResource(stream, { inputType });

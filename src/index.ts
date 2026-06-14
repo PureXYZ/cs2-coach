@@ -409,8 +409,29 @@ async function main(): Promise<void> {
   // startup so a broken install surfaces LOUDLY in the logs. Best-effort and
   // wrapped so it can NEVER take the process down.
   try {
-    await import("@discordjs/voice");
+    const { generateDependencyReport } = await import("@discordjs/voice");
     log.info("main", "Voice (DAVE) library loaded");
+
+    // Inline-volume readiness: a non-unity COACH_VOLUME or any per-voice volume routes
+    // coach lines through @discordjs/voice's inline volume — ffmpeg decodes the Opus and
+    // opusscript re-encodes it. A missing ffmpeg fails PER-LINE at playtime with
+    // "FFmpeg/avconv not found!" and nothing at startup — exactly how a prior deploy broke.
+    // So when a gain is configured, check ffmpeg up front and fail LOUD if it's absent.
+    const gainConfigured =
+      config.voice.volume !== 1 || voices().some((v) => v.volume !== undefined && v.volume !== 1);
+    if (gainConfigured) {
+      const report = generateDependencyReport();
+      if (report.includes("FFmpeg\n- not found")) {
+        log.error(
+          "main",
+          `A non-unity playback gain is configured but FFmpeg is not on PATH — coach lines will ` +
+            `FAIL at playtime with "FFmpeg/avconv not found!". The Docker image bundles ffmpeg; ` +
+            `to run locally install it (winget install Gyan.FFmpeg / apt install ffmpeg).\n${report}`,
+        );
+      } else {
+        log.info("main", "FFmpeg present for the inline-volume (per-voice gain) path");
+      }
+    }
   } catch (err) {
     log.warn("main", `Voice (DAVE) library failed to load — voice will be mute: ${err instanceof Error ? err.message : err}`);
   }
