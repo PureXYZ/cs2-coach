@@ -1,7 +1,8 @@
 import os from "node:os";
 import { Events } from "discord.js";
-import { config } from "./config.js";
+import { config, STEAMID64_RE } from "./config.js";
 import { log, pruneOldLogs, closeLog } from "./log.js";
+import { LinkStore, DISCORD_ID_RE } from "./links.js";
 import { startGsiServer } from "./gsi/server.js";
 import { GsiPayloadLog } from "./gsi/payload-log.js";
 import type { CoachEvent, MatchContext } from "./gsi/tracker.js";
@@ -96,6 +97,12 @@ async function main(): Promise<void> {
   // per-feed tracker and fuses them. Solo, it behaves exactly like the old
   // single tracker (no team block until a second feed connects).
   const roster = new RosterManager();
+
+  // SteamID64 <-> Discord-user pairings (state/ volume). Populated for free from the
+  // auth.discordId that /coach setup bakes into each friend's cfg — CS2 echoes it
+  // back in every payload next to provider.steamid. See the onPayload capture below.
+  const links = new LinkStore();
+  log.info("main", `Account links: ${links.size} Steam↔Discord pairing(s) on file`);
 
   // Cross-session match history (state/ volume) — what lets the coach remember
   // last night's pistols. Written at every matchEnd, read into smart prompts.
@@ -332,6 +339,22 @@ async function main(): Promise<void> {
     port: config.gsi.port,
     token: config.gsi.token,
     onPayload: (payload) => {
+      // Pair this feed's SteamID64 with the Discord user who installed its cfg, when
+      // /coach setup embedded their id in the auth block (CS2 echoes every auth key
+      // back). Done here, not in the roster — the roster is a pure in-memory fusion
+      // engine with no I/O, and persistence belongs in this orchestration layer next
+      // to the payload log. record() only writes to disk when the pairing changes.
+      const steam64 = payload.provider?.steamid;
+      const discordId = payload.auth?.discordId;
+      if (steam64 && discordId && STEAMID64_RE.test(steam64) && DISCORD_ID_RE.test(discordId)) {
+        // Steam name only off the client's OWN-player frame (it switches to the
+        // spectated teammate after death) — mirrors the tracker's own-name rule.
+        const ownName = payload.player?.steamid === steam64 ? payload.player?.name : undefined;
+        if (links.record(steam64, discordId, ownName)) {
+          log.info("links", `Linked Steam ${steam64}${ownName ? ` (${ownName})` : ""} ↔ Discord ${discordId}`);
+        }
+      }
+
       // Demux + fuse: one handle() call per payload (same-batch suppression
       // semantics preserved), with the merged primary-personal + authority-global
       // + team context.
@@ -376,6 +399,7 @@ async function main(): Promise<void> {
           ? ("present" as const)
           : ("friend-only" as const),
       quarantined: roster.quarantinedFeeds(),
+      linkedAccounts: links.size,
     }),
   });
 

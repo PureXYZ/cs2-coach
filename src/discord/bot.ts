@@ -54,6 +54,8 @@ export interface BotDeps {
     primaryMode: "present" | "friend-only" | "solo";
     /** Ops ITEM 9: non-member feeds still connected and why — rendered only when non-empty. */
     quarantined: { name?: string; reason: string }[];
+    /** Steam<->Discord pairings on file (from the auth-block id baked in by /coach setup). */
+    linkedAccounts: number;
   };
 }
 
@@ -442,6 +444,9 @@ function renderStatus(deps: BotDeps): string {
       : []),
     `**LLM:** ${s.llmModel ?? "disabled (rule-based lines only)"}`,
     `**Memory:** ${s.sessionsOnFile} past match${s.sessionsOnFile === 1 ? "" : "es"} on file`,
+    ...(s.linkedAccounts > 0
+      ? [`**Linked:** ${s.linkedAccounts} Steam↔Discord account${s.linkedAccounts === 1 ? "" : "s"} on file`]
+      : []),
   ];
   // The Quarantined line names griefer/non-member feeds — fine in this private
   // (ephemeral) readout.
@@ -886,7 +891,10 @@ async function handleSetup(interaction: ChatInputCommandInteraction, deps: BotDe
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  const cfgText = buildCfg({ host: publicHost, port, token });
+  // Bake the invoker's Discord id into the cfg's auth block: CS2 echoes it back in
+  // every payload as auth.discordId, so the coach can pair their feed's SteamID64 to
+  // this Discord user automatically the first time they play (see src/links.ts).
+  const cfgText = buildCfg({ host: publicHost, port, token, discordId: interaction.user.id });
   const buf = Buffer.from(cfgText, "utf8");
   const makeFile = () => new AttachmentBuilder(buf, { name: "gamestate_integration_coach.cfg" });
   const guide = setupInstructions(resolveUri(publicHost, port), cfgText);
