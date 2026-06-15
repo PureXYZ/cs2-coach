@@ -530,24 +530,6 @@ function methodStory(method: string, won: boolean): string {
   return method;
 }
 
-/**
- * Shared squad clause for the DEAD-AIR break moments (our timeout, halftime, match
- * end). Gated on a real multi-feed view (ctx.team with 2+ members), NOT on econ
- * (empty at a break when the crew is dead). Names the wired crew and, when the engine
- * supplies a rotated ribTarget (B2), features ONE named teammate by name with their
- * own-feed debrief note — roasted as hard as the player, own play only, hedged unless
- * rosterComplete. The rotation IS enforced in code (the pick is committed to recentRibbed
- * at airing time, LlmCoach.commitSpoken), not left to the model. Empty string for a solo player.
- */
-/**
- * Pure rotation core for the break-moment rib target (exported for tests). Prefers a
- * teammate we have a debrief note on (so the jab has an honest hook), skips the
- * recently-featured names, and uses a POOL-RELATIVE cap so recentRibbed can never
- * saturate the candidate set — a fixed cap collapsed a 2-3 stack to one repeated
- * friend. PURE: it only READS recentRibbed (no push/trim); the chosen pick is committed
- * to the rotation at AIRING time (LlmCoach.commitSpoken), so a line that never airs
- * doesn't consume a teammate. undefined when no fresh, named, non-primary teammate exists.
- */
 /** A staged rib: the named teammate THIS line will rib + the pool-relative trim cap,
  *  committed to the rotation only when the line airs (LlmCoach.commitSpoken). */
 type RibCommit = { name: string; cap: number };
@@ -559,6 +541,15 @@ function ribCandidates(members: TeamMember[]): TeamMember[] {
   return members.filter((m) => !m.isPrimary && m.tier === "fresh" && m.name);
 }
 
+/**
+ * Pure rotation core for the break-moment rib target (exported for tests). Prefers a
+ * teammate we have a debrief note on (so the jab has an honest hook), skips the
+ * recently-featured names, and uses a POOL-RELATIVE cap so recentRibbed can never
+ * saturate the candidate set — a fixed cap collapsed a 2-3 stack to one repeated
+ * friend. PURE: it only READS recentRibbed (no push/trim); the chosen pick is committed
+ * to the rotation at AIRING time (LlmCoach.commitSpoken), so a line that never airs
+ * doesn't consume a teammate. undefined when no fresh, named, non-primary teammate exists.
+ */
 export function chooseRibTarget(
   members: TeamMember[],
   recentRibbed: string[],
@@ -594,6 +585,15 @@ function stripMemberNotes(ctx: MatchContext): MatchContext {
   };
 }
 
+/**
+ * Shared squad clause for the DEAD-AIR break moments (our timeout, halftime, match
+ * end). Gated on a real multi-feed view (ctx.team with 2+ members), NOT on econ
+ * (empty at a break when the crew is dead). Names the wired crew and, when the engine
+ * supplies a rotated ribTarget (B2), features ONE named teammate by name with their
+ * own-feed debrief note — roasted as hard as the player, own play only, hedged unless
+ * rosterComplete. The rotation IS enforced in code (the pick is committed to recentRibbed
+ * at airing time, LlmCoach.commitSpoken), not left to the model. Empty string for a solo player.
+ */
 function squadBreakClause(ctx: MatchContext, ribTarget?: { name: string; note?: string }): string {
   const members = ctx.team?.members ?? [];
   if (!ctx.team || members.length <= 1) return "";

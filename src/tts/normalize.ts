@@ -6,7 +6,8 @@
  * read a lone "A" as the indefinite article ("uh site") instead of the letter
  * ("ay site"), and it's nondeterministic: the same line is right one round and
  * wrong the next. Spelling the letters out ("Ay", "Bee") forces the letter
- * reading on every provider, since multilingual_v2 has no reliable SSML/say-as.
+ * reading on every provider, since the streaming TTS models in use (ElevenLabs
+ * Flash v2.5, Deepgram Aura-2) have no reliable SSML/say-as.
  *
  * The one thing we must NOT touch is a genuine article "A" at the start of a
  * sentence ("A full buy.", "A couple of them stacked up."). A capitalized

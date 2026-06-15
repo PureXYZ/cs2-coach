@@ -18,7 +18,7 @@ Everything the app talks to (Discord gateway, Deepgram/ElevenLabs, Anthropic) is
 
 ### The setup — droplet + Caddy reverse proxy
 
-The coach runs as a Docker container on a small VPS (a DigitalOcean droplet, ~$6/mo; Hetzner/Lightsail/etc. work identically) behind [Caddy](https://caddyserver.com), which terminates TLS and reverse-proxies to it. Caddy auto-provisions and renews a Let's Encrypt certificate for the coach's domain, so GSI POSTs arrive over real HTTPS with nothing to manage. Valve's GSI does strict certificate validation; a Let's Encrypt cert is globally trusted, so it passes.
+The coach runs as a Docker container on a small VPS (a DigitalOcean droplet, ~$6/mo; Hetzner/Lightsail/etc. work identically) behind [Caddy](https://caddyserver.com). Caddy terminates TLS and reverse-proxies to the coach. It also gets and auto-renews a free Let's Encrypt certificate for the coach's domain, so GSI POSTs arrive over HTTPS with nothing to manage. This matters because Valve's GSI rejects self-signed certs — a globally trusted Let's Encrypt cert passes.
 
 Both containers share a user-defined Docker network (`web`) so Caddy can reach the coach by container name. The coach publishes **no** host ports — it's reachable only through Caddy.
 
@@ -93,6 +93,6 @@ Two ways to trigger it:
 
 Everything on the gaming PC: the cfg points at `http://127.0.0.1:3000`, and `npm start` runs the coach alongside the game.
 
-**Performance impact is negligible.** The coach is an idle event loop that wakes for ~10 small JSON POSTs/second during action; at unity volume audio is passed through pre-encoded (no transcoding), and a non-unity `COACH_VOLUME` or per-voice gain adds a lightweight per-line ffmpeg transcode (so running locally with a gain needs ffmpeg on PATH — `winget install Gyan.FFmpeg` / `apt install ffmpeg`). TTS/LLM work happens on remote APIs. Expect ~100 MB RAM and ~0–2% of one core — far below what Discord's own client uses. No GPU use, no game hooks, nothing injected.
+**Performance impact is negligible.** The coach is an idle event loop that wakes for ~10 small JSON POSTs/second during action; at the default volume (1.0), audio is sent pre-encoded with no transcoding. A non-default `COACH_VOLUME` or a per-voice gain adds a small per-line ffmpeg transcode, so running locally with a custom gain needs ffmpeg on your PATH (`winget install Gyan.FFmpeg` on Windows, `apt install ffmpeg` on Linux). TTS/LLM work happens on remote APIs. Expect ~100 MB RAM and ~0–2% of one core — far below what Discord's own client uses. No GPU use, no game hooks, nothing injected.
 
 Re-point the cfg at the hosted server later with `npm run cfg -- --host <host>` and re-copy it to the CS2 cfg folder (the cfg is only read at game launch).

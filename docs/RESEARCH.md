@@ -36,7 +36,7 @@ Not available while playing (GOTV/spectator-only — verified against library ma
 Critical implementation gotchas (all encoded in `src/gsi/tracker.ts`):
 1. **The player block switches identity when you die** and auto-spectate a teammate. Always compare `player.steamid === provider.steamid` before treating it as the user.
 2. **Bomb-plant signal is delayed ~1–2 s randomized** for players (Valve anti-abuse, since 2015, still active per May 2026 maintainer statements). Derived bomb countdowns are approximate.
-3. Timing constants for locally derived clocks (1:55 round, 15 s freezetime, 40 s bomb) are community knowledge, not Valve-documented — kept configurable in `.env`.
+3. Timing constants for locally derived clocks (1:55 round, 40 s bomb) are community knowledge, not Valve-documented — and are the two values kept configurable in `.env` (`ROUND_SECONDS`, `BOMB_SECONDS`). The 15 s freezetime is assumed in code but not exposed as an env var, since only the round and bomb clocks drive spoken callouts.
 4. Premier reports `map.mode = "competitive"` (no distinct "premier" value; medium confidence).
 
 ### Is it VAC-safe?
@@ -76,7 +76,7 @@ The first research pass recommended Cartesia Sonic-3 off a May 2026 benchmark; a
 
 - **Hybrid architecture validated** by prior art and 2025–26 academic literature on AI game commentary: instant rule/template lines for twitch events (< 100 ms), LLM for freezetime/halftime/match moments.
 - Latency: Claude Haiku 4.5 ≈ 0.8 s TTFT + ~93 tok/s → full 80-token line in ~1.6 s; comfortably inside the ~15 s freezetime. Opus 4.8 is slower but smarter — both fit the freezetime window; the engine falls back to rule lines on a 9 s timeout either way.
-- Cost (verified June 2026 pricing): Haiku 4.5 ($1/$5 per MTok) ≈ **$0.03/match, $0.58/month** at 20 matches. Opus 4.8 ($5/$25) ≈ 15× that — still only ~$3–9/month. Prompt caching doesn't engage at this prompt size (below the 4096-token minimum cacheable prefix on Haiku).
+- Cost (verified June 2026 pricing): Haiku 4.5 ($1/$5 per MTok) ≈ **$0.03/match, $0.58/month** at 20 matches. Opus 4.8 ($5/$25) ≈ 15× that — still only ~$3–9/month. Prompt caching IS enabled on the static system prefix (`cache_control: ephemeral`): the combined system prompt clears the ~1024-token minimum cacheable prefix, so it's read from cache across a session.
 - No existing project combines CS2 GSI + LLM + Discord voice — closest prior art is `martinszuc/dota-discord-bot` (Dota 2 GSI → TTS → discord.py voice, validates every pipeline link) and `tejashah88/gaming-ai-coach`. This project fills a real gap.
 - GSI library landscape: TypeScript is the strong ecosystem (`csgogsi` v5.0.1 used by the Lexogrine HUD ecosystem; `cs2-gsi-z`); Python GSI libs are stale. (This project parses payloads directly — the payload shape is simple enough that a dependency wasn't warranted.)
 

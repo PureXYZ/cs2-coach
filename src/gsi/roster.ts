@@ -95,8 +95,9 @@ export interface RosterUpdate {
 const EMPTY_CTX: MatchContext = { playerIsSelf: false };
 
 // Econ ITEM 11 — shared fresh-read threshold (a feed's money/alive are 'now' only
-// when it posted within HALF the connection window). Used by buildTeam's tier tag
-// AND deriveLastMan's survivor freshness check so both move together.
+// when it posted within HALF the connection window). Used by buildTeam's per-member
+// tier tag AND its bomb-carrier freshness check so both move together. (deriveLastMan's
+// survivor check uses the tighter config.gsi.lastManFreshMs, not this.)
 const FRESH_READ_MS = config.gsi.feedStaleMs / 2;
 // Connection-blip ITEM 1 — authority hysteresis. LEAVE_GRACE keeps the primary as
 // authority through a brief gap; clamped STRICTLY below feedIdleMs so a reaped

@@ -14,7 +14,7 @@ export interface RoundRecord {
   /** How many of myKills were headshots — feeds the headshot-rate habit. */
   myHeadshots: number;
   myDeath: boolean;
-  /** Own death inside the first ~10s of the round — drives the tilt/over-peek read. */
+  /** Own death inside the first ~20s of the round — drives the tilt/over-peek read. */
   earlyDeath?: boolean;
   /** Memorable moments, e.g. "knife kill", "ace", "teamkilled someone". */
   notable: string[];
