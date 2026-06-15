@@ -450,8 +450,8 @@ function renderAdminStatus(deps: BotDeps): string {
   return `${detailed}\n\n${renderStatus(deps)}`.slice(0, 1990);
 }
 
-/** Owner `/coachadmin links`: every Steam↔Discord pairing on file (the read half of link
- *  management — set/remove land in a later pass). Newest-linked first. */
+/** Owner `/coachadmin link list`: every Steam↔Discord pairing on file, newest-linked
+ *  first. (set/remove are handled by handleLinkSet / handleLinkRemove.) */
 function renderLinks(deps: BotDeps): string {
   const links = deps.links.list();
   if (links.length === 0) {

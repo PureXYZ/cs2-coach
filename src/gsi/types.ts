@@ -1,7 +1,8 @@
 // CS2 Game State Integration payload shapes — only the components the game sends
-// while PLAYING (not spectating). Spectator-only components (allplayers_*, bomb,
-// player_position, phase_countdowns, allgrenades) never arrive in Premier/Competitive
-// play and are deliberately not modeled here.
+// while PLAYING (not spectating). Spectator-only components (allplayers_*, the
+// standalone `bomb` block, player_position, phase_countdowns, allgrenades) never
+// arrive in Premier/Competitive play and are deliberately not modeled here. (The
+// round-phase `round.bomb` field below is a different thing and IS modeled.)
 //
 // Field inventory cross-checked against CounterStrike2GSI (C#), LukeyR/CS2-GameStateIntegration
 // (Go) and lupusbytes/cs2mqtt (.NET), June 2026.

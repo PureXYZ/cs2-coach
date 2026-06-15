@@ -29,7 +29,7 @@ interface CacheEntry {
   voiceId?: string;
   /** Byte length, validated against the blob on load/read. */
   bytes: number;
-  /** Epoch ms of the last write — the LRU eviction key. */
+  /** Epoch ms of the last write — the eviction key (oldest-written goes first). */
   lastUsedAt: number;
 }
 
@@ -120,7 +120,7 @@ export class TtsCache {
     }
     // A buffer-backed stream can't stall, so no idleGuarded. But voice.ts may
     // destroy() it (supersede/overflow), which can emit 'error' — pre-attach a
-    // no-op listener so that can never become an uncaught exception (idle.ts:44).
+    // no-op listener so that can never become an uncaught exception (idle.ts:41).
     const stream = new Readable({ read() {} });
     stream.on("error", () => {});
     stream.push(bytes);

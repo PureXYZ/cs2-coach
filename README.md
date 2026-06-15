@@ -36,7 +36,7 @@ So the coach can never call enemy positions or alive counts — nothing can whil
 - Enemy-economy reads — their consecutive losses are the *one* enemy signal GSI sends, and they drive anti-eco warnings and "they can rebuy now" calls.
 
 **Mid-round**
-- Retake-or-save calls (Claude weighs your gear, kit, HP, the score and whether you're mid-clutch — it never calls "save" while you're winning a fight, on match point, or into a money reset).
+- Retake-or-save calls — Claude weighs your gear, kit, HP, the score, and whether you're mid-clutch. It never calls "save" while you're winning a fight, on match point, or heading into a money reset.
 - Clock callouts derived locally: "35 seconds, get a plan", "ten on the bomb" — and when *you're* the one carrying the C4 with no plant, the nudge says so.
 
 **Reactions** — routine 1–2 kill frags stay silent on purpose.
@@ -90,9 +90,13 @@ cp .env.example .env
 ### 3. Pick your TTS voice
 
 - **Deepgram (recommended):** sign up at https://console.deepgram.com (no card needed, **$200 free credit** — at this project's usage that's 2+ years free). Put the API key in `DEEPGRAM_API_KEY`.
-- **ElevenLabs (optional upgrade):** put a key in `ELEVENLABS_API_KEY` and add `elevenlabs` to `TTS_PROVIDER`. Set `ELEVENLABS_VOICE_ID` to the voice you want (copy the ID from your ElevenLabs dashboard). To make several voices switchable, list them in `ELEVENLABS_VOICES` as `Label:voiceId` entries (first = default) — then switch live with **`/coach voice <name>`** (the pick persists across restarts), or use a one-off voice for a single line with **`/coach say <text> <voice>`**. Each entry can carry a per-voice speech rate and volume — `Label:voiceId:speed:volume` (e.g. `Kevin:voiceId1:0.9:0.9`) — overriding the global `ELEVENLABS_SPEED` / `COACH_VOLUME` for that voice alone (speed `0.7`–`1.2`, volume `0.1`–`2`; both optional and positional, so to set just a volume give a speed too).
+- **ElevenLabs (optional upgrade):** put a key in `ELEVENLABS_API_KEY` and add `elevenlabs` to `TTS_PROVIDER`. Set `ELEVENLABS_VOICE_ID` to the voice you want (copy the ID from your ElevenLabs dashboard).
+  - **Switchable voices:** list several in `ELEVENLABS_VOICES`, comma-separated, as `Label:voiceId` (the first is the default). Switch live with **`/coach voice <name>`** (your pick survives restarts), or use a one-off voice for a single line with **`/coach say <text> <voice>`**.
+  - **Per-voice tuning:** each voice can set its own speech rate and volume — `Label:voiceId:speed:volume` (e.g. `Kevin:voiceId1:0.9:0.9`). These override the global `ELEVENLABS_SPEED` and `COACH_VOLUME` for that one voice. Speed runs `0.7`–`1.2`, volume `0.1`–`2`. Both are optional, but positional — to set only a volume, give a speed first.
 - **Free fallback:** nothing to do — `edge` (Microsoft Edge voices) works with no key and is already in the fallback chain.
-- **Too loud or quiet?** Each listener can right-click the bot in the voice channel → **User Volume** to adjust it just for themselves (no restart). To change it for everyone, set `COACH_VOLUME` in `.env` (`1.0` = default, `0.9` = 10% quieter) — or set a per-voice volume in `ELEVENLABS_VOICES` (above) when one voice is louder than the rest.
+- **Too loud or quiet?** Two ways to fix it:
+  - **Just for you:** right-click the bot in the voice channel → **User Volume**. Takes effect immediately, no restart.
+  - **For everyone:** set `COACH_VOLUME` in `.env` (`1.0` is the default; `0.9` is 10% quieter). If only one voice is off, set a per-voice volume in `ELEVENLABS_VOICES` instead (see above).
 
 ### 4. Claude (optional — the "smart" half of the coach)
 
@@ -195,7 +199,7 @@ Every reply is **ephemeral** (only you see it) — the bot never posts a message
 | Deepgram TTS | ~$6.75/mo at heavy usage — **$200 signup credit ≈ 2+ years free** |
 | Claude (Opus smart tier + Haiku mid-round) | ~$4–10/mo at 20 matches/mo (all-Haiku: ~$1/mo) |
 | Leetify post-match stats | Free (their public API; you need a Leetify account) |
-| Hosting (VPS) | ~$5/mo ($0 if you run it locally instead) |
+| Hosting (VPS) | ~$6/mo ($0 if you run it locally instead) |
 
 ## Is this allowed? (VAC)
 
@@ -230,6 +234,6 @@ src/
 scripts/generate-gsi-cfg.ts   writes the cfg for the gaming PC
 scripts/simulate.ts           offline synthetic-GSI harness (npm run sim)
 scripts/replay-log.ts         re-derives events from a capture and diffs them (npm run replay)
-scripts/deploy.ts             pushes the current main to the hosted server (npm run deploy)
+scripts/deploy.ts             triggers the host to pull GitHub main, rebuild + restart (npm run deploy — push first)
 cs2/                  generated gamestate_integration_coach.cfg lands here
 ```

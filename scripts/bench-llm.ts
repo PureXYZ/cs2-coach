@@ -21,8 +21,8 @@ Moment: Freezetime / buy period, round 7. Give ONE buy call matched to the money
 type Config = { label: string; model: string; effort?: "low" | "medium" | "high" };
 
 const configs: Config[] = [
-  { label: "opus-4-8 (current, effort default=high)", model: "claude-opus-4-8" },
-  { label: "opus-4-8 + effort low", model: "claude-opus-4-8", effort: "low" },
+  { label: "opus-4-8 + effort high (Opus API default, no effort field)", model: "claude-opus-4-8" },
+  { label: "opus-4-8 + effort low (current smart tier)", model: "claude-opus-4-8", effort: "low" },
   { label: "sonnet-4-6 + effort low", model: "claude-sonnet-4-6", effort: "low" },
   { label: "haiku-4-5 (current fast tier)", model: "claude-haiku-4-5" },
 ];

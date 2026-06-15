@@ -3,9 +3,10 @@ import { pick } from "./pick.js";
 import { mapDisplayName } from "./maps.js";
 
 /**
- * Canned fallback for the tactical-timeout call (LLM-less setups): 4+ straight
- * losses with a timeout in the bank. With the LLM enabled the freezetime
- * prompt folds the timeout into the buy call instead.
+ * Canned fallback for the tactical-timeout call (LLM-less setups): loss-bonus level
+ * 4+ (GSI's loss counter, which decays on a win rather than being a literal streak)
+ * with a timeout in the bank. With the LLM enabled the freezetime prompt folds the
+ * timeout into the buy call instead.
  */
 export function timeoutCallLine(): string {
   // No "N in a row" claims here: GSI's loss counter decays on a win instead of
