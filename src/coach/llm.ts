@@ -118,7 +118,10 @@ export class LlmCoach {
   /** The actual PLANS called at recent freezetimes — the anti-repeat for strategy, not phrasing. */
   private recentPlans: string[] = [];
   /** B2: wired teammates recently FEATURED for the break-moment jab — rotates the
-   *  spotlight across the crew so it isn't always the same friend getting ribbed. */
+   *  spotlight across the crew so it isn't always the same friend getting ribbed.
+   *  The rib a given line() names travels with that line's RETURN value (not a shared
+   *  field) and is pushed here only when the line AIRS (commitSpoken), so a dropped or
+   *  canned-fallback line never consumes a teammate and a concurrent line() can't clobber it. */
   private recentRibbed: string[] = [];
 
   constructor(opts: {
@@ -168,7 +171,12 @@ export class LlmCoach {
    * One short coaching line for the given moment, or null on timeout/error
    * (callers fall back to the rule engine's canned lines).
    */
-  async line(context: MatchContext, event: CoachEvent, tier: LlmTier = "smart", opts?: LineOpts): Promise<string | null> {
+  async line(
+    context: MatchContext,
+    event: CoachEvent,
+    tier: LlmTier = "smart",
+    opts?: LineOpts,
+  ): Promise<{ text: string | null; rib?: RibCommit }> {
     const model = tier === "fast" ? this.fastModel : this.model;
     const timeout = opts?.timeoutMs ?? (tier === "fast" ? this.fastTimeoutMs : this.timeoutMs);
     const longForm = opts?.longForm ?? false;
@@ -187,6 +195,20 @@ export class LlmCoach {
 
     if (event.type === "matchStart") this.recentRibbed = []; // fresh rib rotation each match
     const ribTarget = this.pickRibTarget(event, context);
+    // B2 (#4): the rib the prompt names travels back with this line()'s return value, so the
+    // engine commits it to the rotation (commitSpoken) ONLY if THIS line's LLM text actually
+    // airs — a dropped line or a canned fallback never advances the spotlight, and a concurrent
+    // line() can't clobber it (no shared mutable slot). timeout/halftime/matchEnd always
+    // incorporate the named rib; roundEnd ribs ONLY when the pick carries a debrief note. The
+    // pool-relative cap is captured now from the same candidate set the pick was drawn from.
+    const rib: RibCommit | undefined =
+      ribTarget &&
+      (event.type === "timeout" ||
+        event.type === "halftime" ||
+        event.type === "matchEnd" ||
+        (event.type === "roundEnd" && ribTarget.note))
+        ? { name: ribTarget.name, cap: ribCap(ribCandidates(context.team?.members ?? []).length) }
+        : undefined;
     const userContent = [
       `Game state snapshot: ${JSON.stringify(stripMemberNotes(context))}`,
       `Moment: ${describeMoment(event, context, longForm, ribTarget)}`,
@@ -230,7 +252,7 @@ export class LlmCoach {
       // canned fallback beats that.
       if (response.stop_reason === "max_tokens") {
         log.warn("llm", `${model} hit max_tokens (${event.type}) — using rule-based line`);
-        return null;
+        return { text: null, rib };
       }
 
       const text = response.content
@@ -239,14 +261,14 @@ export class LlmCoach {
         .join(" ")
         .trim();
 
-      if (!text) return null;
+      if (!text) return { text: null, rib };
       // NOTE (ITEM 11): recording into the anti-repeat memory is deferred to
       // commit time (commitSpoken) — the engine may still drop this line via
       // stillRelevant(), and a discarded line must not pollute recentLines/recentPlans.
-      return text;
+      return { text, rib };
     } catch (err) {
       log.warn("llm", `${model} call failed after ${Date.now() - startedAt}ms (${err instanceof Error ? err.message : err}) — using rule-based line`);
-      return null;
+      return { text: null, rib };
     }
   }
 
@@ -331,7 +353,9 @@ export class LlmCoach {
         log.warn("llm", "Leetify recap dropped the credit or altered a value — using the canned wrapper");
         return null;
       }
-      this.recordSpoken(text);
+      // No recordSpoken here: the recap is committed to the anti-repeat memory on the
+      // SPOKEN path (index.ts onPlayed), not at generation time — a recap that never
+      // airs must not poison recentLines.
       return text;
     } catch (err) {
       log.warn("llm", `Leetify recap failed (${err instanceof Error ? err.message : err}) — using the canned wrapper`);
@@ -355,11 +379,19 @@ export class LlmCoach {
    * may still drop the line via stillRelevant() — recording a discarded line
    * would poison recentLines/recentPlans. Call this only on the spoken path.
    */
-  commitSpoken(event: CoachEvent, text: string): void {
+  commitSpoken(event: CoachEvent, text: string, rib?: RibCommit): void {
     this.recordSpoken(text);
     if (event.type === "freezetime") {
       this.recentPlans.push(text);
       if (this.recentPlans.length > 8) this.recentPlans.shift();
+    }
+    // B2 (#4): advance the rib rotation ONLY now that a line carrying a named rib has
+    // ACTUALLY aired. The engine passes `rib` solely when this line's own LLM text aired
+    // (never for a dropped line or the canned fallback), and it's the rib THIS line carried —
+    // so the spotlight can't be clobbered by a concurrent line(). Pool-relative cap.
+    if (rib) {
+      this.recentRibbed.push(rib.name);
+      while (this.recentRibbed.length > rib.cap) this.recentRibbed.shift();
     }
   }
 
@@ -369,9 +401,9 @@ export class LlmCoach {
    * break moments (timeout, halftime, match end) AND at every round end — the
    * round-end clause only actually ribs when the pick carries a debrief note (real
    * roast material), so the rotation spreads honest jabs across the crew round to
-   * round instead of saving them all for the breaks. Recording the pick here is
-   * what ENFORCES the rotation in code rather than leaving it to the model.
-   * undefined for any other moment or solo play.
+   * round instead of saving them all for the breaks. The rotation is ENFORCED in code
+   * (the chosen pick is committed to recentRibbed at AIRING time, in commitSpoken) rather
+   * than left to the model. undefined for any other moment or solo play.
    */
   private pickRibTarget(event: CoachEvent, ctx: MatchContext): { name: string; note?: string } | undefined {
     if (
@@ -504,31 +536,46 @@ function methodStory(method: string, won: boolean): string {
  * (empty at a break when the crew is dead). Names the wired crew and, when the engine
  * supplies a rotated ribTarget (B2), features ONE named teammate by name with their
  * own-feed debrief note — roasted as hard as the player, own play only, hedged unless
- * rosterComplete. The rotation IS enforced in code (LlmCoach.pickRibTarget records who
- * was featured), not left to the model. Empty string for a solo player.
+ * rosterComplete. The rotation IS enforced in code (the pick is committed to recentRibbed
+ * at airing time, LlmCoach.commitSpoken), not left to the model. Empty string for a solo player.
  */
 /**
  * Pure rotation core for the break-moment rib target (exported for tests). Prefers a
  * teammate we have a debrief note on (so the jab has an honest hook), skips the
  * recently-featured names, and uses a POOL-RELATIVE cap so recentRibbed can never
  * saturate the candidate set — a fixed cap collapsed a 2-3 stack to one repeated
- * friend. Mutates recentRibbed (push + trim). undefined when no fresh, named,
- * non-primary teammate exists.
+ * friend. PURE: it only READS recentRibbed (no push/trim); the chosen pick is committed
+ * to the rotation at AIRING time (LlmCoach.commitSpoken), so a line that never airs
+ * doesn't consume a teammate. undefined when no fresh, named, non-primary teammate exists.
  */
+/** A staged rib: the named teammate THIS line will rib + the pool-relative trim cap,
+ *  committed to the rotation only when the line airs (LlmCoach.commitSpoken). */
+type RibCommit = { name: string; cap: number };
+
+/** The rib-eligible teammates — wired, non-primary, fresh, named. ONE source of truth for
+ *  both the pick (chooseRibTarget) and the cap sizing (line()), so the cap can never be sized
+ *  against a different candidate set than the pick was drawn from. */
+function ribCandidates(members: TeamMember[]): TeamMember[] {
+  return members.filter((m) => !m.isPrimary && m.tier === "fresh" && m.name);
+}
+
 export function chooseRibTarget(
   members: TeamMember[],
   recentRibbed: string[],
 ): { name: string; note?: string } | undefined {
-  const candidates = members.filter((m) => !m.isPrimary && m.tier === "fresh" && m.name);
+  const candidates = ribCandidates(members);
   if (candidates.length === 0) return undefined;
   const withNote = candidates.filter((m) => m.note);
   const pool = withNote.length ? withNote : candidates;
   const notRecent = pool.filter((m) => !recentRibbed.includes(m.name as string));
   const choice = (notRecent.length ? notRecent : pool)[0];
-  recentRibbed.push(choice.name as string);
-  const capN = Math.max(candidates.length - 1, 1); // never saturate the candidate set
-  while (recentRibbed.length > capN) recentRibbed.shift();
   return { name: choice.name as string, note: choice.note };
+}
+
+/** Pool-relative cap for recentRibbed: never saturate the candidate set (a fixed cap
+ *  collapsed a 2-3 stack to one repeated friend). Used when a named rib actually airs. */
+function ribCap(candidateCount: number): number {
+  return Math.max(candidateCount - 1, 1);
 }
 
 /** Strip the name-bearing TEAM fields that belong ONLY to gated prose from the JSON

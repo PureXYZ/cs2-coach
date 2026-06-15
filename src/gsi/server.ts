@@ -24,6 +24,7 @@ const MAX_BODY_BYTES = 1_000_000;
 export function startGsiServer(opts: GsiServerOptions): GsiServerHandle {
   let lastPayloadAt: number | null = null;
   let warnedBadToken = false;
+  let warnedBadShape = false;
 
   const server = http.createServer((req, res) => {
     if (req.method === "GET") {
@@ -66,6 +67,40 @@ export function startGsiServer(opts: GsiServerOptions): GsiServerHandle {
         return;
       }
 
+      // JSON `null`, a bare scalar, or an array all parse fine but are not a GsiPayload.
+      // Dereferencing one below (or in the auth check) throws, and this req."end" handler
+      // has no surrounding try/catch — the throw would reach uncaughtException and exit the
+      // process. On the default empty-token setup that makes a `null` body a remote kill
+      // switch, so drop anything that isn't a plain object before touching it.
+      if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+        if (!warnedBadShape) {
+          warnedBadShape = true;
+          log.warn("gsi", "Received POST whose body isn't a GSI object — dropping frame (warning shown once)");
+        }
+        return;
+      }
+
+      // Cheap runtime shape guard on the hot fields the rules read. JSON.parse is
+      // assigned straight to a typed GsiPayload, so a malformed POST (round:"5")
+      // would type-confuse downstream logic ("5" + 1 → "51"). Drop the frame if a
+      // present field is the wrong type. We don't deep-walk weapons — weapon-name
+      // safety lives in the tracker.
+      if (
+        (payload.map?.round !== undefined && typeof payload.map.round !== "number") ||
+        (payload.player?.state?.health !== undefined && typeof payload.player.state.health !== "number") ||
+        (payload.map?.team_ct?.score !== undefined && typeof payload.map.team_ct.score !== "number") ||
+        (payload.map?.team_t?.score !== undefined && typeof payload.map.team_t.score !== "number")
+      ) {
+        if (!warnedBadShape) {
+          warnedBadShape = true;
+          log.warn(
+            "gsi",
+            "Received payload with malformed hot fields (wrong type for round/health/score) — dropping frame (warning shown once)",
+          );
+        }
+        return;
+      }
+
       if (opts.token && payload.auth?.token !== opts.token) {
         if (!warnedBadToken) {
           warnedBadToken = true;
@@ -97,7 +132,15 @@ export function startGsiServer(opts: GsiServerOptions): GsiServerHandle {
     process.exit(1);
   });
 
-  // Bind to all interfaces — the POSTs come from another machine on the LAN.
+  if (opts.token === "") {
+    log.warn(
+      "gsi",
+      "GSI_TOKEN is empty — accepting UNAUTHENTICATED game state from any host on 0.0.0.0. Set GSI_TOKEN for a public/VPS deployment so only your CS2 client can post.",
+    );
+  }
+
+  // Bind to all interfaces — the gaming PC POSTs to this coach over the network,
+  // and the preferred deployment is a public/VPS host (not just the LAN).
   server.listen(opts.port, "0.0.0.0", () => {
     log.info("gsi", `Listening for CS2 game state on http://0.0.0.0:${opts.port}`);
   });

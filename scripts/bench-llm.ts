@@ -46,5 +46,5 @@ for (const cfg of configs) {
     if (i === 0) sample = text;
   }
   times.sort((a, b) => a - b);
-  console.log(`${cfg.label}\n  runs: ${times.join(", ")} ms (median ${times[1]})\n  line: ${sample}\n`);
+  console.log(`${cfg.label}\n  runs: ${times.join(", ")} ms (median ${times[Math.floor(times.length / 2)]})\n  line: ${sample}\n`);
 }

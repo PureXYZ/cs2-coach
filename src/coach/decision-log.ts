@@ -1,6 +1,4 @@
-import fs from "node:fs";
-import path from "node:path";
-import { log } from "../log.js";
+import { createNdjsonSink } from "../ndjson-sink.js";
 import type { CoachEvent, MatchContext } from "../gsi/tracker.js";
 
 /**
@@ -26,58 +24,28 @@ export interface DecisionRecord {
  * dead stream disables the sink and never crashes. Mirrors GsiPayloadLog.
  */
 export class DecisionLog {
-  private stream: fs.WriteStream | null = null;
-  private disabled = false;
-  private readonly file: string;
+  private readonly sink: ReturnType<typeof createNdjsonSink>;
 
   constructor(dir = "logs") {
-    const stamp = new Date().toISOString().replace(/:/g, "-").slice(0, 19);
-    this.file = path.join(dir, `decisions-${stamp}.ndjson`);
+    this.sink = createNdjsonSink({ dir, prefix: "decisions-", tag: "coach", what: "coach decisions" });
   }
 
   write(rec: DecisionRecord): void {
-    if (this.disabled) return;
-    if (!this.stream) {
-      try {
-        fs.mkdirSync(path.dirname(this.file), { recursive: true });
-        this.stream = fs.createWriteStream(this.file, { flags: "a" });
-        // A dead stream (disk full, locked dir) must never crash or spam — warn once, stop.
-        this.stream.on("error", (err) => {
-          this.disabled = true;
-          log.warn("coach", `Decision log write failed (${err.message}) — decision logging off for this session`);
-        });
-        log.info("coach", `Recording coaching decisions to ${this.file}`);
-      } catch (err) {
-        this.disabled = true;
-        log.warn(
-          "coach",
-          `Could not open ${this.file} (${err instanceof Error ? err.message : String(err)}) — decision logging off`,
-        );
-        return;
-      }
-    }
+    if (this.sink.disabled) return;
     // Redacted lines (Leetify-derived) record their length only — never the text.
     const textField = rec.redact ? { textLen: rec.text.length } : { text: rec.text };
-    this.stream.write(
-      JSON.stringify({
-        at: new Date().toISOString(),
-        eventType: rec.event.type,
-        tier: rec.tier,
-        source: rec.source,
-        snapshot: rec.snapshot,
-        ...textField,
-      }) + "\n",
-    );
+    this.sink.write({
+      at: new Date().toISOString(),
+      eventType: rec.event.type,
+      tier: rec.tier,
+      source: rec.source,
+      snapshot: rec.snapshot,
+      ...textField,
+    });
   }
 
   /** Flush and close the stream — called on shutdown so the final decisions hit disk. */
   async close(): Promise<void> {
-    // Lazily opened, so the stream may never have been created — nothing to flush then.
-    const s = this.stream;
-    this.stream = null;
-    if (!s) return;
-    await new Promise<void>((resolve) => {
-      s.end(() => resolve());
-    });
+    await this.sink.close();
   }
 }

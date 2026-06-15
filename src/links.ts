@@ -21,7 +21,9 @@ import { loadJsonState, saveJsonState } from "./json-state.js";
 
 // Discord snowflakes are 17–20 digit numeric strings. A feed POSTing anything else
 // under auth.discordId (a griefer on the shared token, a hand-edited cfg) is ignored.
-export const DISCORD_ID_RE = /^\d{17,20}$/;
+// Re-exported from config (the single definer) so there's one source of truth; this
+// preserves the existing `import { DISCORD_ID_RE } from "./links.js"` in index.ts.
+export { DISCORD_ID_RE } from "./config.js";
 
 const STATE_FILE = process.env.LINKS_STATE_FILE ?? "state/links.json";
 

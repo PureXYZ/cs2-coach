@@ -205,6 +205,9 @@ export class TtsChain {
         }
         // Never compete with a live coaching line.
         while (opts?.busy?.() && !opts?.signal?.aborted) await sleep(2_000);
+        // The loop can exit on abort (not just busy clearing) — bail before paying
+        // for one more synth.
+        if (opts?.signal?.aborted) return { cached, skipped, failed };
         try {
           const result = await this.synth(text, { voiceId });
           await drain(result.stream); // pull to a clean 'end' so capture() persists it

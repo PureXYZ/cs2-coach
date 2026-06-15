@@ -7,8 +7,6 @@ export interface RoundRecord {
   round: number;
   side?: Team;
   buy?: BuyType;
-  /** Own equipment value when the round went live. */
-  equipStart?: number;
   result?: "won" | "lost";
   /** GSI round-win token, e.g. "t_win_bomb", "ct_win_elimination". */
   how?: string;
@@ -18,7 +16,6 @@ export interface RoundRecord {
   myDeath: boolean;
   /** Own death inside the first ~10s of the round — drives the tilt/over-peek read. */
   earlyDeath?: boolean;
-  bombPlanted: boolean;
   /** Memorable moments, e.g. "knife kill", "ace", "teamkilled someone". */
   notable: string[];
 }
@@ -75,7 +72,6 @@ export class MatchMemory {
       myKills: 0,
       myHeadshots: 0,
       myDeath: false,
-      bombPlanted: false,
       notable: [],
     };
   }
@@ -84,7 +80,6 @@ export class MatchMemory {
   roundLive(round: number, equipValue: number | undefined): void {
     const cur = this.ensure(round);
     if (equipValue === undefined) return;
-    cur.equipStart = equipValue;
     if (round === 1 || round === 13) cur.buy = "pistol";
     else if (equipValue < 1500) cur.buy = "eco";
     else if (equipValue < 3400) cur.buy = "force";
@@ -125,10 +120,6 @@ export class MatchMemory {
       else break;
     }
     return n;
-  }
-
-  recordBombPlanted(round: number): void {
-    this.ensure(round).bombPlanted = true;
   }
 
   /** Anything worth calling back to later ("knife kill", "ace", "teamkill"). */
@@ -252,7 +243,6 @@ export class MatchMemory {
       myKills: 0,
       myHeadshots: 0,
       myDeath: false,
-      bombPlanted: false,
       notable: [],
     };
     return this.current;

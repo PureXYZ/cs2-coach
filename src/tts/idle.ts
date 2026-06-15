@@ -1,8 +1,5 @@
 import { Transform, type Readable } from "node:stream";
-
-/** Big enough to hold any single coach line's Opus audio (a 40s line at 64 kbps
- *  is ~320 KB) so the reader never backpressures the source — see below. */
-const NO_BACKPRESSURE_HWM = 8 * 1024 * 1024;
+import { NO_BACKPRESSURE_HWM } from "./constants.js";
 
 /**
  * Wrap an audio stream so it self-destructs if the PROVIDER stalls mid-stream —

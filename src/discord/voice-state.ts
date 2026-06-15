@@ -8,7 +8,6 @@ import { clearJsonState, loadJsonState, saveJsonState } from "../json-state.js";
 const STATE_FILE = process.env.VOICE_STATE_FILE ?? "state/voice.json";
 
 export interface SavedVoiceChannel {
-  guildId: string;
   channelId: string;
 }
 
@@ -23,8 +22,8 @@ export function clearVoiceChannel(): void {
 export function loadVoiceChannel(): SavedVoiceChannel | null {
   return loadJsonState(STATE_FILE, "voice", (raw) => {
     const parsed = raw as Partial<SavedVoiceChannel>;
-    if (typeof parsed?.guildId === "string" && typeof parsed?.channelId === "string") {
-      return { guildId: parsed.guildId, channelId: parsed.channelId };
+    if (typeof parsed?.channelId === "string") {
+      return { channelId: parsed.channelId };
     }
     return null;
   });

@@ -385,8 +385,7 @@ export class RosterManager {
       const within = this.primaryStaleSince !== null && now - this.primaryStaleSince < PRIMARY_LEAVE_GRACE_MS;
       if (within && this.feeds.has(primary)) return;
     }
-    const eligible = (id: string, f: FeedState) =>
-      this.isFresh(f, now) && this.onRefMap(f, refMap) && (id === this.primaryId() || f.sameSide > f.oppSide);
+    const eligible = (id: string, f: FeedState) => this.isTeammate(f, id, now, refMap);
     if (this.authorityId) {
       const cur = this.feeds.get(this.authorityId);
       if (cur && eligible(this.authorityId, cur)) return;
@@ -411,7 +410,7 @@ export class RosterManager {
    *  it converts an authority lagging a faster teammate at a boundary into an honest
    *  unknown rather than a false last-man. Undefined when nothing reports a round. */
   private squadRefRound(now: number, refMap: string | undefined): number | undefined {
-    let ref = this.authorityFeed()?.tracker.context().round;
+    let ref = this.authorityFeed()?.ctx.round;
     for (const [id, f] of this.feeds) {
       if (!this.isTeammate(f, id, now, refMap)) continue;
       const r = f.ctx.round;
@@ -644,7 +643,7 @@ export class RosterManager {
     // fresh visible buyers — NOT the whole-team rosterComplete license.
     let buySyncNote: string | undefined;
     if (refRound !== undefined && econ && econ.length >= 2) {
-      const phaseIsFreeze = this.authorityFeed()?.tracker.context().roundPhase === "freezetime";
+      const phaseIsFreeze = this.authorityFeed()?.ctx.roundPhase === "freezetime";
       if (phaseIsFreeze && this.econRing.at(-1)?.round !== refRound) {
         this.econRing.push({ round: refRound, buys: econ.map((e) => ({ name: e.name, klass: buyClass(e.money) })) });
         if (this.econRing.length > 5) this.econRing.shift();
@@ -723,7 +722,7 @@ export class RosterManager {
    *  never an LLM ask — this surface names a friend's bad pattern. */
   private deriveWeakLink(now: number, refMap: string | undefined): CoachEvent | null {
     if (!runtime.teamTactics) return null;
-    if (this.authorityFeed()?.tracker.context().roundPhase !== "freezetime") return null;
+    if (this.authorityFeed()?.ctx.roundPhase !== "freezetime") return null;
     let worst: { id: string; name: string; deaths: number } | null = null;
     for (const [id, f] of this.feeds) {
       if (id === this.primaryId()) continue;

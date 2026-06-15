@@ -44,11 +44,20 @@ interface LoggedFrame {
   payload: GsiPayload;
 }
 
-let frames: LoggedFrame[] = fs
-  .readFileSync(file, "utf8")
+let frames: LoggedFrame[] = [];
+fs.readFileSync(file, "utf8")
   .split("\n")
-  .filter(Boolean)
-  .map((line) => JSON.parse(line));
+  .forEach((line, i) => {
+    if (!line) return; // blank line (e.g. the trailing newline) — not malformed, just skip
+    try {
+      frames.push(JSON.parse(line));
+    } catch {
+      // A truncated tail (e.g. the process crashed mid-write) leaves one bad line — skip it
+      // but report the PHYSICAL line number (i is the real index now, pre-filter) so the
+      // operator can find it and knows the replay was partial.
+      console.error(`skipping malformed line ${i + 1}`);
+    }
+  });
 
 // A single GsiTracker can only honestly replay ONE player's feed. Multi-feed
 // logs interleave several friends' payloads (one provider.steamid each); pushed

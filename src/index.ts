@@ -278,6 +278,12 @@ async function main(): Promise<void> {
       eventAt: Date.now(),
       stillRelevant: canSpeak,
       redactText: true,
+      // Commit the recap to the LLM's anti-repeat memory only when it actually
+      // AIRS (a held-then-dropped recap shouldn't poison future variety), and
+      // only for the LLM-produced line — never the canned fallback.
+      onPlayed: () => {
+        if (llmText) llm?.recordSpoken(text);
+      },
     });
     // Record the recap in the decision log too (redacted — length only), so the
     // offline "what did it say" trace isn't missing post-match recaps. This path

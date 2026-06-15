@@ -1,4 +1,5 @@
 import { log } from "./log.js";
+import { mapDisplayName } from "./coach/lines.js";
 
 /**
  * Read-only client for Leetify's public CS API — they parse the match demo
@@ -224,17 +225,6 @@ function agoPhrase(finishedAt: string | undefined, now: number): string | undefi
   return "a while back";
 }
 
-/** Spoken map name from a GSI/Leetify token (de_mirage → "Mirage"). Local to leetify.ts
- *  to avoid a cross-module import; the coach's mapDisplayName covers workshop/alias cases
- *  the brief never needs (the brief always sees the canonical GSI token). */
-function prettyMap(raw: string): string {
-  const token = raw.split("/").pop() ?? raw;
-  return token
-    .replace(/^(de|cs|ar)_/i, "")
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
 /** Majority win/loss direction over the most recent games on a map (up to 6), or
  *  undefined when there's no clear lean — the basis for the "winning/losing here lately"
  *  read. Counts internally; never surfaces a tally. */
@@ -266,7 +256,7 @@ function streakDir(recent: RecentMatch[]): "win" | "loss" | undefined {
  *  map form, last-on-map recency+result, recent streak, aim trend. Direction/recency only,
  *  no spoken number. */
 function deriveStartBrief(recent: RecentMatch[], map: string, now: number): LeetifyStartBrief {
-  const where = prettyMap(map);
+  const where = mapDisplayName(map);
   const onMap = recent.filter((m) => m.map_name && m.map_name.toLowerCase() === map.toLowerCase());
   const brief: LeetifyStartBrief = {};
   const last = onMap[0];
@@ -293,7 +283,7 @@ function deriveStartBrief(recent: RecentMatch[], map: string, now: number): Leet
  *  lean, then their overall streak, then their last result here. undefined when nothing
  *  stands out. */
 function deriveFriendNote(recent: RecentMatch[], map: string, now: number): string | undefined {
-  const where = prettyMap(map);
+  const where = mapDisplayName(map);
   const onMap = recent.filter((m) => m.map_name && m.map_name.toLowerCase() === map.toLowerCase());
   const lean = mapLean(onMap);
   if (lean === "loss") return `has been losing on ${where} lately`;
@@ -478,7 +468,7 @@ export class LeetifyClient {
       if (Number.isNaN(at)) continue;
       const delta = Math.abs(at - endedAtEpochMs);
       if (delta > MATCH_WINDOW_MS) continue;
-      if (map && m.map_name && m.map_name !== map) continue;
+      if (map && m.map_name && m.map_name.toLowerCase() !== map.toLowerCase()) continue;
       if (delta < bestDelta) {
         match = m;
         bestDelta = delta;
