@@ -339,6 +339,10 @@ async function main(): Promise<void> {
     recentForm: (opts) => sessions.recentForm(roster.context().map, opts),
     finalStats: () => roster.matchReport().stats,
     isQuiet: () => quiet.on,
+    // Silences live coaching in offline practice/bot games (which report mode
+    // "competitive" like a real match). OR'd across wired feeds; trips once any
+    // feed spectates a bot.
+    botsDetected: () => roster.matchReport().botsDetected,
     // Every decided line (LLM or fallback) lands in the decision log when it's
     // enabled; left undefined otherwise so the engine skips the call entirely.
     onDecision: decisionLog ? (rec) => decisionLog.write(rec) : undefined,

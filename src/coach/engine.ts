@@ -105,6 +105,21 @@ const PAYLOAD_FRESH_MS = 15_000;
 const MULTIKILL_FLUSH_MS = 700;
 
 /**
+ * The only game modes the coach speaks in. CS2 reports map.mode per the GSI spec;
+ * Premier reports "competitive" (no distinct token today — "premier" is listed
+ * defensively in case a future build splits it). Everything else — casual,
+ * deathmatch, wingman (scrimcomp2v2), community/aim/workshop maps, offline
+ * practice-with-bots — is treated as warmup/practice and gets NO live coaching
+ * (matching the recording discipline in index.ts). An UNKNOWN (undefined) mode
+ * fails OPEN: a real live speech event always carries a map block so its mode is
+ * defined, while the menu/blip frames that lack a mode emit no speech anyway.
+ */
+const COACHABLE_MODES = new Set(["competitive", "premier"]);
+function isCoachableMode(mode: string | undefined): boolean {
+  return mode === undefined || COACHABLE_MODES.has(mode);
+}
+
+/**
  * Turns tracker events into spoken lines. Twitch events (kills, bomb hype, clock
  * callouts) come from the instant rule table; decision moments go to Claude when
  * available — the smart model for slow moments (freezetime, halftime, match end),
@@ -143,6 +158,13 @@ export interface EngineDeps {
   recentForm?: (opts?: { leetifyCoversForm?: boolean }) => string[] | undefined;
   /** True while /coach mute has the coach muted — skips both lines and LLM spend. */
   isQuiet?: () => boolean;
+  /** True once this match is known to be a practice/bot game — a teammate with a
+   *  bot steamid was spectated (OR'd across wired feeds). Bot/practice games report
+   *  the same map.mode as a real match, so this is the only separator for the
+   *  competitive-with-bots case. One-way and lagging (it can only trip once the
+   *  user dies and spectates a bot), so it's a backstop to the mode gate, not a
+   *  substitute. */
+  botsDetected?: () => boolean;
   /** Fired once per matchEnd, quiet or not: session recording + the Leetify recap. */
   onMatchEnd?: (event: Extract<CoachEvent, { type: "matchEnd" }>, ctx: MatchContext) => void;
   /** Fired for every decided line (LLM or fallback) — feeds the optional
@@ -240,7 +262,37 @@ export class CoachEngine {
     return false;
   }
 
+  /** Whether the coach should produce LIVE spoken lines for this match: a ranked
+   *  mode (Premier/Competitive) AND not a detected practice/bot game. Everything
+   *  else — casual, deathmatch, wingman, community/aim maps, offline practice — is
+   *  warmup/practice the user doesn't want narrated. */
+  private coachableNow(ctx: MatchContext): boolean {
+    return isCoachableMode(ctx.mode) && !(this.deps.botsDetected?.() ?? false);
+  }
+
   private handleOne(event: CoachEvent, ctx: MatchContext, batch: Set<CoachEvent["type"]>): void {
+    // Practice/warmup/bot game: stay silent. No kill hype, buy calls, greeting, or
+    // scouting speech — the user is killing bots in a warmup map, not playing a real
+    // round. The matchEnd bookkeeping still runs (onMatchEnd self-gates recording +
+    // the Leetify recap on mode/bots in index.ts, so a real game is never mis-skipped
+    // here and a practice game is skipped there anyway). The clock/bomb timers are
+    // armed only from inside the switch below, so gating here also stops them being
+    // scheduled — and the callouts themselves re-check coachableNow for the
+    // competitive-with-bots case where the bot flag only trips mid-match.
+    if (!this.coachableNow(ctx)) {
+      if (event.type === "matchEnd") {
+        this.cancelTimers();
+        this.warmupSpeechGiven = false;
+        this.matchStarted = false;
+        try {
+          this.deps.onMatchEnd?.(event, ctx);
+        } catch (err) {
+          log.error("coach", "onMatchEnd hook failed", err);
+        }
+      }
+      log.debug("engine", `${event.type}: non-coachable (mode ${ctx.mode ?? "unknown"}${this.deps.botsDetected?.() ? ", bots" : ""}) — silent`);
+      return;
+    }
     switch (event.type) {
       case "mapLoading": {
         // The pre-round-1 warmup window: dead air, no buy to race. Warm the Leetify
@@ -892,6 +944,9 @@ export class CoachEngine {
           return; // GSI went quiet — don't talk into a dead game
         }
         const ctx = this.getCtx();
+        // A practice/bot game got confirmed (a bot was spectated) after this timer
+        // was armed in a competitive-with-bots match — drop the callout.
+        if (!this.coachableNow(ctx)) return;
         // Dead/spectating: a "hold your angles" clock nudge is advice a corpse
         // can't take (a live session heard one ~minute after dying). Also covers
         // the death-cam window where GSI still reports the dead self (playerIsSelf
@@ -946,6 +1001,8 @@ export class CoachEngine {
           return; // GSI went quiet — the frozen ctx would lie
         }
         const ctx = this.getCtx();
+        // A practice/bot game got confirmed after this timer was armed — drop it.
+        if (!this.coachableNow(ctx)) return;
         // Dead/spectating (incl. the death-cam window: self, health 0) — "bail" or
         // "hold the bomb" is meaningless to a corpse.
         if (!ctx.playerIsSelf || (ctx.health ?? 0) <= 0) {

@@ -545,14 +545,51 @@ console.log("\n=== scenario: mid-OT side swap and non-MR12 modes get the right r
   expect(line !== undefined && !/tied/i.test(line.text), "mid-OT swap line never claims a tied score");
 }
 {
-  // Wingman (MR8) reaching round 12: that's mid-second-half there, not halftime.
+  // Wingman (scrimcomp2v2) is NOT a ranked 5v5 mode — per the "Premier/Competitive
+  // only" choice the coach stays silent in it, same as casual/deathmatch/practice.
   const { out, engine: e } = freshEngine();
   e.handle(
     [{ type: "roundEnd", won: true, method: "ct_win_elimination", ourScore: 6, theirScore: 5 }],
     { round: 12, mode: "scrimcomp2v2", ourSide: "CT", playerIsSelf: true },
   );
-  const line = out.find((s) => s.category === "roundEnd");
-  expect(line !== undefined && !/half|pistol|swap|overtime/i.test(line.text), `wingman round 12 gets a normal round react ("${line?.text.slice(0, 70)}")`);
+  expect(!out.some((s) => s.category === "roundEnd"), "wingman (non-ranked mode) gets no round-end react");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: non-ranked modes and bot matches get NO live coaching ===");
+{
+  // Casual / deathmatch / community-aim map: a live game in a non-ranked mode —
+  // greeting, kill hype and buy calls all stay silent (the user warming up on bots).
+  const { out, engine: e } = freshEngine();
+  e.handle([{ type: "matchStart", map: "de_dust2", mode: "casual" }], { mode: "casual", playerIsSelf: true });
+  e.handle([{ type: "kill", roundKills: 4, headshot: false }], { mode: "deathmatch", playerIsSelf: true });
+  e.handle([{ type: "specialKill", kind: "knife", kills: 1 }], { mode: "casual", playerIsSelf: true });
+  expect(out.length === 0, "non-ranked modes (casual/deathmatch) produce no live coaching");
+}
+{
+  // An unknown (undefined) mode fails OPEN — a real live event always carries a
+  // map block, so undefined only shows up where nothing should be suppressed.
+  const { out, engine: e } = freshEngine();
+  e.handle([{ type: "kill", roundKills: 3, headshot: false }], { playerIsSelf: true });
+  expect(out.some((s) => s.category === "kill"), "undefined mode still coaches (fail-open)");
+}
+{
+  // Offline practice / bot match reports mode "competitive" like a real game, so the
+  // mode gate alone can't catch it — once a bot is spectated the bots flag trips and
+  // all further live coaching goes silent (one-way, mid-match).
+  const out: SpeakRequest[] = [];
+  let bots = false;
+  const e = new CoachEngine((req) => out.push(req), null, {
+    getCtx: () => ({ mode: "competitive", playerIsSelf: true }),
+    botsDetected: () => bots,
+  });
+  e.handle([{ type: "kill", roundKills: 3, headshot: false }], { mode: "competitive", playerIsSelf: true });
+  expect(out.some((s) => s.category === "kill"), "competitive game speaks before any bot is spotted");
+  bots = true;
+  const before = out.length;
+  e.handle([{ type: "kill", roundKills: 4, headshot: false }], { mode: "competitive", playerIsSelf: true });
+  e.handle([{ type: "matchStart", map: "de_mirage", mode: "competitive" }], { mode: "competitive", playerIsSelf: true });
+  expect(out.length === before, "once a bot is spotted, the bot match goes silent");
 }
 
 // ---------------------------------------------------------------------------
