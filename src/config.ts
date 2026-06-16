@@ -203,6 +203,31 @@ function steamId64Env(name: string): string | undefined {
   return raw;
 }
 
+// Split a comma-separated env value into trimmed, non-empty, de-duplicated entries.
+function splitCsv(raw: string): string[] {
+  return [...new Set(raw.split(",").map((s) => s.trim()).filter(Boolean))];
+}
+
+// COACH_SQUAD is the crew POOL — a comma-separated list of every friend's SteamID64
+// who runs the coach. It's membership-only (NOT a stack size): the coach uses it to
+// recognise a full stack of your crew even in games the owner isn't playing. A pool
+// is wider than a single team, so it's capped at `max` (default 10), not 5. Same
+// fail-loud philosophy as steamId64Env: a typo'd id throws at startup.
+function steamIdListEnv(name: string, max = 10): string[] | undefined {
+  const raw = process.env[name];
+  if (!raw?.trim()) return undefined;
+  const ids = splitCsv(raw);
+  for (const id of ids) {
+    if (!STEAMID64_RE.test(id)) {
+      throw new Error(`${name} entry "${id}" must be a 17-digit SteamID64 (7656…)`);
+    }
+  }
+  if (ids.length < 1 || ids.length > max) {
+    throw new Error(`${name} must list 1–${max} SteamID64s, got ${ids.length}`);
+  }
+  return ids;
+}
+
 // COACH_LLM_EFFORT is passed straight to the Anthropic API; a typo'd value would
 // otherwise reach the provider and fail per-request. Validate it loudly at startup
 // instead. Empty string is allowed (it means "omit the effort field").
@@ -255,6 +280,33 @@ function discordIdEnv(name: string): string | undefined {
     throw new Error(`${name} must be a Discord id (17–20 digits), got "${raw}"`);
   }
   return raw;
+}
+
+// --- crew identity (COACH_PRIMARY_STEAM64 / COACH_SQUAD / COACH_SQUAD_SIZE) ---
+// Resolved before the literal so the pool can be cross-checked against the primary/size.
+const coachPrimarySteam64 = steamId64Env("COACH_PRIMARY_STEAM64");
+const coachCrewPool = steamIdListEnv("COACH_SQUAD");
+const coachSquadSize = intEnv("COACH_SQUAD_SIZE", 0, 0, 5) || undefined;
+if (coachCrewPool) {
+  // The pool recognises full stacks of the crew (including games the owner isn't in),
+  // so it needs to know which account is the owner and how big a full stack is. Fail
+  // loud rather than silently never firing.
+  if (!coachPrimarySteam64) {
+    throw new Error("COACH_SQUAD needs COACH_PRIMARY_STEAM64 set so the coach knows which crew member is you.");
+  }
+  if (!coachCrewPool.includes(coachPrimarySteam64)) {
+    throw new Error(
+      `COACH_PRIMARY_STEAM64 (${coachPrimarySteam64}) must be one of the COACH_SQUAD pool ids (you're part of the crew).`,
+    );
+  }
+  if (coachSquadSize === undefined) {
+    throw new Error("COACH_SQUAD needs COACH_SQUAD_SIZE set (your stack size — a Premier team is 5).");
+  }
+  if (coachCrewPool.length < coachSquadSize) {
+    throw new Error(
+      `COACH_SQUAD lists ${coachCrewPool.length} ids but COACH_SQUAD_SIZE is ${coachSquadSize} — the pool can never field a full stack, so whole-team calls would never fire. List your whole crew.`,
+    );
+  }
 }
 
 export const config = {
@@ -423,12 +475,17 @@ export const config = {
     // the first feed seen and pin it for the session (correct when you run solo).
     // A malformed id used to silently never bind the primary (it could never
     // match a real provider.steamid); steamId64Env now throws at startup instead.
-    primarySteam64: steamId64Env("COACH_PRIMARY_STEAM64"),
-    // How many of you run the coach. Setting this is the ONLY thing that lets the
-    // coach speak with whole-team certainty ("you're the last one alive",
-    // "everyone's broke"). Leave it unset and the coach always hedges to "the
-    // players I can see" — safe even when someone forgets to launch the cfg.
-    squadSize: intEnv("COACH_SQUAD_SIZE", 0, 0, 5) || undefined,
+    primarySteam64: coachPrimarySteam64,
+    // COACH_SQUAD — the crew POOL (every friend's SteamID64). Optional. Lets the coach
+    // recognise a full stack of your crew and coach it EVEN IN GAMES THE OWNER ISN'T IN
+    // (it scopes "whose games to talk about" to your group). Membership-only — the
+    // stack size comes from COACH_SQUAD_SIZE below, not the pool length.
+    crewPool: coachCrewPool,
+    // The stack size (a CS2 team is 5). Setting this is what lets the coach speak with
+    // whole-team certainty ("you're the last one alive", "everyone's broke") once that
+    // many confirmed teammate feeds are wired. Leave it unset and the coach always
+    // hedges to "the players I can see" — safe even when someone forgets to launch the cfg.
+    squadSize: coachSquadSize,
     // Team-economy tactics: buy-sync calls and named drop suggestions at
     // freezetime, plus last-man framing. On by default; set false to keep the
     // coach focused on the primary player and skip the team-econ calls.

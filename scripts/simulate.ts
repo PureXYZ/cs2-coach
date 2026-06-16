@@ -1038,13 +1038,13 @@ const P1 = "76561198000000001"; // primary user ("Andy")
 const P2 = "76561198000000002"; // friend ("Mouse")
 const P3 = "76561198000000003"; // friend ("Cadian")
 
-function rosterRig(primary: string): {
+function rosterRig(primary: string, crewPool?: ReadonlySet<string>): {
   r: InstanceType<typeof RosterManager>;
   out: SpeakRequest[];
   run: (label: string, p: GsiPayload) => CoachEvent[];
 } {
   const out: SpeakRequest[] = [];
-  const r = new RosterManager(primary);
+  const r = new RosterManager(primary, crewPool);
   const e = new CoachEngine((req) => out.push(req), null, { getCtx: () => r.context() });
   const run = (label: string, p: GsiPayload): CoachEvent[] => {
     const { events, ctx } = r.update(p);
@@ -1055,6 +1055,187 @@ function rosterRig(primary: string): {
     return events;
   };
   return { r, out, run };
+}
+
+// --- crew-pool / primary-ABSENT (COACH_SQUAD) -------------------------------
+// The coach must recognise a full stack of the crew in games the OWNER isn't playing,
+// WITHOUT ever merging two different same-map games into a phantom stack. The configured
+// primary (OWNER) is in the pool but never POSTs a feed in these scenarios. squadSize
+// comes from COACH_SQUAD_SIZE (=3 in this harness). Round-win history is the lobby key.
+const OWNER = "76561198000000010"; // configured primary, in the pool, never plays here
+const P4 = "76561198000000004";
+const P5 = "76561198000000005";
+// A round-win history of n completed rounds. rwA and rwB CONTRADICT from round 1, so two
+// feeds carrying different ones are provably in different matches.
+const rwA = (n: number) =>
+  Object.fromEntries(Array.from({ length: n }, (_, i) => [String(i + 1), i % 2 === 0 ? "ct_win_elimination" : "t_win_bomb"]));
+const rwB = (n: number) =>
+  Object.fromEntries(Array.from({ length: n }, (_, i) => [String(i + 1), i % 2 === 0 ? "t_win_elimination" : "ct_win_defuse"]));
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: COACH_SQUAD — full crew stack WITHOUT the owner unlocks whole-team calls ===");
+{
+  const pool = new Set([OWNER, P1, P2, P3]);
+  const { r, run } = rosterRig(OWNER, pool); // owner configured but never feeds here
+  // Cold start: round 1, NO round-win history yet — two same-map games are
+  // indistinguishable, so the coach MUST hedge (no whole-team certainty).
+  run("P1 r1 live", payload({ provider: P1, roundPhase: "live", round: 0, name: "Mouse" }));
+  run("P2 r1 live", payload({ provider: P2, roundPhase: "live", round: 0, name: "Cadian" }));
+  run("P3 r1 live", payload({ provider: P3, roundPhase: "live", round: 0, name: "NiKo" }));
+  // Non-vacuous: assert the SPECIFIC cold-start state — only the anchor confirms (the
+  // others fail the immature fingerprint), so live < 2 and NO team block is built. (The
+  // post-maturity `=== true` assertion below then brackets the fingerprint gate.)
+  expect(r.context().team === undefined, "cold start (no round history) builds NO team block — the coach hedges");
+
+  // Four agreed completed rounds (matching round-win history) mature the fingerprint:
+  // the three feeds are now provably one lobby and confirm as a full stack. Non-0-0
+  // score so the per-feed matchStart reset doesn't wipe the tally.
+  const live4 = { roundPhase: "live" as const, round: 4, roundWins: rwA(4), ctScore: 2, tScore: 2 };
+  run("P1 mature", payload({ provider: P1, name: "Mouse", ...live4 }));
+  run("P2 mature", payload({ provider: P2, name: "Cadian", ...live4 }));
+  run("P3 mature", payload({ provider: P3, name: "NiKo", ...live4 }));
+  const full = r.context();
+  expect(full.team?.rosterComplete === true, "3 crew, no owner, matured fingerprint → roster-complete");
+  expect(full.team?.members.every((m) => !m.isPrimary) === true, "no member is the (absent) primary");
+
+  // Drop to one survivor: last-man fires, named in the THIRD person (there is no "you").
+  run("P2 dies", payload({ provider: P2, name: "Cadian", ...live4, state: { health: 0 }, weapons: {} }));
+  const lm = run("P3 dies", payload({ provider: P3, name: "NiKo", ...live4, state: { health: 0 }, weapons: {} }));
+  const last = lm.find((e) => e.type === "lastManStanding") as Extract<CoachEvent, { type: "lastManStanding" }> | undefined;
+  expect(last !== undefined, "last-man fires for a full crew stack the owner isn't in");
+  expect(last?.who.name === "Mouse", `last-man names the surviving friend, third person (got ${last?.who.name})`);
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: COACH_SQUAD — two same-map games never merge into a phantom stack ===");
+{
+  const pool = new Set([OWNER, P1, P2, P3, P4, P5]);
+  const { r, run } = rosterRig(OWNER, pool);
+  // Lobby A = {P1,P2} and lobby B = {P3,P4}, BOTH on de_mirage, both with a matured but
+  // CONTRADICTING round-win history. squadSize is 3 — neither lobby has 3, but together
+  // they'd be 4. The fingerprint must keep them apart so no phantom 3-stack ever forms.
+  const a = { roundPhase: "live" as const, round: 4, roundWins: rwA(4), ctScore: 2, tScore: 2 };
+  const b = { roundPhase: "live" as const, round: 4, roundWins: rwB(4), ctScore: 2, tScore: 2 };
+  run("A P1", payload({ provider: P1, name: "Mouse", ...a }));
+  run("A P2", payload({ provider: P2, name: "Cadian", ...a }));
+  run("B P3", payload({ provider: P3, name: "Stranger1", ...b }));
+  run("B P4", payload({ provider: P4, name: "Stranger2", ...b }));
+  const ctx = r.context();
+  expect(ctx.team?.rosterComplete !== true, "two disjoint same-map games do NOT merge into a 3-stack");
+  expect((ctx.team?.members.length ?? 0) <= 2, `only one lobby's feeds count as teammates (got ${ctx.team?.members.length})`);
+  expect(!ctx.team?.members.some((m) => m.name === "Stranger1" || m.name === "Stranger2"), "the other game's players are never in the squad");
+  // Positive side: lobby A's two feeds ARE confirmed — so this scenario can't pass
+  // vacuously if pool confirmation broke entirely (team would be undefined / empty).
+  expect(
+    ctx.team?.members.length === 2 && ctx.team.members.every((m) => m.name === "Mouse" || m.name === "Cadian"),
+    `lobby A's two feeds are confirmed, lobby B's excluded (got ${ctx.team?.members.map((m) => m.name).join(",") ?? "no team"})`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: COACH_SQUAD — owner joining mid-match keeps the stack (anchor→primary handoff) ===");
+{
+  const pool = new Set([OWNER, P1, P2, P3]);
+  const { r, run } = rosterRig(OWNER, pool);
+  const live4 = { roundPhase: "live" as const, round: 4, roundWins: rwA(4), ctScore: 2, tScore: 2 };
+  // Owner absent: P1/P2/P3 form a matured stack via the pool anchor.
+  run("P1", payload({ provider: P1, name: "Mouse", ...live4 }));
+  run("P2", payload({ provider: P2, name: "Cadian", ...live4 }));
+  run("P3", payload({ provider: P3, name: "NiKo", ...live4 }));
+  expect(r.context().team?.rosterComplete === true, "owner-absent crew stack is complete");
+  // Owner joins the SAME game in progress — the primary path takes over WITHOUT dropping
+  // the already-confirmed crew (the ex-anchor keeps its same-side standing).
+  run("OWNER joins", payload({ provider: OWNER, name: "Andy", ...live4 }));
+  const after = r.context();
+  expect(after.team?.rosterComplete === true, "stack stays complete after the owner joins (no flicker)");
+  expect(after.team?.members.some((m) => m.isPrimary) === true, "the owner is now the primary member");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: COACH_SQUAD — a different-game pool feed can't ride a stale vote into the squad at handoff ===");
+{
+  const pool = new Set([OWNER, P1, P2, P3, P4]);
+  const { r, run } = rosterRig(OWNER, pool);
+  // Cold start (no history): the real stack P1/P2/P3 AND a benched friend P4 who is in a
+  // DIFFERENT same-map game all post round 1 on the same side, so P4 banks a same-side
+  // vote against the anchor while nothing can yet tell the two games apart.
+  run("P1 r1", payload({ provider: P1, roundPhase: "live", round: 0, name: "Mouse" }));
+  run("P2 r1", payload({ provider: P2, roundPhase: "live", round: 0, name: "Cadian" }));
+  run("P3 r1", payload({ provider: P3, roundPhase: "live", round: 0, name: "NiKo" }));
+  run("P4 r1", payload({ provider: P4, roundPhase: "live", round: 0, name: "Contaminant" }));
+  // Histories mature and DIVERGE: P1/P2/P3 share rwA, P4's game is rwB (contradicting).
+  const a = { roundPhase: "live" as const, round: 4, roundWins: rwA(4), ctScore: 2, tScore: 2 };
+  const b = { roundPhase: "live" as const, round: 4, roundWins: rwB(4), ctScore: 2, tScore: 2 };
+  run("P1 mature", payload({ provider: P1, name: "Mouse", ...a }));
+  run("P2 mature", payload({ provider: P2, name: "Cadian", ...a }));
+  run("P3 mature", payload({ provider: P3, name: "NiKo", ...a }));
+  run("P4 mature", payload({ provider: P4, name: "Contaminant", ...b }));
+  expect(!r.context().team?.members.some((m) => m.name === "Contaminant"), "the different-game friend is excluded while the owner is absent");
+  // Owner joins their friends' game. P4 still carries its stale same-side vote, but its
+  // round-win history contradicts the owner's, so it must NOT ride that vote into the squad.
+  run("OWNER joins", payload({ provider: OWNER, name: "Andy", ...a }));
+  const after = r.context();
+  expect(after.team?.rosterComplete === true, "the real stack (owner + 3) is complete after the join");
+  expect(!after.team?.members.some((m) => m.name === "Contaminant"), "the different-game friend never rides a stale vote into the squad at handoff");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: COACH_SQUAD — the side anchor re-elects from a minority same-map lobby to the real stack ===");
+{
+  const pool = new Set([OWNER, P1, P2, P3, P4, P5]);
+  const { r, run } = rosterRig(OWNER, pool);
+  const a = { roundPhase: "live" as const, round: 4, roundWins: rwA(4), ctScore: 2, tScore: 2 };
+  const b = { roundPhase: "live" as const, round: 4, roundWins: rwB(4), ctScore: 2, tScore: 2 };
+  // The minority lobby B (P4,P5) wires FIRST, so a naive sticky anchor would seat there
+  // for the whole match and never recognise the real stack.
+  run("B P4", payload({ provider: P4, name: "Stranger1", ...b }));
+  run("B P5", payload({ provider: P5, name: "Stranger2", ...b }));
+  // The real 3-stack (lobby A) wires in: its larger, CONTRADICTING cluster must pull the
+  // anchor away from lobby B. A second tick lets every lobby-A feed vote against the
+  // re-elected anchor.
+  for (const tick of ["", "'"]) {
+    run(`A P1${tick}`, payload({ provider: P1, name: "Mouse", ...a }));
+    run(`A P2${tick}`, payload({ provider: P2, name: "Cadian", ...a }));
+    run(`A P3${tick}`, payload({ provider: P3, name: "NiKo", ...a }));
+  }
+  const ctx = r.context();
+  expect(ctx.team?.rosterComplete === true, "anchor re-elects from minority lobby B to the real 3-stack in lobby A");
+  expect(
+    ctx.team?.members.length === 3 && ctx.team.members.every((m) => ["Mouse", "Cadian", "NiKo"].includes(m.name ?? "")),
+    `the recognised stack is lobby A, not the minority lobby B (got ${ctx.team?.members.map((m) => m.name).join(",")})`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: COACH_SQUAD — re-election clears stale opposite-side votes so the real stack still confirms ===");
+{
+  const pool = new Set([OWNER, P1, P2, P3, P4, P5]);
+  const { r, run } = rosterRig(OWNER, pool);
+  // Cold start (no history): minority lobby B (P4,P5) on CT wires first and seats the
+  // anchor; the real stack lobby A (P1,P2,P3) is on the OPPOSITE side (T), so during the
+  // no-history window its feeds bank OPPOSITE-side votes against the B-anchor.
+  run("B P4 r1", payload({ provider: P4, roundPhase: "live", round: 0, name: "Stranger1", team: "CT" }));
+  run("B P5 r1", payload({ provider: P5, roundPhase: "live", round: 0, name: "Stranger2", team: "CT" }));
+  run("A P1 r1", payload({ provider: P1, roundPhase: "live", round: 0, name: "Mouse", team: "T" }));
+  run("A P2 r1", payload({ provider: P2, roundPhase: "live", round: 0, name: "Cadian", team: "T" }));
+  run("A P3 r1", payload({ provider: P3, roundPhase: "live", round: 0, name: "NiKo", team: "T" }));
+  // Histories diverge → the anchor re-elects to lobby A AND must drop the stale opposite-
+  // side votes, or the real stack would stay suppressed (sameSide never exceeds oppSide).
+  const a = { roundPhase: "live" as const, round: 4, roundWins: rwA(4), ctScore: 2, tScore: 2, team: "T" as const };
+  const b = { roundPhase: "live" as const, round: 4, roundWins: rwB(4), ctScore: 2, tScore: 2, team: "CT" as const };
+  run("B P4", payload({ provider: P4, name: "Stranger1", ...b }));
+  run("B P5", payload({ provider: P5, name: "Stranger2", ...b }));
+  for (const tick of ["", "'"]) {
+    run(`A P1${tick}`, payload({ provider: P1, name: "Mouse", ...a }));
+    run(`A P2${tick}`, payload({ provider: P2, name: "Cadian", ...a }));
+    run(`A P3${tick}`, payload({ provider: P3, name: "NiKo", ...a }));
+  }
+  const ctx = r.context();
+  expect(ctx.team?.rosterComplete === true, "the real (opposite-side) stack confirms after re-election clears stale opp votes");
+  expect(
+    ctx.team?.members.length === 3 && ctx.team.members.every((m) => ["Mouse", "Cadian", "NiKo"].includes(m.name ?? "")),
+    `the recognised stack is lobby A (got ${ctx.team?.members.map((m) => m.name).join(",")})`,
+  );
 }
 
 // ---------------------------------------------------------------------------

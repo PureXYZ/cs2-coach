@@ -28,17 +28,21 @@ import { log } from "../log.js";
  * swap-invariant (so the halftime side flip, which reaches each feed at a slightly
  * different instant, can't momentarily mis-classify anyone):
  *   - MAP: a feed must be on the same map as the squad (different lobby = different map).
- *   - SIDE: a per-feed running tally of "same side as the primary" vs "opposite",
- *     reset each match. A real teammate is ALWAYS on the primary's side (both swap
- *     together), an enemy ALWAYS opposite. The vote is only cast while the feed and
- *     the primary are on the SAME round number — at a side-swap the two cross the
- *     round boundary a frame apart, so equal-round gating skips exactly the
- *     out-of-phase frames (within a round, sides never change). We never key
- *     membership on the instantaneous side, only on this accumulated vote.
+ *   - SIDE: a per-feed running tally of "same side as the ANCHOR" vs "opposite",
+ *     reset each match. The anchor is the PRIMARY (the configured owner) while it's
+ *     live; in games the owner isn't in, COACH_SQUAD lets a crew-pool feed stand in as
+ *     the anchor (electSideAnchor) so a full stack of friends is still recognised. A
+ *     real teammate is ALWAYS on the anchor's side (both swap together), an enemy ALWAYS
+ *     opposite. The vote is only cast while the feed and the anchor are on the SAME round
+ *     number — at a side-swap the two cross the round boundary a frame apart, so
+ *     equal-round gating skips exactly the out-of-phase frames (within a round, sides
+ *     never change). We never key membership on the instantaneous side, only the vote.
  *
- * Honesty: the coach never asserts whole-team facts (last man, everyone's broke)
- * unless the squad is fully wired (COACH_SQUAD_SIZE met and that many CONFIRMED
- * teammate feeds fresh) — see buildTeam().
+ * Honesty: the coach never asserts whole-team facts (last man, everyone's broke) unless
+ * the squad is fully wired (COACH_SQUAD_SIZE met by that many CONFIRMED teammate feeds
+ * fresh) — see buildTeam(). On the pool-anchor path (owner absent) confirmation ALSO
+ * requires a MATURE round-win fingerprint (roundWinAgreement >= MIN_FINGERPRINT_ROUNDS),
+ * so two of the crew's separate same-map games can never merge into a phantom stack.
  */
 
 /** STEAMID64_RE (imported from ../config.js) matches a real SteamID64. The local
@@ -112,6 +116,36 @@ const PRIMARY_RECLAIM_CONFIRM_MS = config.gsi.feedStaleMs - 3_000;
 // ~10 players, so 16 is ample headroom; past it, new feeds are ignored (logged once).
 const MAX_FEEDS = 16;
 
+// Completed rounds two feeds must AGREE on before they're treated as the same match.
+// Below this the coach hedges (no whole-team certainty) for a primary-absent stack:
+// at match start there's no round history, so two games on the same map are
+// indistinguishable; ~4 agreed round outcomes make a coincidental match vanishingly
+// unlikely (< ~1%). This is the cold-start hedge — see roundWinAgreement / isTeammate.
+const MIN_FINGERPRINT_ROUNDS = 4;
+
+/** Lobby fingerprint: do two feeds' round-OUTCOME histories place them in the SAME
+ *  match? Two CS2 games diverge in who-won-each-round within a round or two, so a
+ *  shared, consistent round-win prefix is a far stronger lobby key than the map name
+ *  (shared by concurrent games) or the score (collides). Returns the number of rounds
+ *  both feeds recorded with the SAME outcome, or -1 if they CONTRADICT (a round both
+ *  recorded with a different winner — different matches, period). Inputs are
+ *  map.round_wins records ({ "1": "ct_win_elimination", ... }); a feed legitimately a
+ *  round behind simply lacks the latest key, so only shared round numbers are compared. */
+function roundWinAgreement(
+  a: Record<string, string> | undefined,
+  b: Record<string, string> | undefined,
+): number {
+  if (!a || !b) return 0; // no history yet (warmup / round 1) — unknown, not a contradiction
+  let agreed = 0;
+  for (const [round, outcome] of Object.entries(a)) {
+    const other = b[round];
+    if (other === undefined) continue; // the other feed hasn't recorded this round yet
+    if (other !== outcome) return -1; // SAME round, DIFFERENT outcome → different matches
+    agreed++;
+  }
+  return agreed;
+}
+
 export class RosterManager {
   private feeds = new Map<string, FeedState>();
   /** Sticky authority feed (supplies global events + the clock context). */
@@ -146,8 +180,19 @@ export class RosterManager {
   private primaryEverSeen = false;
   /** Log-once latch for the MAX_FEEDS ceiling (a token flood would otherwise spam). */
   private warnedFeedCap = false;
+  /** Crew-pool side anchor: when the configured primary isn't feeding us, this is the
+   *  pool feed we measure "same side" against, so a full stack of the crew can be
+   *  recognised in games the owner isn't in. null whenever the primary is live (the
+   *  primary is the anchor then) or no pool is configured. */
+  private anchorId: string | null = null;
 
-  constructor(private readonly configuredPrimary = config.coach.primarySteam64) {}
+  constructor(
+    private readonly configuredPrimary = config.coach.primarySteam64,
+    /** COACH_SQUAD — the crew pool. Membership-only: lets the coach recognise a full
+     *  stack of these accounts even when the owner isn't playing. Injectable for tests. */
+    private readonly crewPool: ReadonlySet<string> | undefined =
+      config.coach.crewPool ? new Set(config.coach.crewPool) : undefined,
+  ) {}
 
   /** Feed one GSI payload (from any friend's client); returns the fused events
    *  the engine should react to plus the merged match context. */
@@ -209,8 +254,14 @@ export class RosterManager {
       this.confirmedEver.clear();
     }
 
-    // Record this feed's side membership against the primary anchor, and remember
-    // the primary's current map for the recap's quiet-moment check.
+    // The squad map and the side anchor (the primary when it's live; otherwise a crew-
+    // pool feed, so a full stack can be recognised in games the owner isn't in).
+    // Computed before the vote so both the vote and authority election see it.
+    const refMap = this.refMap(now);
+    this.electSideAnchor(now, refMap);
+
+    // Record this feed's side membership against that anchor, and remember the primary's
+    // current map for the recap's quiet-moment check.
     if (isPrimary) {
       // Ops ITEM 14: the CONFIGURED primary showing up this match (clears the 'never
       // connected' warning) is set at the END of update() — Finding #21: forwardGlobal
@@ -218,29 +269,38 @@ export class RosterManager {
       // be clobbered within the same call. Setting it post-loop lets the set win.
       if (feed.ctx.map) this.lastPrimaryMap = feed.ctx.map;
     } else {
-      // Vote ONLY when this feed and the primary are on the SAME round. At a
-      // side-swap (half/OT boundary) the two feeds cross the round one frame apart,
-      // so their sides are briefly out of phase and a naive comparison would
-      // mis-classify (an enemy momentarily looks same-side, a teammate opposite).
-      // Within a single round sides never change, so requiring an equal round
-      // number skips exactly those transition frames — no special-casing the swap,
-      // and a brand-new feed seen only during the seam casts no vote at all.
-      const primary = this.primaryFeed();
-      const primarySide = primary?.tracker.ownSide();
+      // Vote ONLY when this feed and the anchor are on the SAME round. At a side-swap
+      // (half/OT boundary) the two cross the round one frame apart, so their sides are
+      // briefly out of phase and a naive comparison would mis-classify (an enemy
+      // momentarily looks same-side, a teammate opposite). Within a round sides never
+      // change, so requiring an equal round number skips exactly those transition frames.
+      const ref = this.referenceFeed(now);
+      const refSide = ref?.tracker.ownSide();
       const side = feed.tracker.ownSide();
+      // On the primary-absent (pool anchor) path, only a crew-pool member with a PROVEN
+      // own side may vote, and only against an anchor in the SAME match (no round-win
+      // contradiction) — so a friend in a different game on the shared token never
+      // accrues a same-side tally. The primary path is unchanged (always eligible).
+      const anchored = ref !== undefined && ref === this.anchorFeed();
+      const eligibleToVote =
+        !anchored || (this.isPoolPlayer(feed, steamid) && this.lobbyAgreement(feed, ref) >= 0);
+      // The anchor votes itself same-side (ref === feed, side === refSide) — it IS our
+      // side by definition. This also gives it a same-side standing for free, so when
+      // the owner later joins and the anchor becomes an ordinary feed, it stays confirmed
+      // instead of flickering out until it re-accumulates a vote.
       if (
-        primary &&
-        primarySide &&
+        ref &&
+        refSide &&
         side &&
+        eligibleToVote &&
         feed.ctx.round !== undefined &&
-        feed.ctx.round === primary.ctx.round
+        feed.ctx.round === ref.ctx.round
       ) {
-        if (side === primarySide) feed.sameSide++;
+        if (side === refSide) feed.sameSide++;
         else feed.oppSide++;
       }
     }
 
-    const refMap = this.refMap(now);
     this.logMembershipTransition(steamid, feed, now, refMap);
     this.electAuthority(now, refMap);
     const isAuthority = this.authorityId === steamid;
@@ -297,6 +357,116 @@ export class RosterManager {
     return this.authorityId ? this.feeds.get(this.authorityId) : undefined;
   }
 
+  /** Is this account one of the configured crew (COACH_SQUAD)? false when no pool is set. */
+  private isPoolMember(id: string): boolean {
+    return this.crewPool?.has(id) ?? false;
+  }
+
+  /** A crew-pool account that has PROVEN its own side from a real self frame — the only
+   *  feeds that may anchor or be counted toward an owner-absent stack (a wired
+   *  observer/caster never sets a self side, so it's excluded). A crew member who
+   *  connected while DEAD is briefly excluded here too, until their first alive self
+   *  frame — an accepted, safe over-hedge: we won't count a side we can't self-verify. */
+  private isPoolPlayer(feed: FeedState, id: string): boolean {
+    return this.isPoolMember(id) && feed.tracker.hasSelfSide();
+  }
+
+  /** Round-win-history agreement between a feed and the side reference: >= 0 means no
+   *  contradiction (same match, or no shared history yet), -1 means a proven DIFFERENT
+   *  match. The lobby key on the owner-absent path. */
+  private lobbyAgreement(feed: FeedState, ref: FeedState | undefined): number {
+    return roundWinAgreement(feed.tracker.roundWinsRaw(), ref?.tracker.roundWinsRaw());
+  }
+
+  /** anchorId is maintained only inside update() (electSideAnchor runs every frame; reap
+   *  clears it). Between updates the read-only getters below see the last election, which
+   *  stays correct because isTeammate re-checks isFresh against the current time, so a
+   *  stale anchor feed is excluded rather than mis-trusted. */
+  private anchorFeed(): FeedState | undefined {
+    return this.anchorId ? this.feeds.get(this.anchorId) : undefined;
+  }
+
+  /** The feed "same side" is measured against: the primary while it's live, otherwise
+   *  the elected crew-pool anchor (so a stack is recognisable with the owner absent). */
+  private referenceFeed(now: number): FeedState | undefined {
+    const primary = this.primaryFeed();
+    if (this.isFresh(primary, now)) return primary;
+    // No fresh primary: the elected pool anchor (owner-absent crew game), or nothing. We
+    // deliberately do NOT fall back to a STALE primary here — a frozen prior-match primary
+    // would let a non-pool feed (even an enemy) bank a cross-match same-side vote against
+    // it and be confirmed. Losing a few votes during the owner's brief blip is the safe
+    // trade (the teammate re-accumulates the moment the primary or an anchor is fresh).
+    return this.anchorFeed();
+  }
+
+  /** Elect a crew-pool side anchor for games the configured primary isn't in. No-op
+   *  (anchor cleared) whenever the primary is live or no pool is configured — the
+   *  primary is the anchor then. Eligible anchors are fresh, in the pool, on the squad
+   *  map, and have a PROVEN own side (a wired observer never sets that, so can't anchor).
+   *  Picks the feed in the LARGEST round-win-agreeing cluster (the majority lobby on the
+   *  shared token), so a benched friend in a different game can't become the reference.
+   *  The current anchor is kept while it stays a CO-LEADER (largest cluster); once round
+   *  history reveals it was the minority lobby — its cluster falls below the majority — it
+   *  is re-elected to the real stack. This both retains the cold-start pick (no thrash on
+   *  ties) and corrects a wrong-lobby seating once there's history to tell them apart. */
+  private electSideAnchor(now: number, refMap: string | undefined): void {
+    if (this.isFresh(this.primaryFeed(), now) || !this.crewPool) {
+      this.anchorId = null;
+      return;
+    }
+    const eligible: Array<[string, FeedState]> = [];
+    for (const [id, f] of this.feeds) {
+      if (this.isFresh(f, now) && this.isPoolPlayer(f, id) && this.onRefMap(f, refMap)) {
+        eligible.push([id, f]);
+      }
+    }
+    if (eligible.length === 0) {
+      this.anchorId = null;
+      return;
+    }
+    // Each feed's CLUSTER = how many eligible feeds POSITIVELY share its round-win history
+    // (agreement >= 1 — proven same lobby on the shared token). Must be > 0, not >= 0: a
+    // feed with NO history yet agrees with everyone (agreement 0), so a >= 0 count would
+    // make a no-history feed the largest "cluster" and wrongly elect it. At cold start every
+    // feed has cluster 0 (no shared history) so the firstSeen tie-break picks the anchor;
+    // once a lobby's history matures, its members' clusters grow and the majority wins.
+    const cluster = new Map<string, number>();
+    for (const [id, f] of eligible) {
+      let n = 0;
+      for (const [, g] of eligible) if (this.lobbyAgreement(f, g) >= 1) n++;
+      cluster.set(id, n);
+    }
+    const best = Math.max(...cluster.values());
+    // Keep the current anchor while it's still a co-leader (largest cluster); only then is
+    // the side reference stable. Otherwise it was seated in a now-smaller (minority) lobby.
+    if (this.anchorId !== null && cluster.get(this.anchorId) === best) return;
+    // Elect the largest cluster (the majority lobby), tie-broken by longest-lived then id.
+    let pick: string | null = null;
+    let pickSince = Infinity;
+    for (const [id, f] of eligible) {
+      if (cluster.get(id) !== best) continue;
+      if (f.firstSeen < pickSince || (f.firstSeen === pickSince && (pick === null || id < pick))) {
+        pick = id;
+        pickSince = f.firstSeen;
+      }
+    }
+    // If the anchor crossed to a DIFFERENT lobby (the prior anchor is still present and now
+    // contradicts the new one), the accumulated side votes were measured against the OLD
+    // lobby's side reference and are no longer meaningful — reset them so the real stack
+    // re-accumulates cleanly against the new anchor (a brief, safe re-confirm). Stale
+    // high-water (confirmedEver) members from the old lobby are filtered at the read sites
+    // (buildTeam / deriveLastMan re-validate lobby agreement every frame), not purged here.
+    const prevAnchor = this.anchorId !== null ? this.feeds.get(this.anchorId) : undefined;
+    const newAnchor = pick !== null ? this.feeds.get(pick) : undefined;
+    if (prevAnchor && newAnchor && this.lobbyAgreement(newAnchor, prevAnchor) < 0) {
+      for (const f of this.feeds.values()) {
+        f.sameSide = 0;
+        f.oppSide = 0;
+      }
+    }
+    this.anchorId = pick;
+  }
+
   private isFresh(feed: FeedState | undefined, now: number): boolean {
     return feed !== undefined && now - feed.lastSeen <= config.gsi.feedStaleMs;
   }
@@ -325,7 +495,27 @@ export class RosterManager {
   private isTeammate(feed: FeedState, id: string, now: number, refMap: string | undefined): boolean {
     if (!this.isFresh(feed, now)) return false;
     if (!this.onRefMap(feed, refMap)) return false;
-    return id === this.primaryId() || feed.sameSide > feed.oppSide;
+    if (id === this.primaryId()) return true;
+    // Primary present (no pool anchor): the same-side vote, but first exclude a feed whose
+    // round-win history CONTRADICTS the primary's — it's in a different same-map match (a
+    // benched friend's concurrent game), so its side vote must not confirm it. This also
+    // shuts the anchor→primary handoff leak: a different-game feed that banked a same-side
+    // tally while the owner was absent can't ride that stale tally into the squad once the
+    // owner joins, because its history contradicts the owner's lobby.
+    if (!this.anchorId) {
+      // Exclude a feed whose history contradicts the primary's lobby (a different same-map
+      // game), even if a stale tally leans same-side; otherwise the same-side vote decides.
+      if (this.lobbyAgreement(feed, this.primaryFeed()) < 0) return false;
+      return feed.sameSide > feed.oppSide;
+    }
+    // Primary ABSENT (crew-pool anchor path): only pool players with a PROVEN own side.
+    if (!this.isPoolPlayer(feed, id)) return false;
+    if (id === this.anchorId) return true; // the anchor defines "our side" for this lobby
+    // A non-anchor pool feed is confirmed only once its round-win history AGREES with the
+    // anchor's for >= MIN_FINGERPRINT_ROUNDS completed rounds — the cold-start hedge that
+    // stops two same-map games merging before there's history to tell them apart — AND its
+    // accumulated side vote leans same-side as the anchor.
+    return this.lobbyAgreement(feed, this.anchorFeed()) >= MIN_FINGERPRINT_ROUNDS && feed.sameSide > feed.oppSide;
   }
 
   /** Ops ITEM 9 — why a feed is NOT a confirmed member, in isTeammate's OWN order
@@ -334,6 +524,19 @@ export class RosterManager {
     if (!this.isFresh(feed, now)) return "stale";
     if (!this.onRefMap(feed, refMap)) return "off-map";
     if (id === this.primaryId()) return null;
+    // Owner-absent (pool anchor) path — mirror isTeammate's anchor branch so the /coach
+    // status diagnostic names the real reason a crew feed isn't yet counted.
+    if (this.anchorId !== null) {
+      if (!this.isPoolMember(id)) return "not-in-crew-pool";
+      if (!feed.tracker.hasSelfSide()) return "no-self-side-yet";
+      if (id === this.anchorId) return null;
+      const agreement = this.lobbyAgreement(feed, this.anchorFeed());
+      if (agreement < 0) return "different-match";
+      if (agreement < MIN_FINGERPRINT_ROUNDS) return "fingerprint-immature";
+      return feed.sameSide > feed.oppSide ? null : "opposite-side-vote";
+    }
+    // Primary present path.
+    if (this.lobbyAgreement(feed, this.primaryFeed()) < 0) return "different-match";
     if (feed.sameSide > feed.oppSide) return null;
     if (feed.sameSide === 0 && feed.oppSide === 0) return "unconfirmed-no-votes-yet";
     return "opposite-side-vote";
@@ -350,6 +553,7 @@ export class RosterManager {
       // never reaped here, so it still counts and is still appended as alive=undefined.
       this.confirmedEver.delete(id);
       if (this.authorityId === id) this.authorityId = null;
+      if (this.anchorId === id) this.anchorId = null; // don't leave the side anchor dangling at a deleted feed
       log.info("roster", `Feed dropped ${this.shortId(id)} (idle) — ${this.feeds.size} wired`);
     }
   }
@@ -581,6 +785,7 @@ export class RosterManager {
     // aliveWired correctly drop to honest-unknown rather than the member silently
     // vanishing and a false last-man firing on the survivors.
     const liveIds = new Set(live.map(([id]) => id));
+    const ref = this.referenceFeed(now);
     for (const id of this.confirmedEver) {
       if (liveIds.has(id)) continue;
       // The primary is never a stale appendee: its personal state is merged separately
@@ -590,6 +795,11 @@ export class RosterManager {
       const f = this.feeds.get(id);
       if (!f) continue;                       // reaped -> genuinely gone
       if (!this.onRefMap(f, refMap)) continue; // different lobby now
+      // Different MATCH: a high-water member whose round-win history contradicts the
+      // current reference (e.g. it was confirmed under a prior anchor that re-elected to a
+      // new lobby) must not linger as a phantom appendee. Re-validated every frame, so it
+      // self-corrects even if a transient no-history frame let it slip an earlier check.
+      if (this.lobbyAgreement(f, ref) < 0) continue;
       members.push({
         name: f.tracker.ownName(),
         isPrimary: id === primaryId,
@@ -678,9 +888,12 @@ export class RosterManager {
     // the count and fire a false last-man. Mirrors the reap()->confirmedEver.delete drop
     // via the off-map path, using the same refMap buildTeam/deriveLastMan compute.
     let confirmedOnMap = 0;
+    const ref = this.referenceFeed(now);
     for (const id of this.confirmedEver) {
       const f = this.feeds.get(id);
-      if (f && this.onRefMap(f, refMap)) confirmedOnMap++;
+      // On refMap AND not a proven different-match member (a stale high-water entry from a
+      // re-elected-away lobby) — else it would inflate the count toward a false last-man.
+      if (f && this.onRefMap(f, refMap) && this.lobbyAgreement(f, ref) >= 0) confirmedOnMap++;
     }
     const squadComplete = squadSize !== undefined && confirmedOnMap >= squadSize && noFreshUnknown;
     if (!squadComplete) return null;
