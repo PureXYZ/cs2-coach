@@ -171,16 +171,22 @@ async function main(): Promise<void> {
     // Friend-only match (the primary user never played this one): nothing of the
     // user's to record, and the Leetify lookup would key on the wrong account.
     if (report.rounds.length === 0) {
-      if (config.coach.primarySteam64) {
-        // A configured primary that never produced a round is almost always a
-        // misconfig (wrong SteamID64) rather than a genuine friend-only match —
-        // surface it loudly so it's noticed.
+      if (config.coach.primarySteam64 && !config.coach.crewPool) {
+        // A configured primary that never produced a round, with no crew pool, is almost
+        // always a misconfig (wrong SteamID64) rather than a genuine friend-only match —
+        // surface it loudly so it's noticed. With COACH_SQUAD set, a game the owner isn't
+        // in is EXPECTED (the crew plays without them), so don't cry wolf.
         log.warn(
           "sessions",
           `Match ended but the configured primary (COACH_PRIMARY_STEAM64=${config.coach.primarySteam64}) never played a round — check the ID. Not recording.`,
         );
       } else {
-        log.info("sessions", "Primary player didn't play this match — not recording it");
+        log.info(
+          "sessions",
+          config.coach.crewPool
+            ? "A crew game the owner didn't play in — not recording it for the owner"
+            : "Primary player didn't play this match — not recording it",
+        );
       }
       return;
     }

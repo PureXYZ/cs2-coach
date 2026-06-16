@@ -203,6 +203,11 @@ function steamId64Env(name: string): string | undefined {
   return raw;
 }
 
+// Split a comma-separated env value into trimmed, non-empty, de-duplicated entries.
+function splitCsv(raw: string): string[] {
+  return [...new Set(raw.split(",").map((s) => s.trim()).filter(Boolean))];
+}
+
 // COACH_SQUAD is the crew POOL — a comma-separated list of every friend's SteamID64
 // who runs the coach. It's membership-only (NOT a stack size): the coach uses it to
 // recognise a full stack of your crew even in games the owner isn't playing. A pool
@@ -211,7 +216,7 @@ function steamId64Env(name: string): string | undefined {
 function steamIdListEnv(name: string, max = 10): string[] | undefined {
   const raw = process.env[name];
   if (!raw?.trim()) return undefined;
-  const ids = [...new Set(raw.split(",").map((s) => s.trim()).filter(Boolean))];
+  const ids = splitCsv(raw);
   for (const id of ids) {
     if (!STEAMID64_RE.test(id)) {
       throw new Error(`${name} entry "${id}" must be a 17-digit SteamID64 (7656…)`);

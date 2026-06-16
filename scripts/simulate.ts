@@ -1180,6 +1180,65 @@ console.log("\n=== scenario: COACH_SQUAD — a different-game pool feed can't ri
 }
 
 // ---------------------------------------------------------------------------
+console.log("\n=== scenario: COACH_SQUAD — the side anchor re-elects from a minority same-map lobby to the real stack ===");
+{
+  const pool = new Set([OWNER, P1, P2, P3, P4, P5]);
+  const { r, run } = rosterRig(OWNER, pool);
+  const a = { roundPhase: "live" as const, round: 4, roundWins: rwA(4), ctScore: 2, tScore: 2 };
+  const b = { roundPhase: "live" as const, round: 4, roundWins: rwB(4), ctScore: 2, tScore: 2 };
+  // The minority lobby B (P4,P5) wires FIRST, so a naive sticky anchor would seat there
+  // for the whole match and never recognise the real stack.
+  run("B P4", payload({ provider: P4, name: "Stranger1", ...b }));
+  run("B P5", payload({ provider: P5, name: "Stranger2", ...b }));
+  // The real 3-stack (lobby A) wires in: its larger, CONTRADICTING cluster must pull the
+  // anchor away from lobby B. A second tick lets every lobby-A feed vote against the
+  // re-elected anchor.
+  for (const tick of ["", "'"]) {
+    run(`A P1${tick}`, payload({ provider: P1, name: "Mouse", ...a }));
+    run(`A P2${tick}`, payload({ provider: P2, name: "Cadian", ...a }));
+    run(`A P3${tick}`, payload({ provider: P3, name: "NiKo", ...a }));
+  }
+  const ctx = r.context();
+  expect(ctx.team?.rosterComplete === true, "anchor re-elects from minority lobby B to the real 3-stack in lobby A");
+  expect(
+    ctx.team?.members.length === 3 && ctx.team.members.every((m) => ["Mouse", "Cadian", "NiKo"].includes(m.name ?? "")),
+    `the recognised stack is lobby A, not the minority lobby B (got ${ctx.team?.members.map((m) => m.name).join(",")})`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: COACH_SQUAD — re-election clears stale opposite-side votes so the real stack still confirms ===");
+{
+  const pool = new Set([OWNER, P1, P2, P3, P4, P5]);
+  const { r, run } = rosterRig(OWNER, pool);
+  // Cold start (no history): minority lobby B (P4,P5) on CT wires first and seats the
+  // anchor; the real stack lobby A (P1,P2,P3) is on the OPPOSITE side (T), so during the
+  // no-history window its feeds bank OPPOSITE-side votes against the B-anchor.
+  run("B P4 r1", payload({ provider: P4, roundPhase: "live", round: 0, name: "Stranger1", team: "CT" }));
+  run("B P5 r1", payload({ provider: P5, roundPhase: "live", round: 0, name: "Stranger2", team: "CT" }));
+  run("A P1 r1", payload({ provider: P1, roundPhase: "live", round: 0, name: "Mouse", team: "T" }));
+  run("A P2 r1", payload({ provider: P2, roundPhase: "live", round: 0, name: "Cadian", team: "T" }));
+  run("A P3 r1", payload({ provider: P3, roundPhase: "live", round: 0, name: "NiKo", team: "T" }));
+  // Histories diverge → the anchor re-elects to lobby A AND must drop the stale opposite-
+  // side votes, or the real stack would stay suppressed (sameSide never exceeds oppSide).
+  const a = { roundPhase: "live" as const, round: 4, roundWins: rwA(4), ctScore: 2, tScore: 2, team: "T" as const };
+  const b = { roundPhase: "live" as const, round: 4, roundWins: rwB(4), ctScore: 2, tScore: 2, team: "CT" as const };
+  run("B P4", payload({ provider: P4, name: "Stranger1", ...b }));
+  run("B P5", payload({ provider: P5, name: "Stranger2", ...b }));
+  for (const tick of ["", "'"]) {
+    run(`A P1${tick}`, payload({ provider: P1, name: "Mouse", ...a }));
+    run(`A P2${tick}`, payload({ provider: P2, name: "Cadian", ...a }));
+    run(`A P3${tick}`, payload({ provider: P3, name: "NiKo", ...a }));
+  }
+  const ctx = r.context();
+  expect(ctx.team?.rosterComplete === true, "the real (opposite-side) stack confirms after re-election clears stale opp votes");
+  expect(
+    ctx.team?.members.length === 3 && ctx.team.members.every((m) => ["Mouse", "Cadian", "NiKo"].includes(m.name ?? "")),
+    `the recognised stack is lobby A (got ${ctx.team?.members.map((m) => m.name).join(",")})`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 console.log("\n=== scenario: multi-feed — demux, global-event dedup, named teammate triple ===");
 {
   const { out, run } = rosterRig(P1);
