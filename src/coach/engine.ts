@@ -96,6 +96,21 @@ const COOLDOWNS_MS: Record<string, number> = {
   tilt: 180_000,
 };
 
+/**
+ * Per-round speech budget: a soft cap on how many lines air in one round, so a busy round
+ * can't stack six calls on top of each other (a real "talks too much" complaint — a single
+ * round fired economy + retake + TWO teammate hypes + clock + round-end). The round-DECIDING
+ * lines always speak: the buy call (economy), the retake/save decision (retake), the round
+ * result (roundEnd), match point (match), and the player's OWN multikill hype (kill/specialKill)
+ * — none of those are budgeted. The DISCRETIONARY colour below competes for the budget and is
+ * dropped once the round is already full: mid-round narration (death/clock/tilt/bomb hype) AND
+ * teammate hype (so a teammate's triple THEN quad in one round doesn't double up — the first
+ * airs, the escalation is shed when the round's busy). Quiet rounds keep their colour; busy
+ * rounds shed the chatter. The counter resets when the round number changes.
+ */
+const ROUND_LINE_BUDGET = 3;
+const BUDGETED_CATEGORIES = new Set(["death", "clock", "tilt", "bomb", "teammate"]);
+
 /** Clock callouts bail when GSI went quiet (game crash, disconnect, menu).
  *  The cfg heartbeat is 10s and real 11s gaps were captured — 12s left no margin. */
 const PAYLOAD_FRESH_MS = 15_000;
@@ -180,6 +195,12 @@ export class CoachEngine {
    *  together, so the speech is dropped at synth/play the instant the buy window opens —
    *  it can never be STARTED over the pistol call. Re-armed at mapLoading, reset at matchEnd. */
   private matchStarted = false;
+  /** Lines dispatched to voice so far THIS round — the per-round speech budget. Discretionary
+   *  mid-round narration (BUDGETED_CATEGORIES) is dropped once it hits ROUND_LINE_BUDGET;
+   *  structural and hype lines always speak. Reset whenever the round number changes. */
+  private roundLineCount = 0;
+  /** The round number the budget counter is currently tracking — a change resets the count. */
+  private budgetRound = -1;
 
   constructor(
     private readonly speak: Speak,
@@ -200,6 +221,12 @@ export class CoachEngine {
   }
 
   handle(events: CoachEvent[], ctx: MatchContext): void {
+    // Per-round speech budget: a new round number means a fresh line allowance, so the
+    // discretionary mid-round narration can talk again. Structural/hype lines never check it.
+    if (typeof ctx.round === "number" && ctx.round !== this.budgetRound) {
+      this.budgetRound = ctx.round;
+      this.roundLineCount = 0;
+    }
     // Our timeout owns its freezetime: the speech carries the buy plan, so the
     // separate economy line would be a duplicate racing it for the same pause
     // (a timeout voted during the prior round lands ON the freezetime frame).
@@ -591,12 +618,13 @@ export class CoachEngine {
         // Dying to the bomb blast or exit fire after the round is decided:
         // every death variant coaches an ongoing round, which has just ended.
         if (ctx.roundPhase === "over") break;
-        // A burned/blind death is a named, roast-worthy way to go (a live session
-        // burned to death and the coach said nothing) — those speak reliably;
-        // a generic death stays mostly silent so deaths aren't narrated.
+        // Only a NAMED death (burned/blind) earns a line — those are roast-worthy and the
+        // player asked for them called out. A generic death stays SILENT: narrating every
+        // death is exactly the play-by-play noise the player flagged as "talks too much".
+        if (!event.cause) break;
         this.say(() => lines.deathLine(event.cause), {
           category: "death",
-          priority: event.cause ? 1 : 0,
+          priority: 1,
           maxAgeMs: 6_000,
         });
         break;
@@ -1036,6 +1064,14 @@ export class CoachEngine {
       opts.onDropped?.();
       return;
     }
+    // Per-round speech budget: discretionary mid-round narration is dropped once the round
+    // has already had its fill of lines, so a busy round stops piling on. Structural and hype
+    // lines (everything not in BUDGETED_CATEGORIES) bypass this and always speak.
+    if (BUDGETED_CATEGORIES.has(opts.category) && this.roundLineCount >= ROUND_LINE_BUDGET) {
+      log.debug("engine", `${opts.category}: over round speech budget (${this.roundLineCount}/${ROUND_LINE_BUDGET})`);
+      opts.onDropped?.();
+      return;
+    }
     const text = line();
     if (!text) {
       opts.onDropped?.();
@@ -1048,6 +1084,11 @@ export class CoachEngine {
     if (opts.manageCooldown !== false) {
       release = this.reserveCooldown(opts.category);
     }
+    // Counts toward this round's speech budget (every line we hand to voice, structural or
+    // not). It counts at DISPATCH, not airtime, so a line the voice queue later drops
+    // (supersede/overflow/stale) still consumed budget — deliberately conservative: erring
+    // toward fewer lines is the whole point. Only discretionary categories are gated above.
+    this.roundLineCount++;
     this.speak({
       text,
       category: opts.category,
