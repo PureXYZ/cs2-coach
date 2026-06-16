@@ -278,6 +278,11 @@ export class GsiTracker {
    * player.team stays valid as a fallback when we have nothing better.
    */
   private lastKnownSide: Team | undefined;
+  /** True once this feed has set its side from a genuine SELF frame (its own
+   *  player.team), not from a spectated teammate. Lets the roster exclude a wired
+   *  OBSERVER/caster (who only ever sees other players, so never sets this) from a
+   *  same-side stack count — an observer's lastKnownSide is borrowed, not its own. */
+  private sawSelfSide = false;
   /** Own Steam name from the last self frame — persists across death so the
    *  multi-feed roster can still name this player while they're spectating. */
   private ownNameSeen: string | undefined;
@@ -296,6 +301,7 @@ export class GsiTracker {
 
     if (isSelf && payload.player?.team) {
       this.lastKnownSide = payload.player.team;
+      this.sawSelfSide = true; // side is genuinely ours, not borrowed from a spectated player
     } else if (!this.lastKnownSide && payload.player?.team) {
       this.lastKnownSide = payload.player.team; // started while dead: teammate's side = ours
     }
@@ -395,6 +401,7 @@ export class GsiTracker {
       this.inMatch = false;
       this.warmupAnnounced = false; // re-arm so the NEXT match's warmup speech can fire
       this.lastKnownSide = undefined;
+      this.sawSelfSide = false; // next match re-proves its own side from a fresh self frame
       this.liveRound = 0; // a stale round number must not leak into the next match's context
       // Cleared on gameover too: if the next match's "live" transition is missed
       // (payload gap), a stale us@13/them@13 key would mute its first match point.
@@ -853,6 +860,22 @@ export class GsiTracker {
    *  targets teammates, so the spectated player's side is still ours). */
   ownSide(): Team | undefined {
     return this.lastKnownSide;
+  }
+
+  /** True when this feed's side came from a genuine SELF frame (this account actually
+   *  played), not borrowed from a spectated player. The roster requires this before
+   *  counting a feed toward a same-side stack, so a wired observer/caster can't pad it. */
+  hasSelfSide(): boolean {
+    return this.sawSelfSide;
+  }
+
+  /** The FULL keyed round-outcome history of the current match (round number ->
+   *  e.g. "ct_win_elimination"), straight from map.round_wins. Unlike the lossy
+   *  recentRoundWins (last-5, keys dropped), this keeps the per-round alignment the
+   *  roster's lobby fingerprint needs to tell two same-map matches apart. Empty/absent
+   *  until the first round resolves (so it's blank during warmup/round 1). */
+  roundWinsRaw(): Record<string, string> | undefined {
+    return this.prev?.map?.round_wins;
   }
 
   /** True when a delayed line (the Leetify recap) can speak without talking
