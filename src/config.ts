@@ -297,6 +297,11 @@ if (coachCrewPool) {
   if (coachSquadSize === undefined) {
     throw new Error("COACH_SQUAD needs COACH_SQUAD_SIZE set (your stack size — a Premier team is 5).");
   }
+  if (coachCrewPool.length < coachSquadSize) {
+    throw new Error(
+      `COACH_SQUAD lists ${coachCrewPool.length} ids but COACH_SQUAD_SIZE is ${coachSquadSize} — the pool can never field a full stack, so whole-team calls would never fire. List your whole crew.`,
+    );
+  }
 }
 
 export const config = {

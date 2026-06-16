@@ -1082,7 +1082,10 @@ console.log("\n=== scenario: COACH_SQUAD — full crew stack WITHOUT the owner u
   run("P1 r1 live", payload({ provider: P1, roundPhase: "live", round: 0, name: "Mouse" }));
   run("P2 r1 live", payload({ provider: P2, roundPhase: "live", round: 0, name: "Cadian" }));
   run("P3 r1 live", payload({ provider: P3, roundPhase: "live", round: 0, name: "NiKo" }));
-  expect(r.context().team?.rosterComplete !== true, "cold start (no round history) is NOT roster-complete — hedge");
+  // Non-vacuous: assert the SPECIFIC cold-start state — only the anchor confirms (the
+  // others fail the immature fingerprint), so live < 2 and NO team block is built. (The
+  // post-maturity `=== true` assertion below then brackets the fingerprint gate.)
+  expect(r.context().team === undefined, "cold start (no round history) builds NO team block — the coach hedges");
 
   // Four agreed completed rounds (matching round-win history) mature the fingerprint:
   // the three feeds are now provably one lobby and confirm as a full stack. Non-0-0
@@ -1121,6 +1124,12 @@ console.log("\n=== scenario: COACH_SQUAD — two same-map games never merge into
   expect(ctx.team?.rosterComplete !== true, "two disjoint same-map games do NOT merge into a 3-stack");
   expect((ctx.team?.members.length ?? 0) <= 2, `only one lobby's feeds count as teammates (got ${ctx.team?.members.length})`);
   expect(!ctx.team?.members.some((m) => m.name === "Stranger1" || m.name === "Stranger2"), "the other game's players are never in the squad");
+  // Positive side: lobby A's two feeds ARE confirmed — so this scenario can't pass
+  // vacuously if pool confirmation broke entirely (team would be undefined / empty).
+  expect(
+    ctx.team?.members.length === 2 && ctx.team.members.every((m) => m.name === "Mouse" || m.name === "Cadian"),
+    `lobby A's two feeds are confirmed, lobby B's excluded (got ${ctx.team?.members.map((m) => m.name).join(",") ?? "no team"})`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1140,6 +1149,34 @@ console.log("\n=== scenario: COACH_SQUAD — owner joining mid-match keeps the s
   const after = r.context();
   expect(after.team?.rosterComplete === true, "stack stays complete after the owner joins (no flicker)");
   expect(after.team?.members.some((m) => m.isPrimary) === true, "the owner is now the primary member");
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n=== scenario: COACH_SQUAD — a different-game pool feed can't ride a stale vote into the squad at handoff ===");
+{
+  const pool = new Set([OWNER, P1, P2, P3, P4]);
+  const { r, run } = rosterRig(OWNER, pool);
+  // Cold start (no history): the real stack P1/P2/P3 AND a benched friend P4 who is in a
+  // DIFFERENT same-map game all post round 1 on the same side, so P4 banks a same-side
+  // vote against the anchor while nothing can yet tell the two games apart.
+  run("P1 r1", payload({ provider: P1, roundPhase: "live", round: 0, name: "Mouse" }));
+  run("P2 r1", payload({ provider: P2, roundPhase: "live", round: 0, name: "Cadian" }));
+  run("P3 r1", payload({ provider: P3, roundPhase: "live", round: 0, name: "NiKo" }));
+  run("P4 r1", payload({ provider: P4, roundPhase: "live", round: 0, name: "Contaminant" }));
+  // Histories mature and DIVERGE: P1/P2/P3 share rwA, P4's game is rwB (contradicting).
+  const a = { roundPhase: "live" as const, round: 4, roundWins: rwA(4), ctScore: 2, tScore: 2 };
+  const b = { roundPhase: "live" as const, round: 4, roundWins: rwB(4), ctScore: 2, tScore: 2 };
+  run("P1 mature", payload({ provider: P1, name: "Mouse", ...a }));
+  run("P2 mature", payload({ provider: P2, name: "Cadian", ...a }));
+  run("P3 mature", payload({ provider: P3, name: "NiKo", ...a }));
+  run("P4 mature", payload({ provider: P4, name: "Contaminant", ...b }));
+  expect(!r.context().team?.members.some((m) => m.name === "Contaminant"), "the different-game friend is excluded while the owner is absent");
+  // Owner joins their friends' game. P4 still carries its stale same-side vote, but its
+  // round-win history contradicts the owner's, so it must NOT ride that vote into the squad.
+  run("OWNER joins", payload({ provider: OWNER, name: "Andy", ...a }));
+  const after = r.context();
+  expect(after.team?.rosterComplete === true, "the real stack (owner + 3) is complete after the join");
+  expect(!after.team?.members.some((m) => m.name === "Contaminant"), "the different-game friend never rides a stale vote into the squad at handoff");
 }
 
 // ---------------------------------------------------------------------------
