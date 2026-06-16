@@ -380,6 +380,41 @@ function freshEngine(): { out: SpeakRequest[]; engine: InstanceType<typeof Coach
 }
 
 // ---------------------------------------------------------------------------
+console.log("\n=== scenario: verbosity — generic-death silence + per-round speech budget ===");
+{
+  const r = (round: number) => ({ ...tracker.context(), round, roundPhase: "live" }) as MatchContext;
+  // Generic (no-cause) deaths are SILENT now; only a named cause (fire/blind) speaks —
+  // narrating every death was the play-by-play noise the player flagged.
+  {
+    const { out, engine: e } = freshEngine();
+    e.handle([{ type: "death" }], r(5));
+    expect(out.length === 0, "a causeless death stays silent — no play-by-play death narration");
+    e.handle([{ type: "death", cause: "fire" }], r(5));
+    expect(out.some((s) => s.category === "death"), "a burned/blind death still speaks");
+  }
+  // Per-round speech budget: discretionary mid-round narration is dropped once the round is
+  // full, but the round-DECIDING lines bypass it, and a new round re-opens the allowance.
+  {
+    const { out, engine: e } = freshEngine();
+    // Three structural lines (distinct categories so per-category cooldowns can't mask the
+    // budget) fill the round to ROUND_LINE_BUDGET.
+    e.handle([{ type: "kill", roundKills: 3, headshot: false }], r(5));
+    e.handle([{ type: "teamkill" }], r(5));
+    e.handle([{ type: "matchPoint", forUs: false }], r(5));
+    expect(out.length === 3, `three structural lines aired and filled the round budget (got ${out.length})`);
+    // A 4th DISCRETIONARY line (a cause'd death) is now over budget → dropped.
+    e.handle([{ type: "death", cause: "fire" }], r(5));
+    expect(out.length === 3 && !out.some((s) => s.category === "death"), "discretionary death dropped once the round hit its line budget");
+    // A round-DECIDING line still speaks over budget — structural categories bypass the gate.
+    e.handle([{ type: "roundEnd", won: false, method: "t_win_elimination", ourScore: 2, theirScore: 3 }], r(5));
+    expect(out.some((s) => s.category === "roundEnd"), "the round result still speaks over budget (structural bypass)");
+    // A new round number resets the allowance, so discretionary narration can talk again.
+    e.handle([{ type: "death", cause: "fire" }], r(6));
+    expect(out.filter((s) => s.category === "death").length === 1, "a new round re-opens the budget for discretionary lines");
+  }
+}
+
+// ---------------------------------------------------------------------------
 console.log("\n=== scenario: bomb planted right after the player's own kill — back the clutch, never call save ===");
 const spokenF: SpeakRequest[] = [];
 const trackerF = new GsiTracker();
@@ -1608,6 +1643,17 @@ console.log("\n=== scenario: B2 — chooseRibTarget rotates the rib spotlight ac
   // Solo (no fresh named non-primary) → undefined.
   const solo: TeamMember[] = [{ name: "You", isPrimary: true, tier: "fresh", staleMs: 0 }];
   expect(chooseRibTarget(solo, []) === undefined, "no fresh teammate → no rib target");
+
+  // Anti-repeat skip: when the ONLY note-bearing teammate was just ribbed, SKIP (undefined)
+  // rather than re-picking them — the fix for the stale "Ensuing died on his nades AGAIN"
+  // rib firing every single round off one latched match-long note.
+  const oneNoted: TeamMember[] = [
+    { name: "You", isPrimary: true, tier: "fresh", staleMs: 0 },
+    mk("Sole", "died sitting on their utility"),
+    mk("Quiet", undefined),
+  ];
+  expect(chooseRibTarget(oneNoted, ["Sole"]) === undefined, "sole noted teammate already ribbed → skip, don't re-pick the same stale rib");
+  expect(chooseRibTarget(oneNoted, [])?.name === "Sole", "...but ribs that teammate when they're NOT recently ribbed");
 }
 
 // ---------------------------------------------------------------------------

@@ -38,14 +38,15 @@ VOICE:
 - LOCK THE REGISTER on these — this is the mean-but-dry voice, no warming up: "Full buy, you've got the cash for once, so try not to feed it back to them in twenty seconds." / "Nice clutch. Now do that when it's not three rounds too late to matter." Snide, useful, never a hug. Don't drift soft, supportive or hype-coach. If a line starts sounding encouraging, you wrote it wrong — rewrite it meaner.
 
 WHAT YOU CAN AND CANNOT SEE:
-- You see the player's OWN state (money, HP, armor, weapons, kills), team scores, round history and the match memory. You have NO kill feed and NO positions, and NO data on the ENEMY beyond their loss-bonus level. You do NOT see teammates' state EXCEPT the ones in the "team" block (see THE SQUAD) and the "spectating" teammate while dead. Never invent positions, alive counts, or any economy not in the snapshot.
+- You see the player's OWN state (money, HP, armor, weapons, kills), team scores, round history and the match memory. You have NO kill feed and NO positions, and NO data on the ENEMY beyond their loss-bonus level. Because there's no kill feed you can NEVER know who died first, who got the opening kill, or the ORDER players died — never claim it. You do NOT see teammates' state EXCEPT the ones in the "team" block (see THE SQUAD) and the "spectating" teammate while dead. Never invent positions, alive counts, or any economy not in the snapshot. The enemy's buy and guns are a GUESS off their loss-bonus level alone — say "probably", "likely", "expect"; NEVER state it as fact ("they're loaded", "they've got full rifles", "they bought rifles/cheap").
 - HARD GAME FACTS: only the T side can plant the bomb; only the CT side can defuse it. If our side is CT, every plant was the ENEMY's doing; if our side is T, every defuse was the ENEMY's doing. Never credit a plant or defuse to the wrong team.
 - "playerIsSelf": false means the player is DEAD — own-state fields (money, HP, weapons) are absent or belong to the "spectating" teammate. Never give a dead player advice about their current gear.
 - "spectating" means the player is DEAD and watching that teammate — those stats belong to the teammate. The spectated teammate is on OUR team; they did not plant if we're CT and did not defuse if we're T.
 - "lastKillSecondsAgo" small (under ~10) means the player is mid-fight and winning it: do NOT tell them to disengage, save, or rotate — back the play or keep it to the essentials.
 - "matchPoint": "them" means losing this round loses the match — a save preserves nothing, the round must be played to win. "moneyResetsNextRound" true means saved gear evaporates at the reset — same conclusion. "matchPoint": "us" is different: normal retake-or-save judgment still applies (a lost round keeps the gear and the lead) — just close calmly.
 - "hasBomb" true means the player is personally carrying the C4 — getting it planted is literally their job.
-- "earlyDeaths" counts the player's deaths inside the first 20 seconds of rounds THIS match — at 2+ it's a pattern (over-peeking on the opening) worth calling out.
+- "earlyDeaths" counts the player's deaths inside the first 20 seconds of rounds THIS match — at 2+ it's a pattern (over-peeking on the opening) worth calling out. It's a how-OFTEN count for the whole match, NOT proof of who "died first" or that it happened "this round" or "every round" — speak it as a habit, never as a specific-round fact.
+- NEXT-ROUND buy / save / force calls belong ONLY to the freezetime buy window — that is the one moment the snapshot shows next round's money. NEVER predict what to buy, save or force NEXT round at round-end, after a kill, or any other moment: you can't see that money yet, so a "full buy next round" guess just contradicts the real buy call seconds later. (The mid-round retake-or-save call is DIFFERENT and fine — that's about keeping THIS round's gear, which you CAN see.)
 - "recentForm" lines are REAL results from this player's PREVIOUS play sessions, recorded by you. They're callback and roast material ("third night in a row you've thrown the pistols") for the moments that carry them — match start, halftime, the wrap-up. A couple of callbacks per MATCH is plenty; use at most one per line, and never invent past results beyond what's listed.
 - MR12 ROUND STRUCTURE: rounds 1-12 are the first half, 13-24 the second; rounds 1 and 13 are pistol rounds. Round 12 is the LAST round of the half — after it sides swap and ALL money and guns are wiped. Round 24 ends regulation; 12-12 goes to overtime (MR3, fresh $10000, money resets every 3 OT rounds). Across ANY reset boundary there is no "next round" to buy, save, or carry guns for — never suggest it.
 - NEVER announce a half-end, a money reset, or match point on your own from the score or the round number. Say it ONLY when the facts back it: the "round" field is exactly 12 (half-end) or 24 (end of regulation), "moneyResetsNextRound" is set (a reset), or "matchPoint" is set. A live session wrongly called round 11 "the last round of the half" off the scoreline — that exact miscount is banned. When unsure, say nothing about round structure.
@@ -54,7 +55,7 @@ WHAT YOU CAN AND CANNOT SEE:
 
 HOW TO SPEAK:
 - Respond with ONLY the spoken line — no preamble, no reasoning, no meta-commentary about your process, no notes. The very first character is the first word of the line.
-- ONE line. Mid-round twitch moments (kills, bomb calls, retake) stay tight: 8-15 words. A freezetime buy call can run longer when you're actually laying out a plan — up to about 35 words — but never pad; every word earns its place. Round-end reactions stay under 15 words (they chain straight into the next buy call). Output ONLY the line — no preamble, quotes, markdown, emoji or reasoning. It goes straight to text-to-speech.
+- ONE line, and SHORT — brevity is the job, not a nice-to-have. Mid-round twitch moments (kills, bomb calls, retake) stay tight: 6-12 words. A freezetime buy call can run a little longer when you're laying out a plan — up to about 30 words, never more — but never pad; every word earns its place. Round-end reactions stay under 12 words (they chain straight into the next buy call). Say the ONE thing that matters most this moment — do NOT cram the buy AND an enemy read AND a drop AND a full playbook into one breath; pick what wins the round and cut the rest. Output ONLY the line — no preamble, quotes, markdown, emoji or reasoning. It goes straight to text-to-speech.
 - Say "nade" or "grenade", never the bare letters "HE" — text-to-speech reads that as the pronoun "he".
 - Plain spoken English, contractions welcome. Deadpan, not shouty; mid-round lines are short and dry-urgent.
 - Be concrete: tie the call to the actual money, gear, score, clock and history in the snapshot.
@@ -193,7 +194,10 @@ export class LlmCoach {
       },
     ];
 
-    if (event.type === "matchStart") this.recentRibbed = []; // fresh rib rotation each match
+    // Fresh rib rotation each match AND again at the half — without the halftime clear a
+    // sole offender (the only teammate carrying a note) would be ribbed once and then stay
+    // dormant the whole game, since a 1-name recentRibbed at cap 1 never trims on its own.
+    if (event.type === "matchStart" || event.type === "halftime") this.recentRibbed = [];
     const ribTarget = this.pickRibTarget(event, context);
     // B2 (#4): the rib the prompt names travels back with this line()'s return value, so the
     // engine commits it to the rotation (commitSpoken) ONLY if THIS line's LLM text actually
@@ -559,7 +563,13 @@ export function chooseRibTarget(
   const withNote = candidates.filter((m) => m.note);
   const pool = withNote.length ? withNote : candidates;
   const notRecent = pool.filter((m) => !recentRibbed.includes(m.name as string));
-  const choice = (notRecent.length ? notRecent : pool)[0];
+  // Anti-repeat: if everyone worth ribbing was just ribbed, SKIP this moment rather than
+  // re-picking the same teammate. A single teammate carrying the only debrief note (a habit
+  // that latches for the whole match) was otherwise re-selected every single round and ribbed
+  // with the same stale tag ("died on his nades again", round after round). recentRibbed
+  // clears as OTHER teammates earn jabs, so a crew with spread-around material still cycles.
+  const choice = notRecent[0];
+  if (!choice) return undefined;
   return { name: choice.name as string, note: choice.note };
 }
 
@@ -606,7 +616,7 @@ function squadBreakClause(ctx: MatchContext, ribTarget?: { name: string; note?: 
   const rib = !ribTarget
     ? ""
     : ribTarget.note
-      ? ` Anchor the main note on the player. But hit ${ribName} just as hard — ${ribTarget.note} — their OWN play only, hedged unless team.rosterComplete, and make it sting. Don't go soft on the rest either: spread a few named jabs across whoever earned them, nobody's safe — just don't read out the whole roster, and never make up a play you didn't see.`
+      ? ` Anchor the main note on the player. But hit ${ribName} just as hard — ${ribTarget.note} (their PATTERN this match, not necessarily this round — don't imply it just happened) — their OWN play only, hedged unless team.rosterComplete, and make it sting. Don't go soft on the rest either: spread a few named jabs across whoever earned them, nobody's safe — just don't read out the whole roster, and never make up a play you didn't see.`
       : ` Anchor the main note on the player. But don't let ${ribName} off clean — rib them too, ONLY off what you can see (their team.econ money/buy), never some unseen play you're guessing at. Clown anyone across the crew whose buy is a joke when the money backs it; just keep the player front and center and don't narrate every teammate's wallet.`;
   return `${named} The player is your main focus and gets the main note. Follow team.visibility: speak whole-team facts only if rosterComplete, otherwise stay to the players you can see, by name.${rib}`;
 }
@@ -619,7 +629,7 @@ function squadBreakClause(ctx: MatchContext, ribTarget?: { name: string; note?: 
  *  extra named beat that must not bury the round's own result. */
 function roundEndRibClause(ribTarget?: { name: string; note?: string }): string {
   if (!ribTarget?.note) return "";
-  return ` After you've called the result, fire ONE quick shot at ${safeName(ribTarget.name)} off their own game — ${ribTarget.note} — gameplay only, hedged unless team.rosterComplete, never an invented play or position, and never let it bury the round.`;
+  return ` After you've called the result, fire ONE quick shot at ${safeName(ribTarget.name)} off their own game — ${ribTarget.note}. That's their PATTERN across this match so far, NOT necessarily this round — never say "again", "this round", or imply it just happened. Gameplay only, hedged unless team.rosterComplete, never an invented play or position, and never let it bury the round.`;
 }
 
 function describeMoment(
@@ -701,7 +711,7 @@ function describeMoment(
       // Enemy loss bonus is the ONLY enemy-economy signal we get — translate the
       // raw number into a buy prediction so the call can pre-empt an enemy eco/force.
       const enemyEcon = ctx.theirLossStreak !== undefined
-        ? ` Their loss-bonus level is ${ctx.theirLossStreak} (0 = they will buy, 1-2 = eco or cheap force likely, 3+ = broke this round but a round from full rifles) — fold an anti-eco or rebuy-warning beat into the call when actionable.`
+        ? ` Their loss-bonus level is ${ctx.theirLossStreak} — you CANNOT see their actual buy, so this is only a guess: 0 = they'll PROBABLY full-buy, 1-2 = LIKELY an eco or cheap force, 3+ = they were broke this round (thin buy — do NOT call them "full rifles"). Work in an anti-eco or rebuy beat ONLY if it changes the call, and phrase it as a guess ("probably", "likely") — never state their gear as fact.`
         : "";
       // Own loadout, when alive: lets the call get specific — AWP vs rifle vs dry
       // pistol, low ammo, util on hand — instead of a generic "full buy" line.
@@ -713,7 +723,7 @@ function describeMoment(
         : "";
       // Cross-round buy-sync read for a coordinating squad, when buildTeam flagged one.
       const buySync = ctx.team?.buySyncNote ? ` ${ctx.team.buySyncNote} If it fits, call it out and tell them to sync the next buy.` : "";
-      return `Freezetime / buy period, round ${event.round}. Give ONE buy call matched to the money and loss bonus, plus ONE concrete tactical idea for this map and side. Coaching angle for the tactical idea this round (ground it in the snapshot; ignore it only if the economy dictates otherwise): ${angle}.${playbook}${teamBuy}${enemyEcon}${loadout}${squadExecute}${buySync}${habitsNote(ctx)}${mustSpend}${mp}${structure}${timeout} If the round history shows a pattern — lost streak, won pistols, repeated bomb-site losses — use it.`;
+      return `Freezetime / buy period, round ${event.round}. Give ONE buy call matched to the money and loss bonus, plus ONE concrete tactical idea for this map and side. Coaching angle for the tactical idea this round (ground it in the snapshot; ignore it only if the economy dictates otherwise): ${angle}.${playbook}${teamBuy}${enemyEcon}${loadout}${squadExecute}${buySync}${habitsNote(ctx)}${mustSpend}${mp}${structure}${timeout} If the round history shows a pattern — lost streak, won pistols, repeated bomb-site losses — use it. Keep it TIGHT: the buy plus ONE tactical idea, under 30 words. The clauses above are material to choose FROM, not a checklist to read out — pick the one that matters and cut the rest.`;
     }
     case "bombPlanted":
       if (event.ourSide === "CT") {
@@ -728,7 +738,7 @@ function describeMoment(
         // Enemy loss bonus on a retake colours the save math: if they were broke
         // (3+) this round, their gear is thin and the round's worth contesting.
         const enemyEcon = ctx.theirLossStreak !== undefined
-          ? ` Their loss-bonus level is ${ctx.theirLossStreak} (0 = they bought full, 1-2 = eco or cheap force, 3+ = they were broke this round) — factor their likely gear into whether the retake's worth it.`
+          ? ` Their loss-bonus level is ${ctx.theirLossStreak} — a GUESS at their buy, not a read: 0 = probably full, 1-2 = likely an eco or cheap force, 3+ = they were broke this round (thin gear). Factor their LIKELY gear into the retake call, phrased as a guess — never state their guns as fact.`
           : "";
         if (!ctx.playerIsSelf) {
           return `The ENEMY (T side) just planted the bomb — your team is CT, about 40 seconds on the clock. The player is DEAD, spectating teammate "${safeName(ctx.spectating?.name) || "unknown"}" — that teammate is a CT trying to RETAKE; they did NOT plant, and any plant credit belongs to the enemy. Call the retake-or-save for the TEAM from score, economy and history only (no own-gear talk); narrating the spectated teammate by name is welcome.${mustWin}${enemyEcon} Short and dry-urgent.`;
@@ -756,7 +766,7 @@ function describeMoment(
       const mvp = event.mvp ? " The player also took round MVP — fold one backhanded nod to it into the same line." : "";
       const story = event.won !== undefined ? ` (${methodStory(event.method, event.won)})` : "";
       const nextUp = roundEndNextUp(event, ctx);
-      return `Round just ended: ${event.won ? "WON" : "LOST"}${story}, score now ${event.ourScore}-${event.theirScore}.${mvp}${nextUp} ONE dry reaction line, 15 words max — reference the round's story (kills, plant, streak, a teammate's play) when it's interesting, otherwise keep it simple. Get the plant/defuse sides right: T plants, CT defuses. The buy advice comes separately at freezetime, don't give it here.${roundEndRibClause(ribTarget)}`;
+      return `Round just ended: ${event.won ? "WON" : "LOST"}${story}, score now ${event.ourScore}-${event.theirScore}.${mvp}${nextUp} ONE dry reaction line, 12 words max — react to the round that just happened (kills, plant, streak, a teammate's play) when it's interesting, otherwise keep it simple. Get the plant/defuse sides right: T plants, CT defuses. Do NOT say what to buy, save or force next round — you can't see next round's money, that's the freezetime call's job, and a guess here just contradicts it seconds later.${roundEndRibClause(ribTarget)}`;
     }
     case "teamkill":
       return `The player just TEAM-KILLED a teammate. One deadpan roast or mock-apology on their behalf — sarcastic, not genuinely hostile.`;

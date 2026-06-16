@@ -338,30 +338,30 @@ export const BOMB_TEN_CT_FIGHTING = [
 ];
 
 export const BOMB_TEN_CT = [
-      "Ten seconds and you're nowhere near the bomb. Run, save the rifle.",
+      "Ten seconds, not enough to defuse. Run, save the rifle.",
       "Ten on the clock, nobody's shooting you, so quit babysitting it and bail with the gun.",
-      "Ten left, you can't defuse from there. Back out, keep the rifle.",
+      "Ten left, no time for the defuse. Back out, keep the rifle.",
       "Ten seconds, no defuse, no fight. Bail, don't be a stat.",
       "Ten and that bomb's about to blow. Don't eat it, peel out with your rifle.",
       "Ten seconds, get the hell off site. Dying to the clock is pathetic. Save the gun.",
       "Ten left, get away from that thing now. Keep the rifle.",
-      "Ten on the clock and you're too far. Eating a tick with a full rifle is dumb as hell. Leave.",
+      "Ten on the clock, no defuse coming. Eating a tick with a full rifle is dumb as hell. Leave.",
       "Ten seconds, no chance at the defuse. Take the gun and live to buy next round.",
       "Ten left, that's not your bomb to save. Disappear and keep the rifle alive.",
-      "Ten and you're stranded off it. Quit staring, run, the gun's worth more than the round.",
+      "Ten and that defuse won't land. Quit staring, run, the gun's worth more than the round.",
       "Ten seconds, you ain't defusing in time. Bail clean, don't gift them a free kill.",
       "Ten left, nothing you can do on that bomb. Get out, save the kit, reset.",
       "Ten on the clock, no defuse coming. Leave the site, keep your gun, don't eat the blast.",
       "That bomb's cooked in ten and you're not defusing it, so stop loitering and walk your rifle out of here.",
       "You've got maybe ten ticks and zero defuse. Turn around, the gun's the only thing worth keeping now.",
-      "Nobody's making you hug that bomb. Ten left, no kit, no defuse, so peel out and live.",
+      "Ten left, no kit, no defuse — so peel out and live, simple as that.",
       "Round's lost in ten, but the rifle doesn't have to be. Off the site, now.",
       "Standing there for ten more seconds just hands them a free body. Bail and keep the gun, genius.",
       "Ten left and that defuse was never happening. Quit hovering and save the damn rifle.",
-      "You're not in a fight and you're not on the bomb, so what's the plan, eat it? Ten left, leave, keep the gun.",
+      "No fight, no defuse coming, so what's the plan, eat it? Ten left, leave, keep the gun.",
       "Clock says ten, your hands say no defuse. Easy math. Walk away with the rifle.",
       "No defuse in ten, so don't make it a funeral too. Slide off site and hold that rifle.",
-      "Ten and you're parked too far to do a thing. Unpark, take the rifle, reset for next.",
+      "Ten left and nothing left to do on it. Take the rifle, reset for next.",
 ];
 
 export const BOMB_TEN_T_FIGHTING = [
