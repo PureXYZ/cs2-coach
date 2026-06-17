@@ -164,6 +164,11 @@ const SONGS = {
     file: path.resolve("assets/stuck-in-the-lobby.ogg"),
     reply: "🎵 **Stuck in the Lobby.** Too real.",
   },
+  "burning-the-utility": {
+    name: "Burning the Utility",
+    file: path.resolve("assets/burning-the-utility.ogg"),
+    reply: "🎵 **Burning the Utility.** Nades cost money, genius.",
+  },
 } satisfies Record<string, { name: string; file: string; reply: string }>;
 
 /** One button per song, chunked into rows of five (Discord's per-row limit). */
