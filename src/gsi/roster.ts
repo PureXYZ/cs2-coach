@@ -119,9 +119,9 @@ const MAX_FEEDS = 16;
 // Completed rounds two feeds must AGREE on before they're treated as the same match.
 // Below this the coach hedges (no whole-team certainty) for a primary-absent stack:
 // at match start there's no round history, so two games on the same map are
-// indistinguishable; ~4 agreed round outcomes make a coincidental match vanishingly
-// unlikely (< ~1%). This is the cold-start hedge — see roundWinAgreement / isTeammate.
-const MIN_FINGERPRINT_ROUNDS = 4;
+// indistinguishable; ~3 agreed round outcomes make a coincidental match unlikely
+// (~a few %). This is the cold-start hedge — see roundWinAgreement / isTeammate.
+const MIN_FINGERPRINT_ROUNDS = 3;
 
 /** Lobby fingerprint: do two feeds' round-OUTCOME histories place them in the SAME
  *  match? Two CS2 games diverge in who-won-each-round within a round or two, so a
